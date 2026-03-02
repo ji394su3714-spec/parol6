@@ -19,6 +19,7 @@ class SerialManager(QObject):
         self.read_thread = None
         self.running = False
         self.motion_done_event = threading.Event()
+        self.ok_event = threading.Event() # 【新增】用於攔截 OK 訊號
 
     def list_ports(self):
         ports = serial.tools.list_ports.comports()
@@ -40,6 +41,9 @@ class SerialManager(QObject):
             self.ser.open()            
             self.is_connected = True
             self.running = True
+            self.running = True
+            self.motion_done_event.clear()  
+            self.ok_event.clear() # 【新增】連線時清空
             
             # 連線時先重置旗標
             self.motion_done_event.clear()  
@@ -110,9 +114,10 @@ class SerialManager(QObject):
                             self.log_signal.emit(">> [HW] All Axes Homing Completed!") 
                             continue 
 
-                        # 3. 攔截 "OK" (優化效能，不顯示)
+                        # 3. 攔截 "OK" 
                         if line == "OK":
-                            continue 
+                            self.ok_event.set() # 【新增】觸發 OK 旗標
+                            continue
 
                         # 4. 其他訊息正常顯示 (包含您硬體端印出的 Timeout 警告！)
                         self.log_signal.emit(f"[HW] {line}")
@@ -125,17 +130,30 @@ class SerialManager(QObject):
 
     def wait_for_motion_complete(self, timeout=10.0):
         """
-        阻塞式等待，直到收到 "Done"
+        改良版：分段式等待，直到收到 "Done" 或發生異常
         """
         if not self.is_connected:
             return False
 
-        # ⛔ 絕對不能在這裡 clear()！否則會把提早收到的 Done 刪掉！
+        start_time = time.time()
         
-        # 直接等待旗標
-        arrived = self.motion_done_event.wait(timeout)
-        
-        if not arrived:
-            self.log_signal.emit("[Warning] Wait Done Timeout!")
-        
-        return arrived
+        # 將原本的一波長等待，切分成每 0.1 秒檢查一次的迴圈
+        while (time.time() - start_time) < timeout:
+            # 1. 容錯檢查：如果等待途中發生斷線或系統關閉，立刻跳出，不再死等
+            if not self.is_connected or not self.running:
+                self.log_signal.emit("[Warning] Wait aborted (Disconnected or Stopped).")
+                return False
+                
+            # 2. 短暫等待旗標 (0.1秒)
+            if self.motion_done_event.wait(0.1):
+                return True # 成功收到 Done 旗標
+                
+        # 超過總 timeout 時間
+        self.log_signal.emit("[Warning] Wait Done Timeout!")
+        return False
+    
+    # 4. 在類別底部新增 wait_for_ok 函式
+    def wait_for_ok(self, timeout=0.5):
+        """等待 Arduino 回傳 OK"""
+        if not self.is_connected: return False
+        return self.ok_event.wait(timeout)

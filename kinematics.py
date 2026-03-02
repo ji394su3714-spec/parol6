@@ -61,49 +61,58 @@ def compute_numerical_jacobian(joints):
         
     return J
 
-def inverse_kinematics(target_matrix, seed_joints):
+def inverse_kinematics(target_matrix, seed_joints, max_retries=1):
     """
-    使用【阻尼最小平方法 (Damped Least Squares)】進行迭代求解
+    使用【阻尼最小平方法】進行迭代求解。
+    若單次求解失敗，會對 seed_joints 加入微小隨機擾動並重試，增加收斂機率。
     """
-    current_joints = np.array(seed_joints, dtype=float)
-    
-    max_iter = 50       
-    tolerance = 1e-5    
-    lambda_val = 0.01   
-
     target_pos = target_matrix[:3, 3]
     target_rot = target_matrix[:3, :3]
+    
+    for attempt in range(max_retries + 1):
+        # 如果是重試 (attempt > 0)，為種子點加入正負 5 度的隨機擾動
+        if attempt > 0:
+            noise = np.random.uniform(-5.0, 5.0, 6)
+            current_joints = np.array(seed_joints, dtype=float) + noise
+        else:
+            current_joints = np.array(seed_joints, dtype=float)
+            
+        max_iter = 50       
+        tolerance = 1e-5    
+        lambda_val = 0.01   
 
-    for _ in range(max_iter):
-        T_curr = forward_kinematics(current_joints)
-        curr_pos = T_curr[:3, 3]
-        curr_rot = T_curr[:3, :3]
-        
-        err_pos = target_pos - curr_pos
-        R_err = target_rot @ curr_rot.T
-        err_rot = R.from_matrix(R_err).as_rotvec()
-        
-        error_vector = np.concatenate((err_pos, err_rot))
-        
-        if np.linalg.norm(error_vector) < tolerance:
-            return current_joints, np.linalg.norm(error_vector)
+        for _ in range(max_iter):
+            T_curr = forward_kinematics(current_joints)
+            curr_pos = T_curr[:3, 3]
+            curr_rot = T_curr[:3, :3]
+            
+            err_pos = target_pos - curr_pos
+            R_err = target_rot @ curr_rot.T
+            err_rot = R.from_matrix(R_err).as_rotvec()
+            
+            error_vector = np.concatenate((err_pos, err_rot))
+            
+            if np.linalg.norm(error_vector) < tolerance:
+                return current_joints, np.linalg.norm(error_vector)
 
-        J = compute_numerical_jacobian(current_joints)
-        XtX = J @ J.T + lambda_val**2 * np.eye(6)
-        J_inv = J.T @ np.linalg.inv(XtX)
-        
-        delta_theta = J_inv @ error_vector
-        current_joints += np.rad2deg(delta_theta)
-        
-        for i in range(6):
-            min_lim, max_lim = config.JOINT_LIMITS[i]
-            if current_joints[i] < min_lim: current_joints[i] = min_lim
-            if current_joints[i] > max_lim: current_joints[i] = max_lim
+            J = compute_numerical_jacobian(current_joints)
+            XtX = J @ J.T + lambda_val**2 * np.eye(6)
+            J_inv = J.T @ np.linalg.inv(XtX)
+            
+            delta_theta = J_inv @ error_vector
+            current_joints += np.rad2deg(delta_theta)
+            
+            # 限制在關節極限內
+            for i in range(6):
+                min_lim, max_lim = config.JOINT_LIMITS[i]
+                if current_joints[i] < min_lim: current_joints[i] = min_lim
+                if current_joints[i] > max_lim: current_joints[i] = max_lim
 
-    final_error = np.linalg.norm(error_vector)
-    if final_error < 0.1: 
-        return current_joints, final_error
-        
+        final_error = np.linalg.norm(error_vector)
+        if final_error < 0.1: 
+            return current_joints, final_error
+            
+    # 如果經過重試仍無法收斂，才回傳 None
     return None, None
 
 def forward_kinematics_all(joint_angles):

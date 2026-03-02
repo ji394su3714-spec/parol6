@@ -135,35 +135,58 @@ void setup() {
 }
 
 void processCommand() {
-    // E-STOP 檢查
+    // 1. E-STOP 檢查
     if (strncmp(tempChars, "STOP", 4) == 0) {
         for(int i = 0; i < 6; i++) {
             homingState[i] = 0;  
             steppers[i]->doSteps(0);
         }
         normalMoveActive = false;
-        Serial.println("!!! E-STOP !!!");
+        Serial.println("!!! E-STOP TRIGGERED !!!");
         return;
     }
 
-    // 解析 6 個角度
+    // 🌟 [新增] 嚴格封包驗證機制
+    float tempParsed[6] = {0.0};
+    float speedFactor = 1.0; 
+    int parseCount = 0; // 記錄成功解析了幾個數字
+
     char * strtokIndx = strtok(tempChars, ",");
-    if(strtokIndx != NULL) receivedAngles[0] = atof(strtokIndx);
+    if(strtokIndx != NULL) {
+        tempParsed[0] = atof(strtokIndx);
+        parseCount++;
+    }
+    
     for(int i = 1; i < 6; i++) {
         strtokIndx = strtok(NULL, ",");
-        if(strtokIndx != NULL) receivedAngles[i] = atof(strtokIndx);
+        if(strtokIndx != NULL) {
+            tempParsed[i] = atof(strtokIndx);
+            parseCount++;
+        }
     }
 
-    // 解析第 7 個參數：全局速度比例 (預設 1.0 = 100%)
-    float speedFactor = 1.0; 
+    // 嘗試解析第 7 個參數 (速度比例)
     strtokIndx = strtok(NULL, ",");
     if(strtokIndx != NULL) {
         float parsedVal = atof(strtokIndx);
         if (parsedVal > 0.0 && parsedVal <= 1.0) speedFactor = parsedVal;
+        parseCount++; // 這個參數可有可無，所以 parseCount 可能是 6 或 7
+    }
+
+    // ⛔ 核心防護：如果解析不到 6 個關節數值，代表封包破裂！
+    if (parseCount < 6) {
+        Serial.print("[HW Error] Dropped corrupted packet: ");
+        Serial.println(tempChars);
+        return; // 直接中斷，保護硬體不暴衝到 0.0！
+    }
+
+    // ✅ 確認封包完整安全後，才正式賦值給全域變數
+    for(int i = 0; i < 6; i++) {
+        receivedAngles[i] = tempParsed[i];
     }
 
     bool homingTriggered = false;
-
+    
     // 歸零觸發
     for (int i = 0; i < 6; i++) {
         if (receivedAngles[i] == 999.0) {

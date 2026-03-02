@@ -41,7 +41,8 @@ class RobotGUI(QMainWindow):
         
         # 硬體修正矩陣
         self.T_hw_fix = np.eye(4)
-        self.T_hw_fix[2, 3] = -0.0236 
+        # 如果 config 裡沒有這個變數，提供預設值 -0.0236 作為保險
+        self.T_hw_fix[2, 3] = getattr(config, 'HW_Z_OFFSET', -0.0236)
         
         self.path_manager = PathManager(parent=self)
         self.path_manager.log_signal.connect(self.log)
@@ -51,7 +52,7 @@ class RobotGUI(QMainWindow):
         self.setStyleSheet(styles.get_global_style())
 
         self.setup_ui()
-        QTimer.singleShot(100, self.reposition_overlays)
+        QTimer.singleShot(10, self.reposition_overlays)
         
         self.log("System Initialized.")
         
@@ -674,21 +675,29 @@ class RobotGUI(QMainWindow):
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         self.log_widget.append_log(f"[{timestamp}] {message}") 
 
+    
     def on_manager_update_joints(self, joints):
         # 1. 打開防護罩：告訴系統「現在是動畫在跑，絕對不准發送 Serial 碎指令！」
         self.is_animating = True 
         
         self.current_joints = joints
         for i, angle in enumerate(self.current_joints):
-            # 這行會轉動滑桿、更新 3D 畫面，但因為有防護罩，指令會被 on_control_finished 擋下來
+            # 這行會轉動滑桿
             self.joint_rows[i].set_value(angle) 
             
-        # 2. 畫面更新完畢，關閉防護罩：恢復您手動拖曳滑桿的功能
+        # 2. 畫面更新完畢，關閉防護罩
         self.is_animating = False
             
         user_offset = self.tcp_manager.get_active_matrix()
         self.sim.update_simulation(self.current_joints, user_offset)
-        self.update_monitor()
+        self.update_monitor() # 更新 XYZ/RPY 數值
+        
+        # 🌟【修改這裡】：如果現在正在跑自動路徑，UI 只負責更新畫面，不發送硬體指令！
+        # 這樣就不會跟 PathManager 的指令打架了
+        if self.path_manager.worker and self.path_manager.worker.isRunning():
+            return 
+            
+        # 只有在手動 Jogging 或點擊預覽時，才由 UI 發送指令
         self.serial_manager.send_joints(self.current_joints)
 
     def refresh_waypoint_list(self):
