@@ -1,102 +1,294 @@
-#include <Arduino.h>
-#include <MobaTools.h>
+/*
+ * PAROL6 Controller - Fysetc F6 (MobaTools Version)
+ * 特色：平方比例 Ramp 修正、Debounce 濾波、0距離卡死防護
+ */
 
-struct AxisConfig {byte step, dir, limit; int speed, ramp; long bounce; int homeDir; const char* name;
+#include <Arduino.h>
+#include <MobaTools.h> 
+
+struct JointConfig {
+    byte stepPin; byte dirPin; byte enPin; byte limitPin; bool limitActiveState;
+    float homingSpeed; float homingPos; long maxSpeedSteps10; int rampSteps;        
 };
 
-// --- 固定參數區 ---
-const AxisConfig cfgJ4 = {3, 6, A1, 200, 100, 2650, -1, "J4"};
-const AxisConfig cfgJ5 = {12, 13, A0, 200, 100, 0, -1, "J5"};
-const AxisConfig cfgJ6 = {4, 7, A3, 400, 200, -4000, 1, "J6"};
+const JointConfig JOINTS[6] = {
+    {54, 55, 38, 0,  LOW,  0,     0, 15000,  300},  // J1
+    {60, 61, 56, 63, HIGH, -700,  50, 20000, 400},  // J2
+    {43, 48, 58, 15, HIGH,  700, -70, 20000, 400},  // J3
+    {26, 28, 24, 0,  LOW,  0,     0, 15000,  200},  // J4
+    {36, 34, 30, 0,  HIGH, 0,     0, 15000,  200},  // J5
+    {59, 57, 40, 0,  LOW,  0,     0, 20000,  400}   // J6
+};
 
-const byte J6_ENABLE = 8;
-MoToStepper M4(1600, STEPDIR), M6(1600, STEPDIR), M5(1600, STEPDIR);
+const byte LED_PIN = 13;
+const float MICROSTEPS = 8.0;
+const float MOTOR_STEPS = 200.0; 
+const float GEAR_RATIOS[6] = {6.4, 20.0, 18.1, 4.0, 4.0, 10.0};
 
-// --- 具備二次偵測功能的歸零函式 ---
-void executeHoming(MoToStepper &stepper, const AxisConfig &cfg) {
-    Serial.print(F(">> Homing ")); Serial.println(cfg.name);
-    
-    // --- 第一階段：快速搜尋 ---
-    stepper.setSpeed(cfg.speed); 
-    stepper.rotate(cfg.homeDir);
-    while (digitalRead(cfg.limit) == LOW); 
-    stepper.stop();
-    while (stepper.moving());
+MoToStepper M1(200, STEPDIR);
+MoToStepper M2(200, STEPDIR);
+MoToStepper M3(200, STEPDIR);
+MoToStepper M4(200, STEPDIR);
+MoToStepper M5(200, STEPDIR);
+MoToStepper M6(200, STEPDIR);
 
-    // --- 第二階段：小幅回彈 ---
-    // 往搜尋方向的反向移動 200 步
-    stepper.move(cfg.homeDir * -200); 
-    while (stepper.moving());
+MoToStepper* steppers[6] = {&M1, &M2, &M3, &M4, &M5, &M6};
 
-    // --- 第三階段：二次偵測 ---
-    stepper.setSpeed(100); // 提升精準度
-    stepper.rotate(cfg.homeDir);
-    while (digitalRead(cfg.limit) == LOW); 
-    stepper.stop();
-    while (stepper.moving());
+// 歸零狀態機
+byte homingState[6] = {0, 0, 0, 0, 0, 0}; 
 
-    // --- 第四階段：正式歸位 ---
-    if (cfg.bounce != 0) {
-        stepper.setSpeed(cfg.speed); // 恢復正常速度
-        stepper.move(cfg.bounce);
-        while (stepper.moving());
-    }
-    
-    stepper.setZero();
-    Serial.print(cfg.name); Serial.println(F(" OK."));
+// 追蹤「一般移動」是否進行中
+bool normalMoveActive = false;
+
+const byte numChars = 128;
+char receivedChars[numChars];
+char tempChars[numChars];
+float receivedAngles[6] = {0.0};
+boolean newData = false;
+
+float getStepsPerDeg(int axis) {
+    return (MOTOR_STEPS * MICROSTEPS * GEAR_RATIOS[axis]) / 360.0;
 }
 
-void setup() {
-    Serial.begin(9600);
-    pinMode(J6_ENABLE, OUTPUT);
-    digitalWrite(J6_ENABLE, LOW);
+bool isAnyHoming() {
+    for(int i = 0; i < 6; i++) {
+        if(homingState[i] != 0) return true;
+    }
+    return false;
+}
 
-    // 初始化 Pin 腳
-    pinMode(cfgJ4.limit, INPUT_PULLUP);
-    M4.attach(cfgJ4.step, cfgJ4.dir); M4.setRampLen(cfgJ4.ramp);
-    pinMode(cfgJ6.limit, INPUT_PULLUP);
-    M6.attach(cfgJ6.step, cfgJ6.dir); M6.setRampLen(cfgJ6.ramp);
-    pinMode(cfgJ5.limit, INPUT_PULLUP);
-    M5.attach(cfgJ5.step, cfgJ5.dir); M5.setRampLen(cfgJ5.ramp);
+// 歸零邏輯狀態機
+void updateHomingLogic() {
+    for (int i = 0; i < 6; i++) {
+        
+        // 狀態 1：正在尋找開關
+        if (homingState[i] == 1 && JOINTS[i].limitPin != 0) {
+            // 第一次讀取到觸發電位
+            if (digitalRead(JOINTS[i].limitPin) == JOINTS[i].limitActiveState) {
+                // 軟體防雜訊濾波 (Debounce)
+                delay(3); 
+                // 第二次確認
+                if (digitalRead(JOINTS[i].limitPin) == JOINTS[i].limitActiveState) {
+                    steppers[i]->setRampLen(0);
+                    steppers[i]->doSteps(0); 
+                    homingState[i] = 2; 
+                }
+            } 
+        }
+        // 狀態 2：急停完畢，等待同步退回 Offset
+        else if (homingState[i] == 2) {
+            if (!steppers[i]->moving()) {
+                bool readyToOffset = true;
+                
+                if (i == 1) { 
+                    if (homingState[2] == 1 || (homingState[2] == 2 && steppers[2]->moving())) readyToOffset = false;
+                } 
+                else if (i == 2) { 
+                    if (homingState[1] == 1 || (homingState[1] == 2 && steppers[1]->moving())) readyToOffset = false;
+                }
 
-    Serial.println(F("Ready. Input 'H' to start Homing..."));
-    
-    while (true) {
-        if (Serial.available() > 0) {
-            char cmd = Serial.read();
-            if (cmd == 'H' || cmd == 'h') break;
+                if (readyToOffset) {
+                    steppers[i]->setRampLen(JOINTS[i].rampSteps);
+                    steppers[i]->setSpeedSteps(JOINTS[i].maxSpeedSteps10);
+                    long offsetSteps = JOINTS[i].homingPos * getStepsPerDeg(i);
+                    steppers[i]->doSteps(offsetSteps); 
+                    homingState[i] = 3; 
+                }
+            }
+        }
+        // 狀態 3：Offset 退回完畢
+        else if (homingState[i] == 3) {
+            if (!steppers[i]->moving()) {
+                steppers[i]->setZero(0); 
+                steppers[i]->writeSteps(0); 
+                homingState[i] = 0;
+                Serial.print(">>> Axis "); Serial.print(i + 1);
+                Serial.println(" Homing Done (At True Zero) <<<");
+            }
         }
     }
 
-    // 依序執行二次偵測歸零
-    executeHoming(M4, cfgJ4);
-    executeHoming(M6, cfgJ6);
-    executeHoming(M5, cfgJ5);
+    // 所有軸歸零完畢時，送出專屬完成訊號
+    static bool wasHoming = false;
+    bool stillHoming = isAnyHoming();
+    if (wasHoming && !stillHoming) {
+        Serial.println("HomingDone");  
+    }
+    wasHoming = stillHoming;
+}
 
-    // 同步位移
-    M6.setSpeed(cfgJ6.speed); M5.setSpeed(cfgJ5.speed);
-    M6.move(4000); M5.move(2200); 
-    while (M6.moving() || M5.moving());
-    M6.setZero(); M5.setZero();
+void setup() {
+    Serial.begin(250000);
+    pinMode(LED_PIN, OUTPUT);
 
-    Serial.println(F("--- Online ---"));
+    for (int i = 0; i < 6; i++) {
+        steppers[i]->attach(JOINTS[i].stepPin, JOINTS[i].dirPin);
+        pinMode(JOINTS[i].enPin, OUTPUT);
+        digitalWrite(JOINTS[i].enPin, LOW); 
+        if (JOINTS[i].limitPin != 0) {
+            pinMode(JOINTS[i].limitPin, INPUT_PULLUP);
+        }
+        steppers[i]->setSpeedSteps(JOINTS[i].maxSpeedSteps10);
+        steppers[i]->setRampLen(JOINTS[i].rampSteps); 
+    }
+    Serial.println("<F6 Unified (MobaTools Auto-Sync) Ready>");
+}
+
+void processCommand() {
+    // E-STOP 檢查
+    if (strncmp(tempChars, "STOP", 4) == 0) {
+        for(int i = 0; i < 6; i++) {
+            homingState[i] = 0;  
+            steppers[i]->doSteps(0);
+        }
+        normalMoveActive = false;
+        Serial.println("!!! E-STOP !!!");
+        return;
+    }
+
+    // 解析 6 個角度
+    char * strtokIndx = strtok(tempChars, ",");
+    if(strtokIndx != NULL) receivedAngles[0] = atof(strtokIndx);
+    for(int i = 1; i < 6; i++) {
+        strtokIndx = strtok(NULL, ",");
+        if(strtokIndx != NULL) receivedAngles[i] = atof(strtokIndx);
+    }
+
+    // 解析第 7 個參數：全局速度比例 (預設 1.0 = 100%)
+    float speedFactor = 1.0; 
+    strtokIndx = strtok(NULL, ",");
+    if(strtokIndx != NULL) {
+        float parsedVal = atof(strtokIndx);
+        if (parsedVal > 0.0 && parsedVal <= 1.0) speedFactor = parsedVal;
+    }
+
+    bool homingTriggered = false;
+
+    // 歸零觸發
+    for (int i = 0; i < 6; i++) {
+        if (receivedAngles[i] == 999.0) {
+            if (JOINTS[i].limitPin != 0) {
+                if (homingState[i] == 0) {
+                    homingState[i] = 1; 
+                    steppers[i]->setRampLen(0); 
+                    long homingSpd = abs(JOINTS[i].homingSpeed) * 10;
+                    steppers[i]->setSpeedSteps(homingSpd);
+                    int dir = (JOINTS[i].homingSpeed > 0) ? 1 : -1;
+                    steppers[i]->rotate(dir); 
+                    Serial.print(">>> Homing Start: J"); Serial.println(i + 1);
+                }
+                homingTriggered = true; 
+            } 
+        }
+    }
+
+    // 一般移動 (自動尋找瓶頸並同步到達)
+    if (!isAnyHoming() && !homingTriggered) {
+        
+        long deltaSteps[6] = {0};
+        float timeNeeded[6] = {0.0};
+        float maxTime = 0.0;
+
+        for (int i = 0; i < 6; i++) {
+            if (receivedAngles[i] != 999.0) {
+                long targetSteps = receivedAngles[i] * getStepsPerDeg(i);
+                deltaSteps[i] = abs(targetSteps - steppers[i]->currentPosition());
+                float currentMaxSpeedSec = (JOINTS[i].maxSpeedSteps10 * speedFactor) / 10.0;
+                if (currentMaxSpeedSec > 0 && deltaSteps[i] > 0) {
+                    timeNeeded[i] = deltaSteps[i] / currentMaxSpeedSec;
+                    if (timeNeeded[i] > maxTime) maxTime = timeNeeded[i]; 
+                }
+            }
+        }
+
+        for (int i = 0; i < 6; i++) {
+            if (receivedAngles[i] != 999.0) {
+                long targetSteps = receivedAngles[i] * getStepsPerDeg(i);
+                if (maxTime > 0.0 && deltaSteps[i] > 0) {
+                    float syncStepsPerSec = deltaSteps[i] / maxTime;
+                    long mobaSpeed = (long)(syncStepsPerSec * 10.0);
+                    if (mobaSpeed < 1) mobaSpeed = 1; 
+                    steppers[i]->setSpeedSteps(mobaSpeed);
+                    
+                    float speedRatio = (float)mobaSpeed / (float)JOINTS[i].maxSpeedSteps10;
+                    // 🌟 採用您完美的 v^2 運動學公式
+                    int dynamicRamp = (int)(JOINTS[i].rampSteps * speedRatio * speedRatio);
+                    if (dynamicRamp < 5) dynamicRamp = 0;
+                    steppers[i]->setRampLen(dynamicRamp);
+                } else {
+                    steppers[i]->setSpeedSteps(JOINTS[i].maxSpeedSteps10);
+                    steppers[i]->setRampLen(JOINTS[i].rampSteps);
+                }
+                steppers[i]->writeSteps(targetSteps); 
+            }
+        }
+        normalMoveActive = true;
+        Serial.println("OK"); 
+    }
+}
+
+void recvWithStartEndMarkers() {
+    static boolean recvInProgress = false;
+    static byte ndx = 0;
+    char startMarker = '<';
+    char endMarker = '>';
+    char rc;
+
+    while (Serial.available() > 0 && newData == false) {
+        rc = Serial.read();
+        if (recvInProgress == true) {
+            if (rc != endMarker) {
+                receivedChars[ndx] = rc;
+                ndx++;
+                if (ndx >= numChars) ndx = numChars - 1;
+            } else {
+                receivedChars[ndx] = '\0';
+                recvInProgress = false;
+                ndx = 0;
+                newData = true;
+            }
+        } else if (rc == startMarker) recvInProgress = true;
+    }
 }
 
 void loop() {
-    if (Serial.available() > 0) {
-        String input = Serial.readStringUntil('\n');
-        input.trim();
-        Serial.print(F("> Cmd: ")); Serial.println(input); // 讓你知道有收到字
-        input.toUpperCase();
+    recvWithStartEndMarkers();
+    if (newData) {
+        strcpy(tempChars, receivedChars);
+        processCommand();
+        newData = false;
+    }
 
-        int spaceIdx = input.indexOf(' ');
-        if (spaceIdx == -1) return;
+    updateHomingLogic();
 
-        String axis = input.substring(0, spaceIdx);
-        long steps = input.substring(spaceIdx + 1).toInt();
+    for(int i = 0; i < 6; i++) digitalWrite(JOINTS[i].enPin, LOW);
 
-        if (axis == "J4") { M4.move(steps); }
-        else if (axis == "J6") { M6.move(steps); }
-        else if (axis == "J5") { M5.move(steps); }
+    bool isMoving = false; 
+    for (int i = 0; i < 6; i++) {
+        if (steppers[i]->moving()) {
+            isMoving = true;
+            break; 
+        }
+    }
+
+    if (normalMoveActive) {
+        // 🌟 改良：不論剛走完，還是 0 距離沒動，只要 isMoving 是 false 就回報 Done
+        if (!isMoving) {
+            Serial.println("Done");      
+            normalMoveActive = false;    
+        }
+    }
+
+    // LED 狀態指示
+    static unsigned long lastLedToggle = 0;
+    const unsigned long LED_BLINK_INTERVAL = 500UL;
+
+    if (isMoving) {
+        if (millis() - lastLedToggle >= LED_BLINK_INTERVAL) {
+            lastLedToggle = millis();
+            digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+        }
+    } else {
+        digitalWrite(LED_PIN, HIGH);  
     }
 }
