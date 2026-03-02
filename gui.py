@@ -750,7 +750,7 @@ class RobotGUI(QMainWindow):
             # 如果算完發現沒有點 (或不到兩個點)，就傳送空陣列把線清掉
             self.sim.draw_trajectory([])
 
-    # --- 觸發路徑執行函式 ---
+        # --- 觸發路徑執行函式 ---
     def trigger_run_path(self, loop=False):
         """觸發執行記錄的路徑"""
         if self.path_manager.worker and self.path_manager.worker.isRunning():
@@ -764,9 +764,15 @@ class RobotGUI(QMainWindow):
             
         self.log(f"Starting path execution... (Loop: {loop})")
 
+        # 【新增這兩行】：抓取目前的使用者 TCP 與硬體修正量
+        user_offset = self.tcp_manager.get_active_matrix()
+        T_total_offset = self.T_hw_fix @ user_offset
+
         if hasattr(self.path_manager, 'run_path'):
-            self.path_manager.run_path(self.current_joints, loop=loop)
+            # 【修改這行】：把 tcp_offset 傳進去
+            self.path_manager.run_path(self.current_joints, loop=loop, tcp_offset=T_total_offset)
         elif hasattr(self.path_manager, 'execute_path'):
-            self.path_manager.execute_path(self.current_joints, loop=loop)
+            # 【修改這行】：把 tcp_offset 傳進去
+            self.path_manager.execute_path(self.current_joints, loop=loop, tcp_offset=T_total_offset)
         else:
             self.log("[Error] Cannot find the run method in path_manager!")
