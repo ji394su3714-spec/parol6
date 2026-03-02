@@ -10,7 +10,29 @@
                 0.0,
                 180.0
             ]
+        },
+        {
+            "name": "Flange",
+            "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+            ]
+        },
+        {
+            "name": "Gripper front",
+            "values": [
+                0.0,
+                0.0,
+                23.6,
+                0.0,
+                0.0,
+                0.0
+            ]
         }
     ],
-    "current_index": 0
+    "current_index": 1
 }

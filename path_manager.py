@@ -1,4 +1,4 @@
-# path_manager.py
+#path_manager.py
 import json
 import time
 import numpy as np
@@ -13,53 +13,67 @@ class PTPExecutor(QThread):
     update_signal = pyqtSignal(list)
     finished_signal = pyqtSignal()
     
-    def __init__(self, start_joints, end_joints, duration=2.0):
+    def __init__(self, start_joints, end_joints, serial_ref=None, speed_factor=1.0, animation_time=1.0):
         super().__init__()
         self.start_joints = np.array(start_joints)
         self.end_joints = np.array(end_joints)
-        self.duration = duration
+        self.serial_ref = serial_ref
+        self.speed_factor = speed_factor
+        self.animation_time = animation_time
 
     def run(self):
-        effective_duration = max(0.1, self.duration)
-        steps = int(effective_duration * 30)
+        # 1. 【硬體端：發送指令】
+        if self.serial_ref and self.serial_ref.is_connected:
+            # 開跑前先清空舊的到位旗標
+            if hasattr(self.serial_ref, 'motion_done_event'):
+                self.serial_ref.motion_done_event.clear()
+            self.serial_ref.send_joints(list(self.end_joints), self.speed_factor)
+
+        # 2. 【軟體端：乖乖播完 UI 動畫】(不提早打斷，避免滑桿瞬間跳躍引發爆衝)
+        effective_duration = max(0.1, self.animation_time)
+        steps = int(effective_duration * 30) 
+        
         for i in range(steps + 1):
             t = i / steps
             current = self.start_joints + (self.end_joints - self.start_joints) * t
-            self.update_signal.emit(list(current))
+            self.update_signal.emit(list(current)) 
             time.sleep(effective_duration / steps)
         
+        # 3. 【等待硬體到位】(動畫播完後，如果硬體還沒到就乖乖等它)
+        if self.serial_ref and self.serial_ref.is_connected:
+            if hasattr(self.serial_ref, 'wait_for_motion_complete'):
+                self.serial_ref.wait_for_motion_complete(timeout=60.0)
+            
         self.finished_signal.emit()
 
-# --- 2. LIN 執行器 (笛卡爾直線插值) ---
+# --- 2. LIN 執行器 ---
 class CartesianExecutor(QThread):
     update_signal = pyqtSignal(list)
     finished_signal = pyqtSignal()
     error_signal = pyqtSignal(str)
 
-    # 接收 tcp_offset_mat
-    def __init__(self, start_joints, target_joints, tcp_offset_mat, duration=2.0):
+    def __init__(self, start_joints, target_joints, tcp_offset_mat, serial_ref=None, speed_factor=1.0, animation_time=2.0):
         super().__init__()
         self.start_joints = np.array(start_joints)
         self.target_joints = np.array(target_joints)
         self.tcp_offset_mat = tcp_offset_mat if tcp_offset_mat is not None else np.eye(4)
-        self.duration = duration
+        self.speed_factor = speed_factor
+        self.animation_time = animation_time
+        self.serial_ref = serial_ref
 
     def run(self):
-        # 1. 計算 TCP 的反矩陣 (用來最後推回法蘭面)
         try:
             tcp_inv = np.linalg.inv(self.tcp_offset_mat)
         except:
             self.error_signal.emit("Invalid TCP Matrix")
             return
 
-        # 2. 計算 起點 與 終點 的【TCP 絕對座標】
         T_flange_start = kinematics.forward_kinematics(self.start_joints)
         T_tcp_start = T_flange_start @ self.tcp_offset_mat
         
         T_flange_end = kinematics.forward_kinematics(self.target_joints)
         T_tcp_end = T_flange_end @ self.tcp_offset_mat
         
-        # 提取 TCP 的位置與旋轉
         pos_start = T_tcp_start[:3, 3]
         pos_end = T_tcp_end[:3, 3]
         
@@ -72,17 +86,15 @@ class CartesianExecutor(QThread):
             self.error_signal.emit(f"Slerp Init Failed: {e}")
             return
 
-        effective_duration = max(0.1, self.duration)
+        # 決定動畫時間
+        effective_duration = max(0.1, self.animation_time)
         steps = int(effective_duration * 30)
         
         current_seed = self.start_joints.copy()
         import config
         for i in range(steps + 1):
             t = i / steps 
-            
-            # 插補 TCP 位置 (直線)
             curr_pos = pos_start + (pos_end - pos_start) * t
-            
             curr_rot = slerp([t]).as_matrix()[0]
             
             T_tcp_target = np.eye(4)
@@ -93,23 +105,31 @@ class CartesianExecutor(QThread):
             ik_result, error = kinematics.inverse_kinematics(T_flange_target, current_seed)
             
             if ik_result is not None:
-                # --- LIN 模式精度驗證 ---
                 T_check = kinematics.forward_kinematics(ik_result)
                 dist_err = np.linalg.norm(T_check[:3, 3] - T_flange_target[:3, 3]) * 1000.0
                 
                 if dist_err > config.IK_POS_TOLERANCE:
                     self.error_signal.emit(f"LIN Accuracy Error: {dist_err:.3f}mm at step {i}")
-                    return # 強制停止
-                # -------------------------------
-
+                    return 
                 current_seed = ik_result
+                
+                # 1. 更新 UI 畫面
                 self.update_signal.emit(list(ik_result))
+                
+                # 2. 🌟 【新增】：因為防護罩擋住了 UI，我們必須在這裡手動把碎點傳給 Arduino！
+                if self.serial_ref and self.serial_ref.is_connected:
+                    self.serial_ref.send_joints(list(ik_result), self.speed_factor)
+                    
             else:
                 self.error_signal.emit(f"LIN Error: Unreachable at step {i}")
                 return
 
             time.sleep(effective_duration / steps)
-        
+            
+        if self.serial_ref and self.serial_ref.is_connected:
+             if hasattr(self.serial_ref, 'wait_for_motion_complete'):
+                self.serial_ref.wait_for_motion_complete(timeout=10.0)
+
         self.finished_signal.emit()
 
 # --- PathManager (邏輯核心) ---
@@ -129,9 +149,13 @@ class PathManager(QObject):
         self.is_looping = False
         self.global_speed = 1.0 
         self.current_tcp_offset = np.eye(4)
+        
+        self.serial_manager = None
+        if hasattr(parent, 'serial_manager'):
+            self.serial_manager = parent.serial_manager
 
     # --- 數據管理 ---
-    def record_point(self, current_joints, delay=0.0, move_type="PTP"):
+    def record_point(self, current_joints, delay=0.0, move_type="PTP", speed=50.0):
         idx = len(self.waypoints) + 1
         name = f"Point {idx}"
         data = {
@@ -139,6 +163,7 @@ class PathManager(QObject):
             "joints": list(current_joints),
             "delay": float(delay),
             "type": move_type,
+            "speed": float(speed), # 將速度存入字典
             "active": True,
             "note": ""
         }
@@ -191,6 +216,8 @@ class PathManager(QObject):
                     for pt in self.waypoints:
                         if 'active' not in pt: pt['active'] = True
                         if 'type' not in pt: pt['type'] = "PTP"
+                        # 【新增】防呆機制：如果讀取舊存檔沒有速度，自動補上 50.0
+                        if 'speed' not in pt: pt['speed'] = 50.0
                 
                 self.list_update_signal.emit()
                 self.log_signal.emit(f"Path loaded from {filename}")
@@ -211,8 +238,6 @@ class PathManager(QObject):
 
         self.is_looping = loop
         self.execution_queue = active_points
-        
-        # 儲存傳進來的 Offset (如果沒有就用單位矩陣)
         self.current_tcp_offset = tcp_offset if tcp_offset is not None else np.eye(4)
         
         self.log_signal.emit(f"([START]) Executing {len(active_points)} points...")
@@ -233,17 +258,36 @@ class PathManager(QObject):
         name = target_data.get('name', str(self.path_index))
         move_type = target_data.get('type', "PTP")
         
-        duration = 2.0 / max(0.1, self.global_speed)
         
-        self.log_signal.emit(f"Moving -> {name} ({move_type}, {duration:.1f}s)...")
+        # 1. 計算硬體要用的「實際速度比例」 (0.01 ~ 1.0)
+        point_speed_pct = target_data.get('speed', 50.0)
+        speed_factor = (point_speed_pct / 100.0) * self.global_speed
+        if speed_factor > 1.0: speed_factor = 1.0 # 最高就是 100%
         
-        # 選擇執行器
+        # 2. 計算軟體要用的「動畫播放時間」
+        base_time = 100.0 / max(1.0, point_speed_pct) 
+        animation_time = base_time / max(0.1, self.global_speed)
+        
+        self.log_signal.emit(f"Moving -> {name} ({move_type}, SPD:{speed_factor*100:.0f}%)...")
+        
         if move_type == "LIN":
-            self.worker = CartesianExecutor(current_joints, target_joints, 
-                                            self.current_tcp_offset, duration=duration)
+            self.worker = CartesianExecutor(
+                start_joints=current_joints, 
+                target_joints=target_joints, 
+                tcp_offset_mat=self.current_tcp_offset, 
+                serial_ref=self.serial_manager,  
+                speed_factor=speed_factor,     # 傳入速度比例
+                animation_time=animation_time  # 傳入動畫時間
+            )
             self.worker.error_signal.connect(self._on_worker_error)
         else:
-            self.worker = PTPExecutor(current_joints, target_joints, duration=duration)
+            self.worker = PTPExecutor(
+                start_joints=current_joints, 
+                end_joints=target_joints, 
+                serial_ref=self.serial_manager,  
+                speed_factor=speed_factor,     # 傳入速度比例
+                animation_time=animation_time  # 傳入動畫時間
+            )
             
         self.worker.update_signal.connect(self.joint_update_signal.emit)
         

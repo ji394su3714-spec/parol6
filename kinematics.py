@@ -130,3 +130,66 @@ def forward_kinematics_all(joint_angles):
         matrices.append(T_current)
         
     return matrices
+
+def calculate_jog_joints(current_joints, axis, step_val, frame, T_total_offset):
+    """
+    計算 Cartesian JOG 之後的目標關節角度。
+    
+    :param current_joints: 基礎關節角度 (list 或 array)
+    :param axis: 移動軸 ('x', 'y', 'z', 'rx', 'ry', 'rz')
+    :param step_val: 移動量包含正負號 (mm 或 degree)
+    :param frame: 座標系 ('Base' 或 'Tool')
+    :param T_total_offset: TCP 與硬體的總偏移矩陣
+    :return: (new_joints, error_msg) 成功時回傳新陣列，失敗回傳 None 與錯誤字串
+    """
+    
+    # 1. 正向運動學推算當前 TCP
+    T_math_flange = forward_kinematics(current_joints)
+    T_tcp_curr = T_math_flange @ T_total_offset
+    T_tcp_target = np.copy(T_tcp_curr)
+    T_step = np.eye(4)
+    
+    # 2. 矩陣轉換 (Base vs Tool)
+    if axis in ['x', 'y', 'z']:
+        step_m = step_val / 1000.0
+        idx = {'x': 0, 'y': 1, 'z': 2}[axis]
+        
+        if frame == "Tool":
+            T_step[idx, 3] = step_m
+            T_tcp_target = T_tcp_curr @ T_step 
+        else: # Base
+            T_tcp_target[idx, 3] += step_m     
+    else:
+        step_rad = np.deg2rad(step_val)
+        vec = np.zeros(3)
+        rot_idx = {'x': 0, 'y': 1, 'z': 2}[axis[1]] 
+        vec[rot_idx] = step_rad
+        from scipy.spatial.transform import Rotation as R
+        R_step = R.from_rotvec(vec).as_matrix()
+        
+        if frame == "Tool":
+            T_step[:3, :3] = R_step
+            T_tcp_target = T_tcp_curr @ T_step 
+        else: # Base (原地以 World 基準旋轉)
+            T_tcp_target[:3, :3] = R_step @ T_tcp_curr[:3, :3]
+
+    # 3. 逆向運動學求解
+    T_flange_target = T_tcp_target @ np.linalg.inv(T_total_offset)
+    new_joints, error_score = inverse_kinematics(T_flange_target, current_joints)
+    
+    if new_joints is None:
+        return None, "IK Failed"
+        
+    # 4. 安全性驗證 (精度與極限)
+    T_check_flange = forward_kinematics(new_joints)
+    pos_diff = np.linalg.norm(T_check_flange[:3, 3] - T_flange_target[:3, 3]) * 1000.0
+
+    if pos_diff > config.IK_POS_TOLERANCE:
+        return None, f"IK Inaccurate! Diff: {pos_diff:.3f}mm"
+
+    for i, angle in enumerate(new_joints):
+        min_lim, max_lim = config.JOINT_LIMITS[i]
+        if angle < (min_lim - 0.1) or angle > (max_lim + 0.1):
+            return None, f"Limit Hit J{i+1}"
+
+    return list(new_joints), None

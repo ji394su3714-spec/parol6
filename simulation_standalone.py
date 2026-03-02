@@ -3,6 +3,7 @@ from pyvistaqt import BackgroundPlotter
 from PyQt5.QtCore import QTimer
 import numpy as np
 import config
+import os
 import kinematics
 
 class RobotSimulation:
@@ -28,22 +29,30 @@ class RobotSimulation:
         # 初始化
         self.update_simulation([0] * 6, np.eye(4))
         
-        QTimer.singleShot(100, self.reset_camera)
+        QTimer.singleShot(10, self.reset_camera)
 
     def _load_models(self):
-        base_path = "assets/urdf/meshes/"
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        base_path = os.path.join(current_dir, "assets", "urdf", "meshes")
+        
         pbr_props = { "pbr": True, "smooth_shading": True, "split_sharp_edges": True }
         colors = ["#7f8c8d", "#bdc3c7", "#95a5a6", "#bdc3c7", "#95a5a6", "#bdc3c7", "#e74c3c"]
 
         for i, stl_name in enumerate(config.STL_FILES):
             try:
-                mesh = pv.read(f"{base_path}{stl_name}")
+                # 使用 os.path.join 組合完整路徑
+                full_path = os.path.join(base_path, stl_name)
+                
+                mesh = pv.read(full_path)
                 c = colors[i] if i < len(colors) else "white"
                 actor = self.plotter.add_mesh(mesh, color=c, **pbr_props)
                 self.actors.append(actor)
             except Exception as e:
                 print(f"Error loading {stl_name}: {e}")
+                # 為了避免 actors 數量不對導致 update_simulation 罷工，
+                # 這裡建議即使讀取失敗，也要塞一個 None 或空 Actor 佔位，或者檢查路徑是否正確
 
+                
         axes_config = [((1, 0, 0), "red"), ((0, 1, 0), "green"), ((0, 0, 1), "blue")]
         AXIS_LEN, AXIS_WIDTH, TIP_RADIUS = 0.1, 0.01, 0.03
 
@@ -87,7 +96,7 @@ class RobotSimulation:
         if tcp_offset_mat is None:
             tcp_offset_mat = np.eye(4)
 
-        # 定義硬體修正 (Hardware Fix): 真正的法蘭面位置
+        # 定義硬體修正 (Hardware Fix)
         T_hw_fix = np.eye(4)
         T_hw_fix[2, 3] = -0.0236  # Z = -23.6mm
 
@@ -111,10 +120,8 @@ class RobotSimulation:
             T_rot = kinematics.get_rotation_matrix(params['axis'], angle)
             T_current_joint = T_current_joint @ T_fixed @ T_rot
             
-            # --- 骨架邏輯修正 ---
-            if i == 5: # Link 6 (最後一軸)
-                # 骨架必須停在【物理法蘭面】(Hardware Fix)
-                # 不包含使用者設定的 TCP Offset (因為那是工具，不是骨架)
+            # --- Hardware Fix ---
+            if i == 5: # Link 6
                 T_flange_phys = T_current_joint @ T_hw_fix
                 skeleton_points.append(T_flange_phys[:3, 3])
             else:
@@ -129,8 +136,6 @@ class RobotSimulation:
             self.actors[actor_idx].SetVisibility(not self.show_skeleton)
 
         # --- 3. 更新 TCP 箭頭 ---
-        # 箭頭位置 = 物理法蘭面 (T_hw_fix) + 使用者設定的 TCP (tcp_offset_mat)
-        # 這樣當 TCP Offset = 0 時，箭頭會剛好接在骨架末端
         T_tcp_display = T_current_joint @ T_hw_fix @ tcp_offset_mat
 
         for actor in self.tcp_actors:
@@ -181,3 +186,33 @@ class RobotSimulation:
         self.plotter.reset_camera()
         if restore_floor and self.floor_actor:
             self.floor_actor.SetVisibility(True)
+    
+    def draw_trajectory(self, points):
+        """
+        在 3D 空間中畫出路徑點連線
+        :param points: 包含 [x, y, z] 的清單或 numpy array
+        """
+        # 1. 如果畫面上已經有舊的軌跡線，先把它移除
+        if hasattr(self, 'path_actor') and self.path_actor is not None:
+            self.plotter.remove_actor(self.path_actor)
+            self.path_actor = None
+            
+        # 2. 如果點不到 2 個（無法連成線），就直接結束
+        if not points or len(points) < 2:
+            return
+            
+        # 3. 把座標轉換為 PyVista 吃的 numpy 格式
+        points_array = np.array(points)
+        
+        # 4. 建立連續線段 (PolyData)
+        path_line = pv.lines_from_points(points_array)
+        
+        # 5. 加入到 plotter 中，設定顏色、線寬
+        # 使用 name 參數可以確保如果重複加入，PyVista 會自動覆蓋同名的物件
+        self.path_actor = self.plotter.add_mesh(
+            path_line, 
+            color='white', 
+            line_width=2, 
+            name='robot_trajectory',
+            reset_camera=False   #
+        )

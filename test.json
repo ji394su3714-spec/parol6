@@ -1,0 +1,114 @@
+[
+    {
+        "name": "Point 1",
+        "joints": [
+            18.95,
+            21.84,
+            63.78,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "delay": 0.0,
+        "type": "PTP",
+        "active": true,
+        "note": "",
+        "speed": 50.0
+    },
+    {
+        "name": "Point 2",
+        "joints": [
+            18.95,
+            21.84,
+            63.78,
+            120.0,
+            0.0,
+            0.0
+        ],
+        "delay": 0.0,
+        "type": "PTP",
+        "active": true,
+        "note": "",
+        "speed": 50.0
+    },
+    {
+        "name": "Point 3",
+        "joints": [
+            -82.89,
+            21.84,
+            63.78,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "delay": 0.0,
+        "type": "PTP",
+        "active": true,
+        "note": "",
+        "speed": 50.0
+    },
+    {
+        "name": "Point 4",
+        "joints": [
+            -154.74,
+            8.16,
+            -12.73,
+            180.0,
+            0.0,
+            0.0
+        ],
+        "delay": 0.0,
+        "type": "PTP",
+        "active": true,
+        "note": "",
+        "speed": 50.0
+    },
+    {
+        "name": "Point 5",
+        "joints": [
+            -82.89,
+            29.74,
+            -35.12,
+            -88.97,
+            0.0,
+            0.0
+        ],
+        "delay": 0.0,
+        "type": "PTP",
+        "active": true,
+        "note": "",
+        "speed": 50.0
+    },
+    {
+        "name": "Point 6",
+        "joints": [
+            -82.89,
+            29.74,
+            -35.12,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "delay": 0.0,
+        "type": "PTP",
+        "active": true,
+        "note": "",
+        "speed": 50.0
+    },
+    {
+        "name": "Point 7",
+        "joints": [
+            -82.89,
+            29.74,
+            -35.12,
+            90.0,
+            0.0,
+            0.0
+        ],
+        "delay": 0.0,
+        "type": "PTP",
+        "active": true,
+        "note": "",
+        "speed": 50.0
+    }
+]

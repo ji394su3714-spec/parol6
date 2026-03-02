@@ -13,7 +13,7 @@ COLOR_RED = "#c0392b"
 COLOR_ORANGE = "#f39c12"
 COLOR_PURPLE = "#8e44ad"
 
-# --- 自動生成圖示 Helper (維持不動) ---
+# --- 自動生成圖示 Helper ---
 def _get_file_icon_url(icon_name, filename, color='#2c3e50'):
     base_dir = os.path.dirname(__file__) 
     icon_dir = os.path.join(base_dir, 'icons')
@@ -25,8 +25,7 @@ def _get_file_icon_url(icon_name, filename, color='#2c3e50'):
     clean_path = file_path.replace('\\', '/')
     return f"url('{clean_path}')"
 
-# --- 樣式定義區 ---
-
+# --- 全域樣式 ---
 def get_global_style():
     url_up = _get_file_icon_url('fa5s.chevron-up', 'chevron_up.png')
     url_down = _get_file_icon_url('fa5s.chevron-down', 'chevron_down.png')
@@ -39,12 +38,12 @@ def get_global_style():
         
         QLabel {{ color: #333; }}
         
-        /* 輸入框 */
-        QDoubleSpinBox {{
+        /* 輸入框與下拉選單共用 */
+        QDoubleSpinBox, QComboBox {{
             border: 2px solid #bdc3c7; border-radius: 6px; padding: 0px 3px;
             background-color: #fdfdfd; color: #2c3e50;
         }}
-        QDoubleSpinBox:focus {{ border: 2px solid {COLOR_ACCENT}; background-color: #ffffff; }}
+        QDoubleSpinBox:focus, QComboBox:focus {{ border: 2px solid {COLOR_ACCENT}; background-color: #ffffff; }}
         
         QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
             width: 25px; background-color: #ecf0f1; border: none; border-radius: 3px; margin: 2px;
@@ -53,12 +52,6 @@ def get_global_style():
         QDoubleSpinBox::up-arrow {{ image: {url_up}; width: 16px; height: 16px; }}
         QDoubleSpinBox::down-arrow {{ image: {url_down}; width: 16px; height: 16px; }}
 
-        /* 下拉選單 */
-        QComboBox {{
-            border: 2px solid #bdc3c7; border-radius: 6px; padding: 0px 3px;
-            background-color: #fdfdfd; color: #2c3e50;
-        }}
-        QComboBox:focus {{ border: 2px solid {COLOR_ACCENT}; background-color: #ffffff; }}
         QComboBox::drop-down {{
             subcontrol-origin: padding; subcontrol-position: top right;
             width: 25px; border: none; background-color: #ecf0f1; 
@@ -66,21 +59,53 @@ def get_global_style():
         QComboBox::down-arrow {{ image: {url_down}; width: 16px; height: 16px; }}
     """
 
+# --- 連線區域樣式 ---
+COMBO_PORT_STYLE = """
+    QComboBox { font-size: 20px; padding: 5px; border-radius: 4px; background: white; }
+    QComboBox::drop-down { border: 0px; }
+"""
+BTN_REFRESH_STYLE = """
+    QPushButton { background-color: #7f8c8d; border-radius: 4px; border: none; }
+    QPushButton:hover { background-color: #95a5a6; }
+    QPushButton:pressed { background-color: #5d6d7e; }
+"""
+# 未連線 (綠色)
+BTN_CONNECT_STYLE = """
+    QPushButton { 
+        background-color: #27ae60; color: white; font-weight: bold; 
+        padding: 0px 15px; border-radius: 4px; font-size: 16px; border: none;
+    }
+    QPushButton:hover { background-color: #2ecc71; }
+"""
+# 已連線 (紅色)
+BTN_DISCONNECT_STYLE = """
+    QPushButton { 
+        background-color: #c0392b; color: white; font-weight: bold; 
+        padding: 0px 15px; border-radius: 4px; font-size: 16px; border: none;
+    }
+    QPushButton:hover { background-color: #e74c3c; }
+"""
+
 # --- JOG 區塊樣式 ---
 BTN_JOG_STYLE = """
     QPushButton { 
         font-weight: bold; font-size: 24px; 
         background-color: #e0e0e0; border: 1px solid #999; border-radius: 5px; 
-        min-width: 125px; max-width: 125px;
-        min-height: 50px; max-height: 50px;
+        width: 125px; height: 50px;
     }
     QPushButton:hover { background-color: #d5d5d5; }
     QPushButton:pressed { background-color: #bbb; }
 """
 
-BTN_UNDO_STYLE = """
-    QPushButton { border: 1px solid #bdc3c7; border-radius: 4px; background-color: #ecf0f1; }
-    QPushButton:hover { background-color: #d5d5d5; }
+# 1. 關節微調按鈕 (小巧灰白色)
+BTN_JOINT_MINUS_PLUS = """
+    QPushButton {
+        font-weight: bold; font-size: 32px; color: #2c3e50;
+        background-color: #ecf0f1; border: 1px solid #bdc3c7; border-radius: 4px;
+        width: 36px; height: 36px;
+    }
+    QPushButton:hover { background-color: #bdc3c7; }
+    QPushButton:pressed { background-color: #95a5a6; }
 """
 
 # --- Top Bar 相關樣式 ---
@@ -100,6 +125,7 @@ BTN_TOOL_STYLE = """
     QPushButton:hover { background-color: #4e6d8d; }
     QPushButton:pressed { background-color: #2c3e50; }
 """
+
 # --- Run Buttons ---
 BTN_RUN_MAIN_STYLE = f"""
     QPushButton {{ 
