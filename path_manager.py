@@ -48,7 +48,6 @@ class PTPExecutor(QThread):
         self.finished_signal.emit()
 
 # --- 2. LIN 執行器 ---
-# --- 2. LIN 執行器 ---
 class CartesianExecutor(QThread):
     update_signal = pyqtSignal(list)
     finished_signal = pyqtSignal()
@@ -88,7 +87,7 @@ class CartesianExecutor(QThread):
             self.error_signal.emit(f"Slerp Init Failed: {e}")
             return
 
-        # 🌟 【優化核心】：根據「移動距離」決定插值步數，設定每 2mm 產生一個插值點
+        # 【優化核心】：根據「移動距離」決定插值步數，設定每 2mm 產生一個插值點
         dist_mm = np.linalg.norm(pos_end - pos_start) * 1000.0
         # 2. 計算旋轉角度差異 (degree)
         R_diff = T_tcp_end[:3, :3] @ T_tcp_start[:3, :3].T
@@ -128,20 +127,19 @@ class CartesianExecutor(QThread):
                 # 1. 更新 UI 畫面
                 self.update_signal.emit(list(ik_result))
                 
-                # 2. 🌟 【優化核心】：發送指令前清空 OK 旗標，發送後等待確認交握
+                # 2.【優化核心】：發送指令前清空 OK 旗標，發送後等待確認交握
                 if self.serial_ref and self.serial_ref.is_connected:
                     self.serial_ref.ok_event.clear() # 清空旗標
                     self.serial_ref.send_joints(list(ik_result), self.speed_factor)
                     
                     # 等待 Arduino 確實收到指令並回傳 OK (最多等 0.5 秒)
-                    # 這裡取代了原本單純的 time.sleep()，改為依據硬體處理速度動態等待
                     self.serial_ref.wait_for_ok(timeout=0.5)
                     
             else:
                 self.error_signal.emit(f"LIN Error: Unreachable at step {i}")
                 return
             
-            # 🌟【補回這行】：強制迴圈睡一下，讓 UI 有時間繪製每個插值點，動畫才會出現！
+            #【補回這行】：強制迴圈睡一下，讓 UI 有時間繪製每個插值點，動畫才會出現！
             time.sleep(effective_duration / steps)
             
         # 整個 LIN 直線跑完後，等待最終的 Done 訊號

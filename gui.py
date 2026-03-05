@@ -103,7 +103,6 @@ class RobotGUI(QMainWindow):
         btn_home = QPushButton("HOME")
         btn_home.setFixedHeight(BTN_HEIGHT)
         btn_home.setIcon(qta.icon('fa5s.home', color='white'))
-        #btn_home.setToolTip("Move joints to 0")
         btn_home.setStyleSheet(styles.BTN_HOME_STYLE)
         btn_home.clicked.connect(self.home_robot)
         layout.addWidget(btn_home)
@@ -476,8 +475,6 @@ class RobotGUI(QMainWindow):
             lambda min_val, max_val: self.waypoint_header.set_scrollbar_width(12 if max_val > min_val else 0)
         )
         
-        # (這裡原本那一大坨 setStyleSheet 已經不見了！清爽！)
-        
         list_container.addWidget(self.waypoint_list)
         layout.addLayout(list_container)
 
@@ -523,7 +520,6 @@ class RobotGUI(QMainWindow):
         self.btn_tcp      = make_btn('fa5s.location-arrow', "Toggle TCP", self.sim.toggle_tcp, True, True)
         self.btn_skel     = make_btn('fa5s.project-diagram', "Skeleton Mode", self.on_toggle_skeleton, True, False)
         self.btn_refresh_traj = make_btn('fa5s.route', "Refresh Trajectory", self.refresh_waypoint_list)
-        self.btn_compress = make_btn('fa5s.compress', "Compress View (TBD)")
 
         def cam_action(func):
             return lambda: (func(), self.sim.fit_view())
@@ -535,7 +531,7 @@ class RobotGUI(QMainWindow):
         self.btn_cam_side  = make_btn('fa5s.arrow-right', "Side View", cam_action(self.sim.view_side))
         
         btns = [
-            self.btn_tcp, self.btn_skel, self.btn_refresh_traj, self.btn_compress, 
+            self.btn_tcp, self.btn_skel, self.btn_refresh_traj,  
             self.btn_fit, self.btn_cam_iso, self.btn_cam_top, self.btn_cam_front, self.btn_cam_side
         ]
         for b in btns: b.raise_()
@@ -575,7 +571,7 @@ class RobotGUI(QMainWindow):
             self.btn_cam_top, self.btn_cam_iso
         ]
         right_btns = [
-            self.btn_compress, self.btn_refresh_traj, self.btn_skel, self.btn_tcp
+            self.btn_refresh_traj, self.btn_skel, self.btn_tcp
         ]
         
         y_left = h - btn_size - margin_bottom # 用迴圈自動排列左側按鈕
@@ -692,7 +688,7 @@ class RobotGUI(QMainWindow):
         self.sim.update_simulation(self.current_joints, user_offset)
         self.update_monitor() # 更新 XYZ/RPY 數值
         
-        # 🌟【修改這裡】：如果現在正在跑自動路徑，UI 只負責更新畫面，不發送硬體指令！
+        #【修改這裡】：如果現在正在跑自動路徑，UI 只負責更新畫面，不發送硬體指令！
         # 這樣就不會跟 PathManager 的指令打架了
         if self.path_manager.worker and self.path_manager.worker.isRunning():
             return 
@@ -773,15 +769,13 @@ class RobotGUI(QMainWindow):
             
         self.log(f"Starting path execution... (Loop: {loop})")
 
-        # 【新增這兩行】：抓取目前的使用者 TCP 與硬體修正量
+        # 抓取目前的使用者 TCP 與硬體修正量
         user_offset = self.tcp_manager.get_active_matrix()
         T_total_offset = self.T_hw_fix @ user_offset
 
         if hasattr(self.path_manager, 'run_path'):
-            # 【修改這行】：把 tcp_offset 傳進去
             self.path_manager.run_path(self.current_joints, loop=loop, tcp_offset=T_total_offset)
         elif hasattr(self.path_manager, 'execute_path'):
-            # 【修改這行】：把 tcp_offset 傳進去
             self.path_manager.execute_path(self.current_joints, loop=loop, tcp_offset=T_total_offset)
         else:
             self.log("[Error] Cannot find the run method in path_manager!")

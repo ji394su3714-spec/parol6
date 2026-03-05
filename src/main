@@ -1,43 +1,71 @@
 /*
- * PAROL6 Controller - Fysetc F6 (MobaTools Version)
- * 特色：平方比例 Ramp 修正、Debounce 濾波、0距離卡死防護
+ * PAROL6 Controller - Fysetc F6 V1.4 終極混合版
+ * 硬體架構：J1,J3,J4,J5,J6 (TMC2209 UART), J2 (TMC5160 SPI)
+ * 核心功能：獨立電流/速度設定、J1~J3 同步歸零等待、多軸等時差插補
  */
 
 #include <Arduino.h>
-#include <MobaTools.h> 
+#include <SPI.h>
+#include <SoftwareSerial.h>
+#include <TMCStepper.h>
+#include <MobaTools.h>
 
+// ==========================================
+// 🛑 1. 關節配置與硬體參數
+// ==========================================
+// 針對 TMC2209 / TMC5160 增加：獨立電流設定、待機降流比例
 struct JointConfig {
     byte stepPin; byte dirPin; byte enPin; byte limitPin; bool limitActiveState;
-    float homingSpeed; float homingPos; long maxSpeedSteps10; int rampSteps;        
+    float homingSpeed; float homingPos; long maxSpeedSteps10; int rampSteps;
+    uint16_t runCurrent_mA; float holdCurrentRatio;        
 };
 
+// 🚨 採樣電阻分離定義
+#define R_SENSE_2209 0.11f  
+#define R_SENSE_5160 0.075f
+
+// 綜合配置表 (整合極限開關、歸零參數與電流設定)
 const JointConfig JOINTS[6] = {
-    {54, 55, 38, 0,  LOW,  0,     0, 15000,  300},  // J1
-    {60, 61, 56, 63, HIGH, -700,  50, 20000, 400},  // J2
-    {43, 48, 58, 15, HIGH,  700, -70, 20000, 400},  // J3
-    {26, 28, 24, 0,  LOW,  0,     0, 15000,  200},  // J4
-    {36, 34, 30, 0,  HIGH, 0,     0, 15000,  200},  // J5
-    {59, 57, 40, 0,  LOW,  0,     0, 20000,  400}   // J6
+    {54, 55, 38,  2,  HIGH,  300, -15, 15000, 300, 1000, 0.25f}, // J1 (2209)
+    {60, 61, 56, 12,  HIGH, -700,  50, 20000, 400,  950,  0.5f}, // J2 (5160)
+    {43, 48, 58, 14,  HIGH,  700, -70, 20000, 400,  850,  0.5f}, // J3 (2209)
+    {26, 28, 24, 15,  HIGH,    0,   0, 15000, 200,  850, 0.25f}, // J4 (2209)
+    {36, 34, 30, 63,  HIGH,    0,   0, 15000, 200,  850, 0.25f}, // J5 (2209)
+    {59, 57, 40, 64,  HIGH,    0,   0, 20000, 400,  680, 0.25f}  // J6 (2209)
 };
 
+// 📡 2. 通訊腳位與 TMC 驅動物件
+#define Y_CS_PIN 39
+
+SoftwareSerial serial_J1(71, 72);
+SoftwareSerial serial_J3(78, 79);
+SoftwareSerial serial_J4(76, 77);
+SoftwareSerial serial_J5(80, 81);
+SoftwareSerial serial_J6(82, 22);
+
+TMC2209Stepper driver_J1(&serial_J1, R_SENSE_2209, 0);
+TMC5160Stepper driver_J2(Y_CS_PIN, R_SENSE_5160);       
+TMC2209Stepper driver_J3(&serial_J3, R_SENSE_2209, 0);
+TMC2209Stepper driver_J4(&serial_J4, R_SENSE_2209, 0);
+TMC2209Stepper driver_J5(&serial_J5, R_SENSE_2209, 0);
+TMC2209Stepper driver_J6(&serial_J6, R_SENSE_2209, 0);
+
+// 3. MobaTools 與全域變數
 const byte LED_PIN = 13;
 const float MICROSTEPS = 8.0;
 const float MOTOR_STEPS = 200.0; 
 const float GEAR_RATIOS[6] = {6.4, 20.0, 18.1, 4.0, 4.0, 10.0};
 
-MoToStepper M1(200, STEPDIR);
-MoToStepper M2(200, STEPDIR);
-MoToStepper M3(200, STEPDIR);
-MoToStepper M4(200, STEPDIR);
-MoToStepper M5(200, STEPDIR);
-MoToStepper M6(200, STEPDIR);
+MoToStepper stepper_J1(1600, STEPDIR);
+MoToStepper stepper_J2(1600, STEPDIR);
+MoToStepper stepper_J3(1600, STEPDIR);
+MoToStepper stepper_J4(1600, STEPDIR);
+MoToStepper stepper_J5(1600, STEPDIR);
+MoToStepper stepper_J6(1600, STEPDIR);
 
-MoToStepper* steppers[6] = {&M1, &M2, &M3, &M4, &M5, &M6};
+MoToStepper* steppers[6] = {&stepper_J1, &stepper_J2, &stepper_J3, &stepper_J4, &stepper_J5, &stepper_J6};
 
-// 歸零狀態機
 byte homingState[6] = {0, 0, 0, 0, 0, 0}; 
-
-// 追蹤「一般移動」是否進行中
 bool normalMoveActive = false;
 
 const byte numChars = 128;
@@ -46,6 +74,7 @@ char tempChars[numChars];
 float receivedAngles[6] = {0.0};
 boolean newData = false;
 
+// 輔助函式
 float getStepsPerDeg(int axis) {
     return (MOTOR_STEPS * MICROSTEPS * GEAR_RATIOS[axis]) / 360.0;
 }
@@ -57,34 +86,35 @@ bool isAnyHoming() {
     return false;
 }
 
-// 歸零邏輯狀態機
+// 核心：歸零狀態機 (J1~J3 同步等待)
 void updateHomingLogic() {
     for (int i = 0; i < 6; i++) {
         
         // 狀態 1：正在尋找開關
         if (homingState[i] == 1 && JOINTS[i].limitPin != 0) {
-            // 第一次讀取到觸發電位
             if (digitalRead(JOINTS[i].limitPin) == JOINTS[i].limitActiveState) {
-                // 軟體防雜訊濾波 (Debounce)
-                delay(3); 
-                // 第二次確認
+                delay(3); // Debounce
                 if (digitalRead(JOINTS[i].limitPin) == JOINTS[i].limitActiveState) {
                     steppers[i]->setRampLen(0);
                     steppers[i]->doSteps(0); 
                     homingState[i] = 2; 
+                    Serial.print(">>> J"); Serial.print(i + 1); Serial.println(" Hit! Waiting...");
                 }
             } 
         }
-        // 狀態 2：急停完畢，等待同步退回 Offset
+        // 狀態 2：急停完畢，互相等待，確認大家都煞車後才退回 Offset
         else if (homingState[i] == 2) {
             if (!steppers[i]->moving()) {
                 bool readyToOffset = true;
                 
-                if (i == 1) { 
-                    if (homingState[2] == 1 || (homingState[2] == 2 && steppers[2]->moving())) readyToOffset = false;
-                } 
-                else if (i == 2) { 
-                    if (homingState[1] == 1 || (homingState[1] == 2 && steppers[1]->moving())) readyToOffset = false;
+                // J1, J2, J3 的互相等待邏輯
+                if (i == 0 || i == 1 || i == 2) {
+                    for (int j = 0; j < 3; j++) {
+                        if (homingState[j] == 1 || (homingState[j] == 2 && steppers[j]->moving())) {
+                            readyToOffset = false;
+                            break;
+                        }
+                    }
                 }
 
                 if (readyToOffset) {
@@ -117,10 +147,45 @@ void updateHomingLogic() {
     wasHoming = stillHoming;
 }
 
+// 初始化 Setup
 void setup() {
-    Serial.begin(250000);
+    Serial.begin(250000); // 配合上位機的高速鮑率
+    SPI.begin();
     pinMode(LED_PIN, OUTPUT);
 
+    serial_J1.begin(115200);
+    serial_J3.begin(115200);
+    serial_J4.begin(115200);
+    serial_J5.begin(115200);
+    serial_J6.begin(115200);
+
+    // --- TMC2209/5160 底層設定 ---
+    auto setupTMC2209 = [](TMC2209Stepper &drv, uint16_t mA, float hold_ratio) {
+        drv.begin();
+        drv.pdn_disable(true);     
+        drv.I_scale_analog(false); 
+        drv.toff(5);               
+        drv.rms_current(mA, hold_ratio); 
+        drv.microsteps(8);        
+        drv.en_spreadCycle(false); 
+        drv.pwm_autoscale(true);   
+        drv.TCOOLTHRS(0); 
+    };
+
+    setupTMC2209(driver_J1, JOINTS[0].runCurrent_mA, JOINTS[0].holdCurrentRatio);
+    setupTMC2209(driver_J3, JOINTS[2].runCurrent_mA, JOINTS[2].holdCurrentRatio);
+    setupTMC2209(driver_J4, JOINTS[3].runCurrent_mA, JOINTS[3].holdCurrentRatio);
+    setupTMC2209(driver_J5, JOINTS[4].runCurrent_mA, JOINTS[4].holdCurrentRatio);
+    setupTMC2209(driver_J6, JOINTS[5].runCurrent_mA, JOINTS[5].holdCurrentRatio);
+
+    driver_J2.begin();
+    driver_J2.toff(5);
+    driver_J2.rms_current(JOINTS[1].runCurrent_mA, JOINTS[1].holdCurrentRatio); 
+    driver_J2.microsteps(8);
+    driver_J2.en_pwm_mode(true);
+    driver_J2.pwm_autoscale(true);
+
+    // --- MobaTools 與腳位綁定 ---
     for (int i = 0; i < 6; i++) {
         steppers[i]->attach(JOINTS[i].stepPin, JOINTS[i].dirPin);
         pinMode(JOINTS[i].enPin, OUTPUT);
@@ -131,9 +196,10 @@ void setup() {
         steppers[i]->setSpeedSteps(JOINTS[i].maxSpeedSteps10);
         steppers[i]->setRampLen(JOINTS[i].rampSteps); 
     }
-    Serial.println("<F6 Unified (MobaTools Auto-Sync) Ready>");
+    Serial.println("<F6 Unified (Hybrid TMC + Sync Homing) Ready>");
 }
 
+// 指令處理與封包解析
 void processCommand() {
     // 1. E-STOP 檢查
     if (strncmp(tempChars, "STOP", 4) == 0) {
@@ -146,10 +212,10 @@ void processCommand() {
         return;
     }
 
-    // 🌟 [新增] 嚴格封包驗證機制
+    // 2. 封包解析
     float tempParsed[6] = {0.0};
     float speedFactor = 1.0; 
-    int parseCount = 0; // 記錄成功解析了幾個數字
+    int parseCount = 0; 
 
     char * strtokIndx = strtok(tempChars, ",");
     if(strtokIndx != NULL) {
@@ -165,29 +231,26 @@ void processCommand() {
         }
     }
 
-    // 嘗試解析第 7 個參數 (速度比例)
     strtokIndx = strtok(NULL, ",");
     if(strtokIndx != NULL) {
         float parsedVal = atof(strtokIndx);
         if (parsedVal > 0.0 && parsedVal <= 1.0) speedFactor = parsedVal;
-        parseCount++; // 這個參數可有可無，所以 parseCount 可能是 6 或 7
+        parseCount++; 
     }
 
-    // ⛔ 核心防護：如果解析不到 6 個關節數值，代表封包破裂！
     if (parseCount < 6) {
         Serial.print("[HW Error] Dropped corrupted packet: ");
         Serial.println(tempChars);
-        return; // 直接中斷，保護硬體不暴衝到 0.0！
+        return; 
     }
 
-    // ✅ 確認封包完整安全後，才正式賦值給全域變數
     for(int i = 0; i < 6; i++) {
         receivedAngles[i] = tempParsed[i];
     }
 
     bool homingTriggered = false;
-    
-    // 歸零觸發
+
+    // 3. 歸零觸發
     for (int i = 0; i < 6; i++) {
         if (receivedAngles[i] == 999.0) {
             if (JOINTS[i].limitPin != 0) {
@@ -205,9 +268,8 @@ void processCommand() {
         }
     }
 
-    // 一般移動 (自動尋找瓶頸並同步到達)
+    // 4. 一般移動 (多軸等時差插補)
     if (!isAnyHoming() && !homingTriggered) {
-        
         long deltaSteps[6] = {0};
         float timeNeeded[6] = {0.0};
         float maxTime = 0.0;
@@ -233,9 +295,7 @@ void processCommand() {
                     if (mobaSpeed < 1) mobaSpeed = 1; 
                     steppers[i]->setSpeedSteps(mobaSpeed);
                     
-                    float speedRatio = (float)mobaSpeed / (float)JOINTS[i].maxSpeedSteps10;
-                    // 🌟 採用您完美的 v^2 運動學公式
-                    int dynamicRamp = (int)(JOINTS[i].rampSteps * speedRatio * speedRatio);
+                    int dynamicRamp = deltaSteps[i] * 0.1; 
                     if (dynamicRamp < 5) dynamicRamp = 0;
                     steppers[i]->setRampLen(dynamicRamp);
                 } else {
@@ -274,6 +334,7 @@ void recvWithStartEndMarkers() {
     }
 }
 
+// 主迴圈
 void loop() {
     recvWithStartEndMarkers();
     if (newData) {
@@ -284,8 +345,6 @@ void loop() {
 
     updateHomingLogic();
 
-    for(int i = 0; i < 6; i++) digitalWrite(JOINTS[i].enPin, LOW);
-
     bool isMoving = false; 
     for (int i = 0; i < 6; i++) {
         if (steppers[i]->moving()) {
@@ -295,7 +354,6 @@ void loop() {
     }
 
     if (normalMoveActive) {
-        // 🌟 改良：不論剛走完，還是 0 距離沒動，只要 isMoving 是 false 就回報 Done
         if (!isMoving) {
             Serial.println("Done");      
             normalMoveActive = false;    
