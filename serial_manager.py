@@ -74,6 +74,7 @@ class SerialManager(QObject):
     def send_joints(self, joints, speed_factor=None):
         """ 發送指令給 Arduino (支援第 7 參數：全局速度比例) """
         if not self.is_connected or not self.ser: return
+        
         try:
             data_str = ",".join([f"{angle:.2f}" for angle in joints])
             
