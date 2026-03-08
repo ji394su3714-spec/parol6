@@ -6,8 +6,9 @@ from PyQt5.QtCore import QObject, QThread, pyqtSignal, QTimer
 from PyQt5.QtWidgets import QFileDialog
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
-import config
+
 import kinematics
+import math
 
 # --- 1. PTP 執行器 (關節插值) ---
 class PTPExecutor(QThread):
@@ -28,10 +29,11 @@ class PTPExecutor(QThread):
             # 開跑前先清空舊的到位旗標
             if hasattr(self.serial_ref, 'motion_done_event'):
                 self.serial_ref.motion_done_event.clear()
-            self.serial_ref.send_joints(list(self.end_joints), self.speed_factor)
+            # PTP 模式對應 move_mode = 1
+            self.serial_ref.send_joints(list(self.end_joints), self.speed_factor, move_mode=1)
 
         # 2. 【軟體端：乖乖播完 UI 動畫】(不提早打斷，避免滑桿瞬間跳躍引發爆衝)
-        effective_duration = max(0.1, self.animation_time)
+        effective_duration = max(0.1, float(self.animation_time))
         steps = int(effective_duration * 30) 
         
         for i in range(steps + 1):
@@ -71,7 +73,6 @@ class CartesianExecutor(QThread):
 
         T_flange_start = kinematics.forward_kinematics(self.start_joints)
         T_tcp_start = T_flange_start @ self.tcp_offset_mat
-        
         T_flange_end = kinematics.forward_kinematics(self.target_joints)
         T_tcp_end = T_flange_end @ self.tcp_offset_mat
         
@@ -87,24 +88,27 @@ class CartesianExecutor(QThread):
             self.error_signal.emit(f"Slerp Init Failed: {e}")
             return
 
-        # 【優化核心】：根據「移動距離」決定插值步數，設定每 2mm 產生一個插值點
         dist_mm = np.linalg.norm(pos_end - pos_start) * 1000.0
-        # 2. 計算旋轉角度差異 (degree)
         R_diff = T_tcp_end[:3, :3] @ T_tcp_start[:3, :3].T
         angle_rad = np.linalg.norm(R.from_matrix(R_diff).as_rotvec())
         angle_deg = np.degrees(angle_rad)
         
-        # 3. 決定步數：取「每 2mm 一步」或「每 1度 一步」兩者中較大的一個
         steps = max(2, int(dist_mm / 2.0), int(angle_deg / 1.0)) 
-        
-        # 計算動畫總時間
         effective_duration = max(0.1, self.animation_time)
         
+        # ==========================================
+        # 🚀 Phase 1: 預先計算 (Planning) 加上 S-Curve
+        # ==========================================
+        trajectory_points = []
         current_seed = self.start_joints.copy()
         
+        self.update_signal.emit(list(self.start_joints))
         
-        for i in range(steps + 1):
-            t = i / steps 
+        for i in range(1, steps + 1):
+            linear_t = i / steps 
+            # 【核心魔法】：Sine Ease-in-out，讓軌跡頭尾點距縮短，達到自然的加減速
+            t = (1 - math.cos(linear_t * math.pi)) / 2.0
+            
             curr_pos = pos_start + (pos_end - pos_start) * t
             curr_rot = slerp([t]).as_matrix()[0]
             
@@ -116,33 +120,37 @@ class CartesianExecutor(QThread):
             ik_result, error = kinematics.inverse_kinematics(T_flange_target, current_seed)
             
             if ik_result is not None:
-                T_check = kinematics.forward_kinematics(ik_result)
-                dist_err = np.linalg.norm(T_check[:3, 3] - T_flange_target[:3, 3]) * 1000.0
-                
-                if dist_err > config.IK_POS_TOLERANCE:
-                    self.error_signal.emit(f"LIN Accuracy Error: {dist_err:.3f}mm at step {i}")
-                    return 
                 current_seed = ik_result
-                
-                # 1. 更新 UI 畫面
-                self.update_signal.emit(list(ik_result))
-                
-                # 2.【優化核心】：發送指令前清空 OK 旗標，發送後等待確認交握
-                if self.serial_ref and self.serial_ref.is_connected:
-                    self.serial_ref.ok_event.clear() # 清空旗標
-                    self.serial_ref.send_joints(list(ik_result), self.speed_factor)
-                    
-                    # 等待 Arduino 確實收到指令並回傳 OK (最多等 0.5 秒)
-                    self.serial_ref.wait_for_ok(timeout=0.5)
-                    
+                trajectory_points.append(list(ik_result))
             else:
                 self.error_signal.emit(f"LIN Error: Unreachable at step {i}")
                 return
+
+        # ==========================================
+        # 🚀 Phase 2: 穩定串流 (Streaming)
+        # ==========================================
+        interval = effective_duration / steps
+        # 賦予 Arduino 一點「時間寬容度(1.2倍)」，保證 Arduino 的目標點不斷被往後推，永遠不煞車
+        arduino_interval = interval * 1.2 
+        
+        for joints in trajectory_points:
+            loop_start_time = time.time()
             
-            #【補回這行】：強制迴圈睡一下，讓 UI 有時間繪製每個插值點，動畫才會出現！
-            time.sleep(effective_duration / steps)
+            self.update_signal.emit(joints)
             
-        # 整個 LIN 直線跑完後，等待最終的 Done 訊號
+            if self.serial_ref and self.serial_ref.is_connected:
+                # 🟢 射出 LIN 切片！ (move_mode = 2, 第7參數變為 interval_sec)
+                self.serial_ref.send_joints(joints, arduino_interval, move_mode=2)
+                # Arduino 只要解析完就會秒回 OK，所以不會卡頓
+                self.serial_ref.wait_for_ok(timeout=0.2)
+                
+            # 精準時間補償：扣除掉 IK 以外的所有運算/通訊耗時
+            elapsed = time.time() - loop_start_time
+            sleep_time = interval - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            
+        # 整個 LIN 陣列射完後，等待馬達把最後一段路走完
         if self.serial_ref and self.serial_ref.is_connected:
              if hasattr(self.serial_ref, 'wait_for_motion_complete'):
                 self.serial_ref.wait_for_motion_complete(timeout=10.0)

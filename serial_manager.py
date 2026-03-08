@@ -71,18 +71,22 @@ class SerialManager(QObject):
         self.connection_state_signal.emit(False)
         self.log_signal.emit("Disconnected.")
 
-    def send_joints(self, joints, speed_factor=None):
-        """ 發送指令給 Arduino (支援第 7 參數：全局速度比例) """
+    def send_joints(self, joints, speed_factor=None, move_mode=0):
+        """ 發送指令給 Arduino (支援第 8 參數：運動模式) """
         if not self.is_connected or not self.ser: return
+        
+        # 發送前務必清空交握旗標
+        self.ok_event.clear()
+        self.motion_done_event.clear()
         
         try:
             data_str = ",".join([f"{angle:.2f}" for angle in joints])
             
-            # 如果有傳入速度比例 (例如 0.5 代表 50%)
             if speed_factor is not None:
-                packet = f"<{data_str},{speed_factor:.2f}>\n"
+                # 提高到 3 位小數以確保 LIN 模式的 interval_sec 精度 (例如 0.045)
+                packet = f"<{data_str},{speed_factor:.3f},{move_mode}>\n"
             else:
-                packet = f"<{data_str}>\n"
+                packet = f"<{data_str},1.000,0>\n"
                 
             self.ser.write(packet.encode('utf-8'))
         except Exception as e:
