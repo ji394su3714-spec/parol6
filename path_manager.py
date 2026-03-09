@@ -131,7 +131,7 @@ class CartesianExecutor(QThread):
         # ==========================================
         interval = effective_duration / steps
         # 賦予 Arduino 一點「時間寬容度(1.2倍)」，保證 Arduino 的目標點不斷被往後推，永遠不煞車
-        arduino_interval = interval * 1.2 
+        arduino_interval = interval * 1.05 
         
         for joints in trajectory_points:
             loop_start_time = time.time()
