@@ -23,15 +23,15 @@ struct JointConfig {
 // 綜合配置表 
 const JointConfig JOINTS[6] = {
     // step, dir, en, lim, lim_active, h_spd, h_pos, bounce, max_spd, ramp, run_mA, hold_ratio
-    {54, 55, 38,  2,  LOW,   250,  -30,  200, 14000, 500, 1000, 0.25f}, // J1
-    {60, 61, 56, 12,  HIGH, -600,   50,  400, 17000, 500,  950,  0.5f}, // J2
-    {43, 48, 58, 14,  HIGH,  750,  -70,  400, 17000, 500,  850,  0.5f}, // J3
-    {26, 28, 24, 15,  LOW,   900, -145,  300, 14000, 400,  850, 0.25f}, // J4
-    {36, 34, 30, 63,  HIGH, 1000,  -125, 300, 14000, 500,  850, 0.25f}, // J5
-    {59, 57, 40, 64,  LOW,  1400,    0,  400, 20000, 500,  680, 0.25f}  // J6 (A4988)
+    {54, 55, 38,  2,  LOW,   300,  -30,  250, 14000, 600, 1000, 0.5f}, // J1
+    {60, 61, 56, 12,  HIGH, -600,   50,  450, 17000, 600,  950,  0.5f}, // J2
+    {43, 48, 58, 14,  HIGH,  750,  -70,  550, 17000, 600,  850,  0.5f}, // J3
+    {26, 28, 24, 15,  LOW,   1000, -145,  400, 14000, 300,  850, 0.25f}, // J4
+    {36, 34, 30, 63,  HIGH, 1000,  -125, 400, 14000, 300,  850, 0.25f}, // J5
+    {59, 57, 40, 64,  LOW,  1400,    2,  400, 22000, 300,  680, 0.25f}  // J6 (A4988)
 };
 
-// 📡 2. 通訊腳位與驅動物件
+// 2. 通訊腳位與驅動物件
 #define Y_CS_PIN 39
 
 SoftwareSerial serial_J1(71, 72);
@@ -81,7 +81,7 @@ bool isAnyHoming() {
     return false;
 }
 
-// 🎯 核心：二段式歸零狀態機 (Double-Tap)
+// 核心：二段式歸零狀態機 (Double-Tap)
 void updateHomingLogic() {
     const float J6_PREP_ANGLE = 90.0; 
     static unsigned long j6DelayStartTime = 0; // 新增：專門給 J6 用的微秒馬錶
@@ -118,7 +118,7 @@ void updateHomingLogic() {
 
                 if (readyToBounce) {
                     steppers[i]->setRampLen(20);
-                    steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 10);
+                    steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 15);
                     // 計算回彈方向 (與尋找方向相反)
                     int bounceDir = (JOINTS[i].homingSpeed > 0) ? -1 : 1;
                     long bounceDist = JOINTS[i].bounceSteps * bounceDir;
@@ -144,8 +144,7 @@ void updateHomingLogic() {
 
                 if (readyToSecondTap) {
                     steppers[i]->setRampLen(0);
-                    // 依照要求：二次尋找速度不減慢
-                    steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 5); 
+                    steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 5); //減慢一半的尋找速度
                     int dir = (JOINTS[i].homingSpeed > 0) ? 1 : -1;
                     steppers[i]->rotate(dir); 
                     homingState[i] = 13; // 進入狀態 13：第二次尋找
@@ -289,21 +288,21 @@ void updateHomingLogic() {
                 steppers[4]->doSteps(offsetJ5);
                 homingState[4] = 3; 
 
-                // 🎯 關鍵：不直接啟動 J6，而是讓它進入「倒數計時」狀態
+                // 關鍵：不直接啟動 J6，而是讓它進入「倒數計時」狀態
                 homingState[5] = 15; 
                 j6DelayStartTime = millis(); // 按下馬錶，記錄當下時間
 
 }
         }
 
-        // 🌟 狀態 15：J6 專屬的 0.5 秒非阻塞延遲
+        // 狀態 15：J6 專屬的 0.3 秒非阻塞延遲
         else if (homingState[i] == 15 && i == 5) {
-            // 檢查時間 500 毫秒
-            if (millis() - j6DelayStartTime >= 500) { 
+            // 檢查時間 300 毫秒
+            if (millis() - j6DelayStartTime >= 300) { 
                 //Serial.println(">>> J6 Offset Started!");
 
                 // 時間到！J6 正式開始退回剩餘的 Offset
-                steppers[5]->setRampLen(50); 
+                steppers[5]->setRampLen(200); 
                 steppers[5]->setSpeedSteps(abs(JOINTS[5].homingSpeed) * 15);
                 float remainingAngle = JOINTS[5].homingPos - J6_PREP_ANGLE;
                 long offsetJ6 = remainingAngle * getStepsPerDeg(5);
@@ -331,8 +330,6 @@ void setup() {
     serial_J3.begin(115200);
     serial_J4.begin(115200);
     serial_J5.begin(115200);
-
-    Serial.println("Version 2.0 !!");
 
     // --- TMC2209/5160 底層設定 ---
     auto setupTMC2209 = [](TMC2209Stepper &drv, uint16_t mA, float hold_ratio) {
@@ -444,54 +441,57 @@ void processCommand() {
     }
     if (homingTriggered) Serial.println("OK");
 
+    // ==========================================
     // 4. 一般移動分派 (Jog / PTP / LIN)
+    // ==========================================
     if (!isAnyHoming() && !homingTriggered) {
         long deltaSteps[6] = {0};
-        long maxDeltaSteps = 0; // 🌟 新增：找出單次切片中，移動步數最多的是多少
         float timeNeeded[6] = {0.0};
         float maxTime = 0.0;
 
+        // 【預算 PTP & JOG 同步時間】
         for (int i = 0; i < 6; i++) {
             if (receivedAngles[i] != 999.0) {
                 long targetSteps = receivedAngles[i] * getStepsPerDeg(i);
                 deltaSteps[i] = abs(targetSteps - steppers[i]->currentPosition());
                 
-                if (deltaSteps[i] > maxDeltaSteps) {
-                    maxDeltaSteps = deltaSteps[i]; // 記錄最大步數，給等比例 Ramp 計算用
-                }
-                
-                // 🌟 關鍵：讓 moveMode == 0 (Jogging) 也套用時間同步計算！
+                // 讓 PTP (1) 和 Jogging (0) 都共享時間同步預算
                 if (moveMode == 1 || moveMode == 0) { 
                     float currentMaxSpeedSec = (JOINTS[i].maxSpeedSteps10 * param7) / 10.0;
                     if (currentMaxSpeedSec > 0 && deltaSteps[i] > 0) {
                         timeNeeded[i] = deltaSteps[i] / currentMaxSpeedSec;
-                        if (timeNeeded[i] > maxTime) maxTime = timeNeeded[i];
+                        if (timeNeeded[i] > maxTime) maxTime = timeNeeded[i]; 
                     }
                 }
             }
         }
 
+        // 【正式發車】
         for (int i = 0; i < 6; i++) {
             if (receivedAngles[i] != 999.0) {
                 long targetSteps = receivedAngles[i] * getStepsPerDeg(i);
                 
-                if (moveMode == 1 && maxTime > 0.0 && deltaSteps[i] > 0) {
-                    // PTP
+                // 核心融合：PTP 與 Jogging 共用「完美時間同步引擎」
+                if ((moveMode == 1 || moveMode == 0) && maxTime > 0.0 && deltaSteps[i] > 0) {
+                    
+                    // 1. 速度完美比例同步
                     float syncStepsPerSec = deltaSteps[i] / maxTime;
                     long mobaSpeed = (long)(syncStepsPerSec * 10.0);
                     if (mobaSpeed < 10) mobaSpeed = 10; 
                     steppers[i]->setSpeedSteps(mobaSpeed);
                     
-                    int dynamicRamp = deltaSteps[i] * 0.3; 
-                    if (dynamicRamp > JOINTS[i].rampSteps) dynamicRamp = JOINTS[i].rampSteps;
-                    if (dynamicRamp < 5) {
-                        dynamicRamp = deltaSteps[i] / 2; 
-                        if (dynamicRamp == 0) dynamicRamp = 1; 
-                    }
-                    steppers[i]->setRampLen(dynamicRamp);
+                    // 2. 終極解法：純時間基準 Ramp (Time-based Ramp)
+                    // 設定 Jogging 的避震加速時間為 0.3秒，PTP 俐落移動為 0.2秒
+                    float accelTimeSec = (moveMode == 0) ? 0.3 : 0.2; 
+                    
+                    // 數學聖杯：保證所有馬達在同一微秒完成加速！
+                    long syncRamp = syncStepsPerSec * (accelTimeSec / 2.0);
+                    
+                    if (syncRamp < 5) syncRamp = 5; // 給予底線防暴衝
+                    steppers[i]->setRampLen(syncRamp);
                     
                 } else if (moveMode == 2 && deltaSteps[i] > 0) {
-                    // LIN
+                    // 【模式 2：LIN 串流追跡 (保持不變)】
                     float interval_sec = param7;
                     if (interval_sec < 0.01) interval_sec = 0.01; 
                     
@@ -501,31 +501,6 @@ void processCommand() {
                     
                     steppers[i]->setSpeedSteps(mobaSpeed);
                     steppers[i]->setRampLen(5); 
-                    
-                } else if (moveMode == 0 && deltaSteps[i] > 0) {
-                    // 🔵 【模式 0：手動 Jogging (終極平滑升級版：等比例同步 + 巨型避震 Ramp)】
-                    
-                    if (maxTime > 0.0 && maxDeltaSteps > 0) {
-                        // 1. 速度同步 (跟 PTP 一樣，確保軌跡是直線，消滅偏差)
-                        float syncStepsPerSec = deltaSteps[i] / maxTime;
-                        long mobaSpeed = (long)(syncStepsPerSec * 10.0);
-                        if (mobaSpeed < 10) mobaSpeed = 10; 
-                        steppers[i]->setSpeedSteps(mobaSpeed);
-                        
-                        // 2. 🌟 關鍵：Ramp 同步！
-                        // 讓移動步數較少的軸，其 Ramp 也等比例縮小，確保 6 軸的「加減速時間」完全一致！
-                        float ratio = (float)deltaSteps[i] / (float)maxDeltaSteps;
-                        int syncRamp = JOINTS[i].rampSteps * ratio; 
-                        
-                        // 防呆底線：即使等比例縮小，也保留最基礎的緩衝，防止暴衝
-                        if (syncRamp < 10) syncRamp = 10; 
-                        
-                        steppers[i]->setRampLen(syncRamp); 
-                    } else {
-                        // 備用保護邏輯
-                        steppers[i]->setSpeedSteps(JOINTS[i].maxSpeedSteps10);
-                        steppers[i]->setRampLen(JOINTS[i].rampSteps);
-                    }
                 }
                 
                 steppers[i]->writeSteps(targetSteps); 
