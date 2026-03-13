@@ -5,9 +5,9 @@ import numpy as np
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QPushButton, QGroupBox, 
                              QDoubleSpinBox, QFrame, QDialog,
-                             QListWidget, QListWidgetItem, QMessageBox, 
+                             QListWidgetItem, QMessageBox, 
                              QComboBox, QMenu, QAction)
-from PyQt5.QtCore import Qt, QSize, QTimer
+from PyQt5.QtCore import Qt, QTimer
 import qtawesome as qta
 
 from ui import styles
@@ -41,7 +41,6 @@ class RobotGUI(QMainWindow):
         
         # 硬體修正矩陣
         self.T_hw_fix = np.eye(4)
-        # 如果 config 裡沒有這個變數，提供預設值 -0.0236 作為保險
         self.T_hw_fix[2, 3] = getattr(config, 'HW_Z_OFFSET', -0.0236)
         
         self.path_manager = PathManager(parent=self)
@@ -297,7 +296,7 @@ class RobotGUI(QMainWindow):
 
     def on_control_finished(self):
         """當動作結束(滑鼠放開或連發觸發)時，把陣列送給硬體"""
-        # 【新增防護罩】：如果現在正在執行自動路徑動畫，絕對不允許發送手動指令！
+        # 【防護罩】：如果現在正在執行自動路徑動畫，絕對不允許發送手動指令！
         if getattr(self, 'is_animating', False):
             return 
             
@@ -464,7 +463,7 @@ class RobotGUI(QMainWindow):
         self.waypoint_header = WaypointHeader()
         list_container.addWidget(self.waypoint_header)
         
-        # 2. 🌟 加入自訂的 ListWidget (這裡直接呼叫新類別，取代原先的 QListWidget)
+        # 2. 加入自訂的 ListWidget
         self.waypoint_list = WaypointListWidget() 
         self.waypoint_list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.waypoint_list.itemClicked.connect(self.preview_waypoint)
@@ -645,7 +644,7 @@ class RobotGUI(QMainWindow):
         msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
         msg_box.setDefaultButton(QMessageBox.Cancel)
         if msg_box.exec_() == QMessageBox.Yes:
-            self.log("[HOMING] Sending Trigger (J2=999, J3=999)...")
+            self.log("[HOMING] Sending Trigger")
             
             homing_cmd = [999.0, 999.0, 999.0, 999.0, 999.0, 999.0]
             self.serial_manager.send_joints(homing_cmd)
@@ -688,8 +687,7 @@ class RobotGUI(QMainWindow):
         self.sim.update_simulation(self.current_joints, user_offset)
         self.update_monitor() # 更新 XYZ/RPY 數值
         
-        #【修改這裡】：如果現在正在跑自動路徑，UI 只負責更新畫面，不發送硬體指令！
-        # 這樣就不會跟 PathManager 的指令打架了
+        # 如果現在正在跑自動路徑，UI 只負責更新畫面，不發送硬體指令！
         if self.path_manager.worker and self.path_manager.worker.isRunning():
             return 
             
@@ -721,12 +719,10 @@ class RobotGUI(QMainWindow):
         # 2. 只有兩個點以上才能連成線
         if len(active_wps) >= 2:
             for i in range(len(active_wps) - 1):
-                # 取得起點與終點的關節角度
                 joints_start = np.array(active_wps[i]['joints'])
                 joints_end = np.array(active_wps[i+1]['joints'])
                 
                 # 判斷目標點的運動模式 (假設您的點位資料有存 'type' 或 'mode')
-                # 如果找不到，這裡預設給 'LIN' (依照您目前的需求)
                 move_type = active_wps[i+1].get('type', 'LIN') 
                 
                 steps = 20
@@ -752,7 +748,6 @@ class RobotGUI(QMainWindow):
         if trajectory_points:
             self.sim.draw_trajectory(trajectory_points)
         else:
-            # 如果算完發現沒有點 (或不到兩個點)，就傳送空陣列把線清掉
             self.sim.draw_trajectory([])
 
         # --- 觸發路徑執行函式 ---

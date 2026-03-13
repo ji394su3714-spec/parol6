@@ -1,12 +1,8 @@
 import numpy as np
 
-# --- 視窗設定 ---
 APP_TITLE = "PAROL6 Robot Controller"
-
-# --- 模型路徑 ---
 URDF_PATH = 'assets/urdf/urdf.urdf'
 
-# 依照順序：Base, Link1, Link2, Link3, Link4, Link5, Link6
 STL_FILES = [
     'base_link_1.STL', 'Link1.STL', 'Link2.STL', 'Link3.STL', 'Link4.STL', 'Link5.STL', 'Link6.STL'
 ]
@@ -26,7 +22,7 @@ URDF_PARAMS = [
     {'xyz': [-0.0741, 0, 0], 'rpy': [3.1416, 1.5708, 0], 'axis': 'z', 'invert': True}
 ]
 
-IK_POS_TOLERANCE = 0.05  # 設定為 0.05 mm (比 0.1 更嚴格)
+IK_POS_TOLERANCE = 0.1  # 設定為 0.1 mm 
 IK_ROT_TOLERANCE = 0.2   # 設定為 0.2 度 (角度誤差)
 
 JOINT_LIMITS = [

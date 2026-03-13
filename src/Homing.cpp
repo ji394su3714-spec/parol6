@@ -32,7 +32,7 @@ void updateHomingLogic() {
                     }
                 }
                 if (readyToBounce) {
-                    steppers[i]->setRampLen(20);
+                    steppers[i]->setRampLen(10);
                     steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 15);
                     int bounceDir = (JOINTS[i].homingSpeed > 0) ? -1 : 1;
                     long bounceDist = JOINTS[i].bounceSteps * bounceDir;
@@ -156,7 +156,7 @@ void updateHomingLogic() {
                 if (homingState[4] == 10) {
                     homingState[4] = 1;
                     steppers[4]->setRampLen(0);
-                    steppers[4]->setSpeedSteps(abs(JOINTS[4].homingSpeed) * 10);
+                    steppers[4]->setSpeedSteps(abs(JOINTS[4].homingSpeed) * 15);
                     steppers[4]->rotate((JOINTS[4].homingSpeed > 0) ? 1 : -1);
                     Serial.println(">>> Homing Start: J5 ");
                 }
@@ -174,10 +174,10 @@ void updateHomingLogic() {
                 j6DelayStartTime = millis(); 
             }
         }
-        // 狀態 15：J6 專屬的 0.3 秒非阻塞延遲
+        // 狀態 15：J6 的 0.3 秒非阻塞延遲
         else if (homingState[i] == 15 && i == 5) {
             if (millis() - j6DelayStartTime >= 300) { 
-                steppers[5]->setRampLen(200); 
+                steppers[5]->setRampLen(300); 
                 steppers[5]->setSpeedSteps(abs(JOINTS[5].homingSpeed) * 15);
                 float remainingAngle = JOINTS[5].homingPos - J6_PREP_ANGLE;
                 long offsetJ6 = remainingAngle * getStepsPerDeg(5);

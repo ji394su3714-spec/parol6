@@ -93,12 +93,19 @@ class CartesianExecutor(QThread):
         angle_rad = np.linalg.norm(R.from_matrix(R_diff).as_rotvec())
         angle_deg = np.degrees(angle_rad)
         
-        steps = max(2, int(dist_mm / 2.0), int(angle_deg / 1.0)) 
         effective_duration = max(0.1, self.animation_time)
         
-        # ==========================================
-        # 🚀 Phase 1: 預先計算 (Planning) 加上 S-Curve
-        # ==========================================
+        # 1. 理想狀態：基於「空間解析度」的切片數 (每 2mm 或 1度 切一刀)
+        ideal_spatial_steps = max(2, int(dist_mm / 2.0), int(angle_deg / 1.0)) 
+        
+        # 2. 物理極限保護：基於「通訊頻率」的切片數 
+        # 強制規定每個切片至少要有 0.05 秒 (50ms) 的執行時間，也就是最高 20Hz 更新率
+        max_communication_steps = max(2, int(effective_duration / 0.05))
+        
+        # 3. 動態降頻決策：兩者取小！
+        steps = min(ideal_spatial_steps, max_communication_steps)
+        
+        # Phase 1: 預先計算 (Planning) 加上 S-Curve
         trajectory_points = []
         current_seed = self.start_joints.copy()
         
@@ -106,7 +113,7 @@ class CartesianExecutor(QThread):
         
         for i in range(1, steps + 1):
             linear_t = i / steps 
-            # 【核心魔法】：Sine Ease-in-out，讓軌跡頭尾點距縮短，達到自然的加減速
+            # 【核心】：Sine Ease-in-out，讓軌跡頭尾點距縮短，達到自然的加減速
             t = (1 - math.cos(linear_t * math.pi)) / 2.0
             
             curr_pos = pos_start + (pos_end - pos_start) * t
@@ -126,22 +133,22 @@ class CartesianExecutor(QThread):
                 self.error_signal.emit(f"LIN Error: Unreachable at step {i}")
                 return
 
-        # ==========================================
-        # 🚀 Phase 2: 穩定串流 (Streaming)
-        # ==========================================
+        # Phase 2: 穩定串流 (Streaming)
         interval = effective_duration / steps
-        # 賦予 Arduino 一點「時間寬容度(1.2倍)」，保證 Arduino 的目標點不斷被往後推，永遠不煞車
-        arduino_interval = interval * 1.05 
+        arduino_interval = interval * 1.10  #時間寬容度
+        
+        counter = 0 # 新增計數器
         
         for joints in trajectory_points:
             loop_start_time = time.time()
             
-            self.update_signal.emit(joints)
+            # 降低 GUI 更新頻率：每 3 個點 (或最後一個點) 才更新一次畫面
+            if counter % 3 == 0 or counter == len(trajectory_points) - 1:
+                self.update_signal.emit(joints)
+            counter += 1
             
             if self.serial_ref and self.serial_ref.is_connected:
-                # 🟢 射出 LIN 切片！ (move_mode = 2, 第7參數變為 interval_sec)
                 self.serial_ref.send_joints(joints, arduino_interval, move_mode=2)
-                # Arduino 只要解析完就會秒回 OK，所以不會卡頓
                 self.serial_ref.wait_for_ok(timeout=0.2)
                 
             # 精準時間補償：扣除掉 IK 以外的所有運算/通訊耗時
@@ -188,7 +195,7 @@ class PathManager(QObject):
             "joints": list(current_joints),
             "delay": float(delay),
             "type": move_type,
-            "speed": float(speed), # 將速度存入字典
+            "speed": float(speed), 
             "active": True,
             "note": ""
         }
