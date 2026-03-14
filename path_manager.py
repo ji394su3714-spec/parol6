@@ -42,10 +42,10 @@ class PTPExecutor(QThread):
             self.update_signal.emit(list(current)) 
             time.sleep(effective_duration / steps)
         
-        # 3. 【等待硬體到位】(動畫播完後，如果硬體還沒到就乖乖等它)
+        # 3. 【等待硬體到位】
         if self.serial_ref and self.serial_ref.is_connected:
             if hasattr(self.serial_ref, 'wait_for_motion_complete'):
-                self.serial_ref.wait_for_motion_complete(timeout=60.0)
+                self.serial_ref.wait_for_motion_complete(timeout=10.0)
             
         self.finished_signal.emit()
 
@@ -135,22 +135,23 @@ class CartesianExecutor(QThread):
 
         # Phase 2: 穩定串流 (Streaming)
         interval = effective_duration / steps
+        # 動態計算 GUI 更新間隔：目標維持大約 15 FPS
+        points_per_sec = steps / effective_duration
+        gui_skip_frames = max(1, int(points_per_sec / 15.0)) 
         
         counter = 0 
         
         for joints in trajectory_points:
-            # 降低 GUI 更新率 (大約 10~15 FPS)，把運算力全留給通訊！
-            if counter % 3 == 0 or counter == len(trajectory_points) - 1:
+            # 使用動態計算出來的間隔來更新畫面
+            if counter % gui_skip_frames == 0 or counter == len(trajectory_points) - 1:
                 self.update_signal.emit(joints)
             counter += 1
             
             if self.serial_ref and self.serial_ref.is_connected:
-                # 把 interval 直接送給 Arduino (Mode 2)
                 self.serial_ref.send_joints(joints, interval, move_mode=2)
                 
                 # 核心：Python 會在這裡死等。
                 # 如果 Arduino 水桶滿了，它不回 OK，Python 就會自然卡在這裡等。
-                # 完全不需要 time.sleep！
                 self.serial_ref.wait_for_ok(timeout=1.0)
             
         # 整個 LIN 陣列射完後，等待馬達把最後一段路走完
@@ -244,7 +245,7 @@ class PathManager(QObject):
                     for pt in self.waypoints:
                         if 'active' not in pt: pt['active'] = True
                         if 'type' not in pt: pt['type'] = "PTP"
-                        # 【新增】防呆機制：如果讀取舊存檔沒有速度，自動補上 50.0
+                        # 防呆機制：如果讀取舊存檔沒有速度，自動補上 50.0
                         if 'speed' not in pt: pt['speed'] = 50.0
                 
                 self.list_update_signal.emit()
@@ -328,7 +329,8 @@ class PathManager(QObject):
             self.log_signal.emit(f"Waiting {delay}s...")
             QTimer.singleShot(int(delay * 1000), lambda: self._trigger_next_step(last_joints))
         else:
-            self._trigger_next_step(last_joints)
+            # 補上這個！強制推遲 10 毫秒，讓舊的 QThread 走完結束程序並安全釋放資源。
+            QTimer.singleShot(10, lambda: self._trigger_next_step(last_joints))
 
     def _trigger_next_step(self, last_joints):
         self.path_index += 1
@@ -341,6 +343,7 @@ class PathManager(QObject):
     def stop_path(self):
         if self.worker and self.worker.isRunning():
             self.worker.terminate()
+            self.worker.wait()  # 等待執行緒真正被強制終止後再放手
             self.worker = None
             self.is_looping = False
             self.log_signal.emit("([STOP]) Execution Halted.")

@@ -8,6 +8,14 @@ void processCommand() {
             homingState[i] = 0;  
             steppers[i]->doSteps(0);
         }
+
+        // 補上這段！緊急把水桶裡的水全部倒掉！
+        bufHead = 0;
+        bufTail = 0;
+        bufCount = 0;
+        isBufPlaying = false;
+        pendingOK = false;
+        
         normalMoveActive = false;
         Serial.println("!!! E-STOP TRIGGERED !!!");
         return;
