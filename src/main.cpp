@@ -16,9 +16,9 @@ const JointConfig JOINTS[6] = {
     {54, 55, 38,  2,  LOW,   300,  -28,  250, 14000, 800, 950, 0.5f}, 
     {60, 61, 56, 12,  HIGH, -600,   50,  450, 17000, 800,  1000, 0.5f}, 
     {43, 48, 58, 14,  HIGH,  750,  -70,  550, 17000, 600,  900, 0.5f}, 
-    {26, 28, 24, 15,  LOW,   1000, -145,  400, 15000, 200,  900, 0.25f}, 
-    {36, 34, 30, 63,  HIGH,  750,  -124, 400, 15000, 200,  850, 0.25f}, 
-    {59, 57, 40, 64,  LOW,  1400,    2,  400, 22000, 300,  680, 0.25f}  
+    {26, 28, 24, 15,  LOW,   1000, -145,  400, 17000, 200,  900, 0.25f}, 
+    {36, 34, 30, 63,  HIGH,  750,  -124, 300, 17000, 200,  850, 0.25f}, 
+    {59, 57, 40, 64,  LOW,  1000,    2,  400, 22000, 300,  680, 0.25f}  
 };
 
 const float GEAR_RATIOS[6] = {6.4, 20.0, 18.1, 4.0, 4.0, 10.0};
@@ -49,6 +49,81 @@ bool normalMoveActive = false;
 char receivedChars[NUM_CHARS];
 char tempChars[NUM_CHARS];
 float receivedAngles[6] = {0.0};
+
+// 實體化環形緩衝區變數
+BufPoint ringBuf[BUF_SIZE];
+byte bufHead = 0;
+byte bufTail = 0;
+byte bufCount = 0;
+bool isBufPlaying = false;
+bool pendingOK = false;
+unsigned long lastPointTime = 0;
+unsigned long currentPointInterval = 0;
+
+// 核心播放機：獨立於 USB 通訊之外的純硬體執行器
+void updateRingBuffer() {
+    if (bufCount > 0) {
+        unsigned long now = millis();
+        // 提早 2 毫秒換檔 (0.95 滯後係數的終極版)，確保無縫接軌！
+        if (!isBufPlaying || (now - lastPointTime >= (currentPointInterval > 2 ? currentPointInterval - 2 : 0))) {
+            
+            // 1. 從水桶拿出一個點
+            BufPoint pt = ringBuf[bufTail];
+            bufTail = (bufTail + 1) % BUF_SIZE;
+            bufCount--;
+
+            float maxTime = pt.interval_ms / 1000.0;
+            if (maxTime < 0.01) maxTime = 0.01;
+
+            long deltaSteps[6] = {0};
+            for (int i = 0; i < 6; i++) {
+                deltaSteps[i] = abs(pt.targetSteps[i] - steppers[i]->currentPosition());
+            }
+
+            // 防爆網：等比例拉長時間 (保護 LIN 軌跡不骨折！)
+            // 如果 Python 送來的這個切片太過激進，強迫拉長這段切片的播放時間
+            for (int i = 0; i < 6; i++) {
+                if (deltaSteps[i] > 0) {
+                    float minSafeTime = deltaSteps[i] / (JOINTS[i].maxSpeedSteps10 / 10.0);
+                    if (minSafeTime > maxTime) {
+                        maxTime = minSafeTime;
+                    }
+                }
+            }
+
+            // 3. 算速度並發車 
+            for (int i = 0; i < 6; i++) {
+                if (deltaSteps[i] > 0) {
+                    float syncStepsPerSec = deltaSteps[i] / maxTime;
+                    long mobaSpeed = (long)(syncStepsPerSec * 10.0);
+                    if (mobaSpeed < 1) mobaSpeed = 1;
+
+                    steppers[i]->setSpeedSteps(mobaSpeed);
+                    steppers[i]->setRampLen(0); // LIN 是連續的，把 Ramp 交給硬體時間接管
+                    steppers[i]->writeSteps(pt.targetSteps[i]);
+                }
+            }
+
+            // 4. 更新計時器
+            lastPointTime = now;
+            currentPointInterval = (unsigned long)(maxTime * 1000.0);
+            isBufPlaying = true;
+
+            // 5. 水桶有空位了！把扣留的 OK 釋放，叫 Python 繼續塞資料
+            if (pendingOK && bufCount < BUF_SIZE) {
+                Serial.println("OK");
+                pendingOK = false;
+            }
+        }
+    } else {
+        if (isBufPlaying) {
+            bool moving = false;
+            for(int i=0; i<6; i++) if(steppers[i]->moving()) moving = true;
+            if (!moving) isBufPlaying = false;
+        }
+    }
+}
+
 boolean newData = false;
 
 // 輔助函式
@@ -112,6 +187,9 @@ void setup() {
 }
 
 void loop() {
+
+    updateRingBuffer(); // 每微秒都在檢查要不要換檔
+
     recvWithStartEndMarkers();
     if (newData) {
         strcpy(tempChars, receivedChars);

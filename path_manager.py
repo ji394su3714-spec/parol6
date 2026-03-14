@@ -95,15 +95,15 @@ class CartesianExecutor(QThread):
         
         effective_duration = max(0.1, self.animation_time)
         
-        # 1. 理想狀態：基於「空間解析度」的切片數 (每 2mm 或 1度 切一刀)
+        # 1. 畫質控：維持高解析度的空間切片 (每 2mm 或 1度 切一刀)
         ideal_spatial_steps = max(2, int(dist_mm / 2.0), int(angle_deg / 1.0)) 
         
-        # 2. 物理極限保護：基於「通訊頻率」的切片數 
-        # 強制規定每個切片至少要有 0.05 秒 (50ms) 的執行時間，也就是最高 20Hz 更新率
-        max_communication_steps = max(2, int(effective_duration / 0.05))
+        # 2. 硬體算力極限：不再管通訊延遲，只管 Arduino 的算力極限！
+        # 壓榨到極限的 0.015 秒 (相當於 66Hz 更新率)，這已經是工業級的插補頻率了
+        hardware_limit_steps = max(2, int(effective_duration / 0.015))
         
-        # 3. 動態降頻決策：兩者取小！
-        steps = min(ideal_spatial_steps, max_communication_steps)
+        # 3. 決策：兩者取小
+        steps = min(ideal_spatial_steps, hardware_limit_steps)
         
         # Phase 1: 預先計算 (Planning) 加上 S-Curve
         trajectory_points = []
@@ -135,27 +135,23 @@ class CartesianExecutor(QThread):
 
         # Phase 2: 穩定串流 (Streaming)
         interval = effective_duration / steps
-        arduino_interval = interval * 1.10  #時間寬容度
         
-        counter = 0 # 新增計數器
+        counter = 0 
         
         for joints in trajectory_points:
-            loop_start_time = time.time()
-            
-            # 降低 GUI 更新頻率：每 3 個點 (或最後一個點) 才更新一次畫面
+            # 降低 GUI 更新率 (大約 10~15 FPS)，把運算力全留給通訊！
             if counter % 3 == 0 or counter == len(trajectory_points) - 1:
                 self.update_signal.emit(joints)
             counter += 1
             
             if self.serial_ref and self.serial_ref.is_connected:
-                self.serial_ref.send_joints(joints, arduino_interval, move_mode=2)
-                self.serial_ref.wait_for_ok(timeout=0.2)
+                # 把 interval 直接送給 Arduino (Mode 2)
+                self.serial_ref.send_joints(joints, interval, move_mode=2)
                 
-            # 精準時間補償：扣除掉 IK 以外的所有運算/通訊耗時
-            elapsed = time.time() - loop_start_time
-            sleep_time = interval - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+                # 核心：Python 會在這裡死等。
+                # 如果 Arduino 水桶滿了，它不回 OK，Python 就會自然卡在這裡等。
+                # 完全不需要 time.sleep！
+                self.serial_ref.wait_for_ok(timeout=1.0)
             
         # 整個 LIN 陣列射完後，等待馬達把最後一段路走完
         if self.serial_ref and self.serial_ref.is_connected:

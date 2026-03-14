@@ -68,71 +68,86 @@ void processCommand() {
     }
     if (homingTriggered) Serial.println("OK");
 
-    // 4. 一般移動分派 (Jog / PTP / LIN 統一引擎)
+    // 4. 一般移動分派 (Jog / PTP / LIN 大一統引擎)
     if (!isAnyHoming() && !homingTriggered) {
+
+        // 核心分流：如果是 LIN 模式 (Mode 2)，直接裝入環形緩衝區！
+        if (moveMode == 2) {
+            if (bufCount < BUF_SIZE) {
+                for(int i = 0; i < 6; i++) {
+                    if (receivedAngles[i] != 999.0) {
+                        ringBuf[bufHead].targetSteps[i] = receivedAngles[i] * getStepsPerDeg(i);
+                    } else {
+                        // 防呆：沒收到角度就維持當前目標
+                        ringBuf[bufHead].targetSteps[i] = steppers[i]->currentPosition(); 
+                    }
+                }
+                ringBuf[bufHead].interval_ms = (unsigned long)(param7 * 1000.0);
+
+                bufHead = (bufHead + 1) % BUF_SIZE;
+                bufCount++;
+
+                // 水桶沒滿就馬上回 OK；滿了就扣留 OK (啟動背壓防護)
+                if (bufCount < BUF_SIZE) {
+                    Serial.println("OK");
+                } else {
+                    pendingOK = true;
+                }
+            }
+            normalMoveActive = true;
+            return; // 裝桶完畢，直接下班離開函式！
+        }
+
+        // 以下為 Jog (Mode 0) 與 PTP (Mode 1) 的即時發車邏輯
         long deltaSteps[6] = {0};
         float timeNeeded[6] = {0.0};
         float maxTime = 0.0;
 
-        // 【預算階段】
+        // 【第一階段：收集距離與基礎時間預算】
         for (int i = 0; i < 6; i++) {
             if (receivedAngles[i] != 999.0) {
                 long targetSteps = receivedAngles[i] * getStepsPerDeg(i);
                 deltaSteps[i] = abs(targetSteps - steppers[i]->currentPosition());
                 
-                // Mode 0 (Jog) 和 Mode 1 (PTP) 依靠最高速來預算時間
-                if (moveMode == 1 || moveMode == 0) { 
-                    float currentMaxSpeedSec = (JOINTS[i].maxSpeedSteps10 * param7) / 10.0;
-                    if (currentMaxSpeedSec > 0 && deltaSteps[i] > 0) {
-                        timeNeeded[i] = deltaSteps[i] / currentMaxSpeedSec;
-                        if (timeNeeded[i] > maxTime) maxTime = timeNeeded[i]; 
-                    }
+                float currentMaxSpeedSec = (JOINTS[i].maxSpeedSteps10 * param7) / 10.0;
+                if (currentMaxSpeedSec > 0 && deltaSteps[i] > 0) {
+                    timeNeeded[i] = deltaSteps[i] / currentMaxSpeedSec;
+                    if (timeNeeded[i] > maxTime) maxTime = timeNeeded[i]; 
                 }
             }
         }
 
-        // Mode 2 (LIN) 直接把 Python 送來的切片時間 (param7) 當作 maxTime
-        if (moveMode == 2) {
-            maxTime = param7;
-            if (maxTime < 0.01) maxTime = 0.01; // 防呆底線
+        // 【第二階段：防失步安全網 (全體等比例降速)】
+        // 檢查 Jog/PTP 的移動會不會超速，若會，則強迫拉長全隊的時間！
+        for (int i = 0; i < 6; i++) {
+            if (receivedAngles[i] != 999.0 && deltaSteps[i] > 0) {
+                float minSafeTime = deltaSteps[i] / (JOINTS[i].maxSpeedSteps10 / 10.0);
+                if (minSafeTime > maxTime) {
+                    maxTime = minSafeTime; 
+                }
+            }
         }
 
-        // 【正式發車階段】
+        // 【第三階段：正式發車 (僅處理 Jog 與 PTP)】
         for (int i = 0; i < 6; i++) {
             if (receivedAngles[i] != 999.0) {
                 long targetSteps = receivedAngles[i] * getStepsPerDeg(i);
                 
-                if ((moveMode == 0 || moveMode == 1 || moveMode == 2) && maxTime > 0.0 && deltaSteps[i] > 0) {
+                if (maxTime > 0.0 && deltaSteps[i] > 0) {
                     
-                    // 1. 速度同步與彈性追跡 (Elastic Tracking)
-                    // PTP 需要精準停靠給 1.0；Jog 和 LIN 給予 0.95 讓馬達永遠處於「微幅追趕狀態」，吃掉 USB 延遲！
+                    // PTP 需要精準停靠給 1.0；Jog 連續移動給 0.95 滯後避震
                     float speedTolerance = (moveMode == 1) ? 1.0 : 0.95; 
                     float syncStepsPerSec = (deltaSteps[i] / maxTime) * speedTolerance;
                     
                     long mobaSpeed = (long)(syncStepsPerSec * 10.0);
-                    
-                    // 關鍵防護網：絕對速度天花板！防止失步骨折！
-                    if (mobaSpeed > JOINTS[i].maxSpeedSteps10) {
-                        mobaSpeed = JOINTS[i].maxSpeedSteps10; 
-                        // 可選：如果你想在終端機看到哪一軸超速了，可以把下面這行取消註解
-                        // Serial.print("Warning: J"); Serial.print(i+1); Serial.println(" Speed Capped!");
-                    }
-                    
                     if (mobaSpeed < 1) mobaSpeed = 1; 
                     steppers[i]->setSpeedSteps(mobaSpeed);
                     
-                    // 2. 關鍵分流：Ramp 策略必須各自獨立！
-                    if (moveMode == 1 || moveMode == 0) {
-                        // PTP 與 JOG：距離長，由 Arduino 負責產生避震 Ramp
-                        float accelTimeSec = 0.3; 
-                        long syncRamp = syncStepsPerSec * (accelTimeSec / 2.0);
-                        if (syncRamp < 5) syncRamp = 5; 
-                        steppers[i]->setRampLen(syncRamp);
-                    } else {
-                        // LIN：距離極短，Python 已經算好 S 曲線了
-                        // 因為有 0.95 的滯後係數，馬達不會停，Ramp 設為 0 也能完美平滑變速
-                        steppers[i]->setRampLen(0); 
-                    }
+                    // PTP 與 Jog 皆由 Arduino 負責產生避震 Ramp
+                    float accelTimeSec = 0.3; 
+                    long syncRamp = syncStepsPerSec * (accelTimeSec / 2.0);
+                    if (syncRamp < 5) syncRamp = 5; 
+                    steppers[i]->setRampLen(syncRamp);
                 }
                 steppers[i]->writeSteps(targetSteps); 
             }
