@@ -263,6 +263,32 @@ class PathManager(QObject):
             except Exception as e:
                 self.log_signal.emit(f"[Error] Load failed: {e}")
 
+    def get_trajectory_preview(self, tcp_offset):
+        """職權分離：由 PathManager 負責計算 3D 預覽軌跡"""
+        trajectory_points = []
+        active_wps = [pt for pt in self.waypoints if pt.get('active', True)]
+        
+        if len(active_wps) >= 2:
+            for i in range(len(active_wps) - 1):
+                j_start = np.array(active_wps[i]['joints'])
+                j_end = np.array(active_wps[i+1]['joints'])
+                m_type = active_wps[i+1].get('type', 'LIN') 
+                
+                steps = 20
+                if m_type == 'PTP':
+                    for t in np.linspace(0, 1, steps):
+                        interp = j_start + t * (j_end - j_start)
+                        T_tcp = kinematics.forward_kinematics(interp) @ tcp_offset
+                        trajectory_points.append(T_tcp[:3, 3])
+                else:
+                    T_s = kinematics.forward_kinematics(j_start) @ tcp_offset
+                    T_e = kinematics.forward_kinematics(j_end) @ tcp_offset
+                    xs, xe = T_s[:3, 3], T_e[:3, 3]
+                    for t in np.linspace(0, 1, steps):
+                        trajectory_points.append(xs + t * (xe - xs))
+                        
+        return trajectory_points
+
     # --- 路徑執行邏輯 ---
     def run_path(self, current_joints_start, loop=False, tcp_offset=None):
         active_points = [pt for pt in self.waypoints if pt.get('active', True)]

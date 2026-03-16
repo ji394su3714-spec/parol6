@@ -35,6 +35,7 @@ class RobotGUI(QMainWindow):
         
         self.current_joints = [0.0] * 6
         self.prev_joints = None  
+        self.is_animating = False  # 初始化時宣告，防止屬性錯誤
         
         # 硬體修正矩陣
         self.T_hw_fix = np.eye(4)
@@ -77,50 +78,51 @@ class RobotGUI(QMainWindow):
     def setup_top_bar(self):
         top_bar = QFrame()
         top_bar.setFixedHeight(90)
-        top_bar.setStyleSheet(styles.TOP_BAR_STYLE)
+        top_bar.setObjectName("top_bar")
         layout = QHBoxLayout(top_bar)
         layout.setContentsMargins(20, 10, 20, 10)
         layout.setSpacing(15)
         
         title_lbl = QLabel("PAROL6 Controller")
-        title_lbl.setStyleSheet(styles.TITLE_LABEL_STYLE)
+        title_lbl.setObjectName("title_lbl")
         layout.addWidget(title_lbl)
         
         self._setup_run_buttons(layout)
-
         BTN_HEIGHT = 55
+
         btn_stop = QPushButton(" STOP")
         btn_stop.setFixedHeight(BTN_HEIGHT)
         btn_stop.setIcon(qta.icon('fa5s.pause-circle', color='white'))
-        btn_stop.setStyleSheet(styles.BTN_STOP_STYLE)
+        btn_stop.setObjectName("btn_stop") 
+        btn_stop.setProperty("class", "TopBtn") 
         btn_stop.clicked.connect(self.emergency_stop)
         layout.addWidget(btn_stop)
         
         btn_home = QPushButton("HOME")
         btn_home.setFixedHeight(BTN_HEIGHT)
         btn_home.setIcon(qta.icon('fa5s.home', color='white'))
-        btn_home.setStyleSheet(styles.BTN_HOME_STYLE)
+        btn_home.setObjectName("btn_home")   
+        btn_home.setProperty("class", "TopBtn")
         btn_home.clicked.connect(self.home_robot)
         layout.addWidget(btn_home)
 
-        #  HOMING 按鈕  
         btn_homing = QPushButton("HOMING")
         btn_homing.setFixedHeight(BTN_HEIGHT)
-        btn_homing.setStyleSheet(styles.BTN_HOMING_STYLE)
+        btn_homing.setObjectName("btn_homing") 
+        btn_homing.setProperty("class", "TopBtn")  
         btn_homing.clicked.connect(self.confirm_homing)
         layout.addWidget(btn_homing)
         
         layout.addSpacing(20)
 
-        # --- 硬體連線區域 ---
         lbl_port = QLabel("Port:")
-        lbl_port.setStyleSheet("color: #ecf0f1; font-weight: bold; font-size: 16px;")
+        lbl_port.setObjectName("lbl_port") 
         layout.addWidget(lbl_port)
         
         self.combo_ports = QComboBox()
         self.combo_ports.setMinimumWidth(120)
         self.combo_ports.setFixedHeight(40)
-        self.combo_ports.setStyleSheet(styles.COMBO_PORT_STYLE) 
+        self.combo_ports.setObjectName("combo_ports")
         self.refresh_ports() 
         layout.addWidget(self.combo_ports)
         
@@ -128,14 +130,14 @@ class RobotGUI(QMainWindow):
         btn_refresh.setIcon(qta.icon('fa5s.sync-alt', color='white'))
         btn_refresh.setFixedSize(40, 40)
         btn_refresh.setToolTip("Refresh Ports")
-        btn_refresh.setStyleSheet(styles.BTN_REFRESH_STYLE) 
+        btn_refresh.setObjectName("btn_refresh") 
         btn_refresh.clicked.connect(self.refresh_ports)
         layout.addWidget(btn_refresh)
         
         self.btn_connect = QPushButton(" Connect")
         self.btn_connect.setIcon(qta.icon('fa5s.plug', color='white'))
         self.btn_connect.setFixedHeight(40)
-        self.btn_connect.setStyleSheet(styles.BTN_CONNECT_STYLE) 
+        self.btn_connect.setObjectName("btn_connect") 
         self.btn_connect.clicked.connect(self.toggle_connection)
         layout.addWidget(self.btn_connect)
         
@@ -144,7 +146,8 @@ class RobotGUI(QMainWindow):
         btn_tool = QPushButton(" TOOL")
         btn_tool.setFixedHeight(BTN_HEIGHT)
         btn_tool.setIcon(qta.icon('fa5s.tools', color='white'))
-        btn_tool.setStyleSheet(styles.BTN_TOOL_STYLE)
+        btn_tool.setObjectName("btn_tool") 
+        btn_tool.setProperty("class", "TopBtn")  
         btn_tool.clicked.connect(self.open_tcp_settings)
         layout.addWidget(btn_tool)
         
@@ -198,12 +201,16 @@ class RobotGUI(QMainWindow):
         if connected:
             self.btn_connect.setText(" Disconnect")
             self.btn_connect.setIcon(qta.icon('fa5s.times', color='white'))
-            self.btn_connect.setStyleSheet(styles.BTN_DISCONNECT_STYLE)
+            self.btn_connect.setObjectName("btn_disconnect") 
+            self.btn_connect.style().unpolish(self.btn_connect) 
+            self.btn_connect.style().polish(self.btn_connect)
             self.combo_ports.setEnabled(False)
         else:
             self.btn_connect.setText(" Connect")
             self.btn_connect.setIcon(qta.icon('fa5s.plug', color='white'))
-            self.btn_connect.setStyleSheet(styles.BTN_CONNECT_STYLE)
+            self.btn_connect.setObjectName("btn_connect") 
+            self.btn_connect.style().unpolish(self.btn_connect) 
+            self.btn_connect.style().polish(self.btn_connect)
             self.combo_ports.setEnabled(True)
 
     def emergency_stop(self):
@@ -226,16 +233,17 @@ class RobotGUI(QMainWindow):
         btn_run_main = QPushButton(" RUN PATH")
         btn_run_main.setFixedHeight(BTN_HEIGHT)
         btn_run_main.setIcon(qta.icon('fa5s.play-circle', color='white'))
-        btn_run_main.setStyleSheet(styles.BTN_RUN_MAIN_STYLE)
+        btn_run_main.setObjectName("btn_run_main") 
         btn_run_main.clicked.connect(lambda: self.trigger_run_path(loop=False))
         
         self.btn_run_menu = QPushButton()
         self.btn_run_menu.setFixedSize(30, BTN_HEIGHT)
         self.btn_run_menu.setIcon(qta.icon('fa5s.chevron-down', color='white'))
-        self.btn_run_menu.setStyleSheet(styles.BTN_RUN_MENU_STYLE)
+        self.btn_run_menu.setObjectName("btn_run_menu") 
         
         self.run_menu = QMenu(self)
-        self.run_menu.setStyleSheet(styles.MENU_STYLE)
+        self.run_menu.setObjectName("run_menu") 
+        #self.run_menu.setStyleSheet(styles.MENU_STYLE)
         action_run_once = QAction(qta.icon('fa5s.play', color='white'), "Run Path", self)
         action_run_loop = QAction(qta.icon('fa5s.sync', color='white'), "Loop Run", self)
         action_run_once.triggered.connect(lambda: self.trigger_run_path(loop=False))
@@ -263,7 +271,7 @@ class RobotGUI(QMainWindow):
         left_widget.setFixedWidth(700)
         self.content_layout.addWidget(left_widget)
 
-    # ===  JointControlRow  ===
+    #  JointControlRow
     def setup_joint_control(self):
         group = QGroupBox("Joint Control")
         layout = QVBoxLayout() 
@@ -463,8 +471,6 @@ class RobotGUI(QMainWindow):
         # 2. 加入自訂的 ListWidget
         self.waypoint_list = WaypointListWidget() 
         self.waypoint_list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.waypoint_list.itemClicked.connect(self.preview_waypoint)
-        self.waypoint_list.itemDoubleClicked.connect(self.rename_waypoint_item)
 
         scrollbar = self.waypoint_list.verticalScrollBar()
         scrollbar.rangeChanged.connect(
@@ -589,30 +595,13 @@ class RobotGUI(QMainWindow):
         self.sim.toggle_skeleton(checked)
         self.on_manager_update_joints(self.current_joints)
 
-    def preview_waypoint(self, item):
+    def preview_waypoint_by_index(self, index):
         if self.path_manager.worker and self.path_manager.worker.isRunning(): return
-        row = self.waypoint_list.row(item)
-        if row < 0 or row >= len(self.path_manager.waypoints): return
-        target_data = self.path_manager.waypoints[row]
+        if index < 0 or index >= len(self.path_manager.waypoints): return
+        
+        target_data = self.path_manager.waypoints[index]
         self.log(f"Previewing: {target_data['name']}")
         self.on_manager_update_joints(list(target_data['joints']))
-
-    def rename_waypoint_item(self, item):
-        row = self.waypoint_list.row(item)
-        if row < 0 or row >= len(self.path_manager.waypoints):
-            return
-        target_data = self.path_manager.waypoints[row]
-        old_name = target_data['name']
-        from PyQt5.QtWidgets import QInputDialog 
-        text, ok = QInputDialog.getText(self, "Rename Point", 
-                                      "New Name (Max 15 chars):", 
-                                      text=old_name)
-        if ok and text:
-            new_name = text[:15].strip()
-            if not new_name: return 
-            self.path_manager.waypoints[row]['name'] = new_name
-            self.refresh_waypoint_list()
-            self.log(f"Renamed: {old_name} -> {new_name}")
 
     def trigger_record(self):
         default_delay = 0.0
@@ -682,7 +671,7 @@ class RobotGUI(QMainWindow):
             
         user_offset = self.tcp_manager.get_active_matrix()
         self.sim.update_simulation(self.current_joints, user_offset)
-        self.update_monitor() # 更新 XYZ/RPY 數值
+        self.update_monitor() 
         
         # 如果現在正在跑自動路徑，UI 只負責更新畫面，不發送硬體指令！
         if self.path_manager.worker and self.path_manager.worker.isRunning():
@@ -692,6 +681,7 @@ class RobotGUI(QMainWindow):
         self.serial_manager.send_joints(self.current_joints)
 
     def refresh_waypoint_list(self):
+        # 1. 更新純 UI 清單
         self.waypoint_list.clear()
         for i, pt in enumerate(self.path_manager.waypoints):
             item = QListWidgetItem(self.waypoint_list)
@@ -699,53 +689,17 @@ class RobotGUI(QMainWindow):
                 index=i, 
                 data=pt, 
                 on_toggle_cb=self.path_manager.toggle_point_active,
-                on_delete_cb=self.path_manager.delete_point
+                on_delete_cb=self.path_manager.delete_point,
+                on_update_cb=self.refresh_waypoint_list,      # 改變模式時重繪軌跡
+                on_preview_cb=self.preview_waypoint_by_index  # 點擊名稱時專屬預覽
             )
             item.setSizeHint(row_widget.sizeHint())
             self.waypoint_list.setItemWidget(item, row_widget)
         self.waypoint_list.scrollToBottom()
-
-        # 計算所有點的 XYZ 座標並畫出 3D 軌跡線
-        trajectory_points = []
-        user_offset = self.tcp_manager.get_active_matrix()
-        T_total_offset = self.T_hw_fix @ user_offset
-        
-        # 1. 篩選出所有啟用的點
-        active_wps = [pt for pt in self.path_manager.waypoints if pt.get('active', True)]
-        
-        # 2. 只有兩個點以上才能連成線
-        if len(active_wps) >= 2:
-            for i in range(len(active_wps) - 1):
-                joints_start = np.array(active_wps[i]['joints'])
-                joints_end = np.array(active_wps[i+1]['joints'])
-                
-                # 判斷目標點的運動模式 (假設您的點位資料有存 'type' 或 'mode')
-                move_type = active_wps[i+1].get('type', 'LIN') 
-                
-                steps = 20
-                if move_type == 'PTP':
-                    # 【PTP 模式】關節空間插值 -> 產生弧線
-                    for t in np.linspace(0, 1, steps):
-                        interp_joints = joints_start + t * (joints_end - joints_start)
-                        T_tcp = kinematics.forward_kinematics(interp_joints) @ T_total_offset
-                        trajectory_points.append(T_tcp[:3, 3])
-                else:
-                    # 【LIN 模式】笛卡爾空間 (XYZ) 插值 -> 產生絕對直線
-                    T_start = kinematics.forward_kinematics(joints_start) @ T_total_offset
-                    T_end = kinematics.forward_kinematics(joints_end) @ T_total_offset
-                    
-                    xyz_start = T_start[:3, 3]
-                    xyz_end = T_end[:3, 3]
-                    
-                    # 直接在 3D 空間中把起點到終點拉一條直直的線
-                    for t in np.linspace(0, 1, steps):
-                        interp_xyz = xyz_start + t * (xyz_end - xyz_start)
-                        trajectory_points.append(interp_xyz)
-                    
-        if trajectory_points:
-            self.sim.draw_trajectory(trajectory_points)
-        else:
-            self.sim.draw_trajectory([])
+        # 2. 跟大腦拿算好的軌跡，直接叫模擬器畫出來 
+        T_total_offset = self.T_hw_fix @ self.tcp_manager.get_active_matrix()
+        traj_points = self.path_manager.get_trajectory_preview(T_total_offset)
+        self.sim.draw_trajectory(traj_points)
 
         # --- 觸發路徑執行函式 ---
     def trigger_run_path(self, loop=False):
