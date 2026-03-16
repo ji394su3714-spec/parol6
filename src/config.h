@@ -7,8 +7,14 @@
 struct JointConfig {
     byte stepPin; byte dirPin; byte enPin; byte limitPin; bool limitActiveState;
     float homingSpeed; float homingPos; long bounceSteps; 
-    long maxSpeedSteps10; int rampSteps;
-    uint16_t runCurrent_mA; float holdCurrentRatio;        
+    long jointControlSpd10; long maxSpeedSteps10; 
+    int rampSteps;      
+};
+
+// 2. 馬達電流配置結構
+struct MotorCurrentConfig {
+    uint16_t run_mA; 
+    float hold_ratio;
 };
 
 // 驅動晶片採樣電阻與腳位
@@ -18,6 +24,7 @@ struct JointConfig {
 
 // 宣告外部常數陣列
 extern const JointConfig JOINTS[6];
+extern const MotorCurrentConfig MOTOR_CURRENTS[6];
 extern const float GEAR_RATIOS[6];
 
 // 全域硬體常數

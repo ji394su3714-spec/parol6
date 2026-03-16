@@ -10,7 +10,7 @@ from scipy.spatial.transform import Slerp
 import kinematics
 import math
 
-# --- 1. PTP 執行器 (關節插值) ---
+# --- 1. PTP 執行器 ---
 class PTPExecutor(QThread):
     update_signal = pyqtSignal(list)
     finished_signal = pyqtSignal()
@@ -93,10 +93,23 @@ class CartesianExecutor(QThread):
         angle_rad = np.linalg.norm(R.from_matrix(R_diff).as_rotvec())
         angle_deg = np.degrees(angle_rad)
         
-        effective_duration = max(0.1, self.animation_time)
+        # 核心修正：捨棄不合理的「固定動畫時間」！
+        # 改為：根據「實際物理距離」與「速度百分比」來計算真實需要的時間
+
+        MAX_LIN_SPEED = 150.0  # 手臂的最高直線極速 (mm/s)，你可依實機手感微調
+        MAX_ROT_SPEED = 60.0   # 手臂的最高旋轉極速 (deg/s)
         
+        target_lin_speed = MAX_LIN_SPEED * self.speed_factor
+        target_rot_speed = MAX_ROT_SPEED * self.speed_factor
+        
+        time_for_lin = dist_mm / max(0.1, target_lin_speed)
+        time_for_rot = angle_deg / max(0.1, target_rot_speed)
+        
+        # 總時間取「平移」和「旋轉」兩者中較耗時的那個，確保兩者都不會超速
+        effective_duration = max(0.1, time_for_lin, time_for_rot)
+
         # 1. 畫質控：維持高解析度的空間切片 (每 2mm 或 1度 切一刀)
-        ideal_spatial_steps = max(2, int(dist_mm / 2.0), int(angle_deg / 1.0)) 
+        ideal_spatial_steps = max(2, int(dist_mm / 2.0), int(angle_deg / 1.0))
         
         # 2. 硬體算力極限：不再管通訊延遲，只管 Arduino 的算力極限！
         # 壓榨到極限的 0.015 秒 (相當於 66Hz 更新率)，這已經是工業級的插補頻率了
@@ -135,9 +148,9 @@ class CartesianExecutor(QThread):
 
         # Phase 2: 穩定串流 (Streaming)
         interval = effective_duration / steps
-        # 動態計算 GUI 更新間隔：目標維持大約 15 FPS
+        # 動態計算 GUI 更新間隔：目標維持大約 10 FPS
         points_per_sec = steps / effective_duration
-        gui_skip_frames = max(1, int(points_per_sec / 15.0)) 
+        gui_skip_frames = max(1, int(points_per_sec / 10.0)) 
         
         counter = 0 
         
@@ -149,9 +162,6 @@ class CartesianExecutor(QThread):
             
             if self.serial_ref and self.serial_ref.is_connected:
                 self.serial_ref.send_joints(joints, interval, move_mode=2)
-                
-                # 核心：Python 會在這裡死等。
-                # 如果 Arduino 水桶滿了，它不回 OK，Python 就會自然卡在這裡等。
                 self.serial_ref.wait_for_ok(timeout=1.0)
             
         # 整個 LIN 陣列射完後，等待馬達把最後一段路走完
@@ -329,7 +339,7 @@ class PathManager(QObject):
             self.log_signal.emit(f"Waiting {delay}s...")
             QTimer.singleShot(int(delay * 1000), lambda: self._trigger_next_step(last_joints))
         else:
-            # 補上這個！強制推遲 10 毫秒，讓舊的 QThread 走完結束程序並安全釋放資源。
+            # 強制推遲 10 毫秒，讓舊的 QThread 走完結束程序並安全釋放資源。
             QTimer.singleShot(10, lambda: self._trigger_next_step(last_joints))
 
     def _trigger_next_step(self, last_joints):
@@ -341,6 +351,10 @@ class PathManager(QObject):
         self.stop_path()
 
     def stop_path(self):
+        # 強制發送急停指令，瞬間倒掉 Arduino 裡的水桶並煞車！
+        if self.serial_manager and self.serial_manager.is_connected:
+            self.serial_manager.send_command("<STOP>")
+            
         if self.worker and self.worker.isRunning():
             self.worker.terminate()
             self.worker.wait()  # 等待執行緒真正被強制終止後再放手

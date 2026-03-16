@@ -20,12 +20,12 @@ extern boolean newData;
 float getStepsPerDeg(int axis);
 bool isAnyHoming();
 
-// === 環形緩衝區 (Ring Buffer) 變數 ===
+// 環形緩衝區 (Ring Buffer) 變數
 #define BUF_SIZE 30
 
 struct BufPoint {
     long targetSteps[6];
-    unsigned long interval_ms;
+    unsigned long interval_us;
 };
 
 extern BufPoint ringBuf[BUF_SIZE];
@@ -34,9 +34,10 @@ extern byte bufTail;
 extern byte bufCount;
 extern bool isBufPlaying;
 extern bool pendingOK;
-extern unsigned long lastPointTime;
-extern unsigned long currentPointInterval;
 
-void updateRingBuffer(); // 宣告水桶運作函式
+extern long lastBufTarget[6]; 
+extern unsigned long lastPointTimeUs;
+extern unsigned long currentPointIntervalUs;
 
+void updateRingBuffer();
 #endif

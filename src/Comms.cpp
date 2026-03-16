@@ -90,7 +90,7 @@ void processCommand() {
                         ringBuf[bufHead].targetSteps[i] = steppers[i]->currentPosition(); 
                     }
                 }
-                ringBuf[bufHead].interval_ms = (unsigned long)(param7 * 1000.0);
+                ringBuf[bufHead].interval_us = (unsigned long)(param7 * 1000000.0);
 
                 bufHead = (bufHead + 1) % BUF_SIZE;
                 bufCount++;
@@ -117,10 +117,10 @@ void processCommand() {
                 long targetSteps = receivedAngles[i] * getStepsPerDeg(i);
                 deltaSteps[i] = abs(targetSteps - steppers[i]->currentPosition());
                 
-                float currentMaxSpeedSec = (JOINTS[i].maxSpeedSteps10 * param7) / 10.0;
+                float currentMaxSpeedSec = (JOINTS[i].jointControlSpd10 * param7) / 10.0;
                 if (currentMaxSpeedSec > 0 && deltaSteps[i] > 0) {
                     timeNeeded[i] = deltaSteps[i] / currentMaxSpeedSec;
-                    if (timeNeeded[i] > maxTime) maxTime = timeNeeded[i]; 
+                    if (timeNeeded[i] > maxTime) maxTime = timeNeeded[i];
                 }
             }
         }

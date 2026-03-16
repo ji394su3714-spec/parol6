@@ -10,15 +10,26 @@
 #include "Homing.h"
 #include "Comms.h"
 
-// 實體變數定義區 (全專案只有這裡會佔用記憶體)
+// 實體變數定義區
 const JointConfig JOINTS[6] = {
-    // step, dir, en, lim, lim_active, h_spd, h_pos, bounce, max_spd, ramp, run_mA, hold_ratio
-    {54, 55, 38,  2,  LOW,   300,  -28,  250, 14000, 800, 950, 0.5f}, 
-    {60, 61, 56, 12,  HIGH, -600,   50,  450, 17000, 800,  1000, 0.5f}, 
-    {43, 48, 58, 14,  HIGH,  750,  -70,  550, 17000, 600,  900, 0.5f}, 
-    {26, 28, 24, 15,  LOW,   1000, -145,  400, 17000, 200,  900, 0.25f}, 
-    {36, 34, 30, 63,  HIGH,  750,  -124, 300, 17000, 200,  850, 0.25f}, 
-    {59, 57, 40, 64,  LOW,  1000,    2,  400, 22000, 300,  680, 0.25f}  
+    // step, dir, en, lim, lim_active, h_spd, h_pos, bounce, j_ctrl_spd, max_spd, ramp
+    {54, 55, 38,  2,  LOW,   300, -28,  250, 14000, 30000, 800}, 
+    {60, 61, 56, 12,  HIGH, -600,  50,  450, 17000, 30000, 800}, 
+    {43, 48, 58, 14,  HIGH,  750, -70,  550, 17000, 30000, 600}, 
+    {26, 28, 24, 15,  LOW,   900, -145, 400, 17000, 30000, 200}, 
+    {36, 34, 30, 63,  HIGH,  750, -124, 300, 17000, 30000, 200}, 
+    {59, 57, 40, 64,  LOW,  1000,   2,  400, 25000, 30000, 200}  
+};
+
+// 電流設定陣列
+const MotorCurrentConfig MOTOR_CURRENTS[6] = {
+    // run_mA, hold_ratio
+    {1000, 0.5f},  // J1
+    {1000, 0.5f},  // J2 (TMC5160)
+    {900,  0.5f},  // J3
+    {850,  0.25f}, // J4
+    {850,  0.25f}, // J5
+    {680,  0.25f}  // J6
 };
 
 const float GEAR_RATIOS[6] = {6.4, 20.0, 18.1, 4.0, 4.0, 10.0};
@@ -57,31 +68,41 @@ byte bufTail = 0;
 byte bufCount = 0;
 bool isBufPlaying = false;
 bool pendingOK = false;
-unsigned long lastPointTime = 0;
-unsigned long currentPointInterval = 0;
 
-// 核心播放機：獨立於 USB 通訊之外的純硬體執行器
+// 實體化新的計時變數
+long lastBufTarget[6] = {0}; 
+unsigned long lastPointTimeUs = 0;
+unsigned long currentPointIntervalUs = 0;
+
+// 🌟 核心播放機：絕對座標微超速追跡版
 void updateRingBuffer() {
     if (bufCount > 0) {
-        unsigned long now = millis();
-        // 提早 2 毫秒換檔 (0.95 滯後係數的終極版)，確保無縫接軌！
-        if (!isBufPlaying || (now - lastPointTime >= (currentPointInterval > 2 ? currentPointInterval - 2 : 0))) {
+        unsigned long nowUs = micros(); 
+        
+        if (!isBufPlaying) {
+            for(int i = 0; i < 6; i++) {
+                lastBufTarget[i] = steppers[i]->currentPosition();
+            }
+            lastPointTimeUs = nowUs;
+            currentPointIntervalUs = 0; 
+        }
+
+        if (nowUs - lastPointTimeUs >= currentPointIntervalUs) {
             
-            // 1. 從水桶拿出一個點
             BufPoint pt = ringBuf[bufTail];
             bufTail = (bufTail + 1) % BUF_SIZE;
             bufCount--;
 
-            float maxTime = pt.interval_ms / 1000.0;
-            if (maxTime < 0.01) maxTime = 0.01;
+            // 從微秒換算回秒，作為數學基準
+            float maxTime = pt.interval_us / 1000000.0;
+            if (maxTime < 0.005) maxTime = 0.005;
 
             long deltaSteps[6] = {0};
             for (int i = 0; i < 6; i++) {
-                deltaSteps[i] = abs(pt.targetSteps[i] - steppers[i]->currentPosition());
+                deltaSteps[i] = abs(pt.targetSteps[i] - lastBufTarget[i]);
             }
 
-            // 防爆網：等比例拉長時間 (保護 LIN 軌跡不骨折！)
-            // 如果 Python 送來的這個切片太過激進，強迫拉長這段切片的播放時間
+            // 🛡️ 防爆網
             for (int i = 0; i < 6; i++) {
                 if (deltaSteps[i] > 0) {
                     float minSafeTime = deltaSteps[i] / (JOINTS[i].maxSpeedSteps10 / 10.0);
@@ -94,22 +115,28 @@ void updateRingBuffer() {
             // 3. 算速度並發車 
             for (int i = 0; i < 6; i++) {
                 if (deltaSteps[i] > 0) {
-                    float syncStepsPerSec = deltaSteps[i] / maxTime;
-                    long mobaSpeed = (long)(syncStepsPerSec * 10.0);
+                    
+                    // 修正 1：回歸最完美的 1.0 (100% 同步)，消滅提早到站的煞車碎震！
+                    float syncStepsPerSec = (deltaSteps[i] / maxTime) * 1.0; 
+                    
+                    // 修正 2：加上 0.5 進行四捨五入！防止 C++ 轉整數時微幅吃掉速度導致累積延遲
+                    long mobaSpeed = (long)(syncStepsPerSec * 10.0 + 0.5); 
+                    
                     if (mobaSpeed < 1) mobaSpeed = 1;
 
                     steppers[i]->setSpeedSteps(mobaSpeed);
-                    steppers[i]->setRampLen(0); // LIN 是連續的，把 Ramp 交給硬體時間接管
+                    steppers[i]->setRampLen(0); 
                     steppers[i]->writeSteps(pt.targetSteps[i]);
                 }
+                // 更新舊目標
+                lastBufTarget[i] = pt.targetSteps[i];
             }
 
-            // 4. 更新計時器
-            lastPointTime = now;
-            currentPointInterval = (unsigned long)(maxTime * 1000.0);
+            // 4. 更新微秒計時器 (注意：計時器依然使用 1.0 的標準時間，只有速度超前)
+            lastPointTimeUs = nowUs;
+            currentPointIntervalUs = (unsigned long)(maxTime * 1000000.0);
             isBufPlaying = true;
 
-            // 5. 水桶有空位了！把扣留的 OK 釋放，叫 Python 繼續塞資料
             if (pendingOK && bufCount < BUF_SIZE) {
                 Serial.println("OK");
                 pendingOK = false;
@@ -118,7 +145,7 @@ void updateRingBuffer() {
     } else {
         if (isBufPlaying) {
             bool moving = false;
-            for(int i=0; i<6; i++) if(steppers[i]->moving()) moving = true;
+            for(int i = 0; i < 6; i++) if(steppers[i]->moving()) moving = true;
             if (!moving) isBufPlaying = false;
         }
     }
@@ -161,14 +188,14 @@ void setup() {
         drv.TCOOLTHRS(0); 
     };
 
-    setupTMC2209(driver_J1, JOINTS[0].runCurrent_mA, JOINTS[0].holdCurrentRatio);
-    setupTMC2209(driver_J3, JOINTS[2].runCurrent_mA, JOINTS[2].holdCurrentRatio);
-    setupTMC2209(driver_J4, JOINTS[3].runCurrent_mA, JOINTS[3].holdCurrentRatio);
-    setupTMC2209(driver_J5, JOINTS[4].runCurrent_mA, JOINTS[4].holdCurrentRatio);
+    setupTMC2209(driver_J1, MOTOR_CURRENTS[0].run_mA, MOTOR_CURRENTS[0].hold_ratio);
+    setupTMC2209(driver_J3, MOTOR_CURRENTS[2].run_mA, MOTOR_CURRENTS[2].hold_ratio);
+    setupTMC2209(driver_J4, MOTOR_CURRENTS[3].run_mA, MOTOR_CURRENTS[3].hold_ratio);
+    setupTMC2209(driver_J5, MOTOR_CURRENTS[4].run_mA, MOTOR_CURRENTS[4].hold_ratio);
 
     driver_J2.begin();
     driver_J2.toff(5);
-    driver_J2.rms_current(JOINTS[1].runCurrent_mA, JOINTS[1].holdCurrentRatio); 
+    driver_J2.rms_current(MOTOR_CURRENTS[1].run_mA, MOTOR_CURRENTS[1].hold_ratio);
     driver_J2.microsteps(8);
     driver_J2.en_pwm_mode(true);
     driver_J2.pwm_autoscale(true);

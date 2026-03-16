@@ -2,11 +2,8 @@
 import sys
 import datetime
 import numpy as np
-from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QLabel, QPushButton, QGroupBox, 
-                             QDoubleSpinBox, QFrame, QDialog,
-                             QListWidgetItem, QMessageBox, 
-                             QComboBox, QMenu, QAction)
+from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox, 
+                             QDoubleSpinBox, QFrame, QDialog,QListWidgetItem, QMessageBox, QComboBox, QMenu, QAction)
 from PyQt5.QtCore import Qt, QTimer
 import qtawesome as qta
 

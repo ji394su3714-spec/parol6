@@ -36,7 +36,7 @@ class RobotSimulation:
         base_path = os.path.join(current_dir, "assets", "urdf", "meshes")
         
         pbr_props = { "pbr": True, "smooth_shading": True, "split_sharp_edges": True }
-        colors = ["#7f8c8d", "#bdc3c7", "#95a5a6", "#bdc3c7", "#95a5a6", "#bdc3c7", "#e74c3c"]
+        colors = ["#7f8c8d", "#bdc3c7", "#95a5a6", "#bdc3c7", "#95a5a6", "#bdc3c7", "#95a5a6"]
 
         for i, stl_name in enumerate(config.STL_FILES):
             try:
@@ -192,23 +192,17 @@ class RobotSimulation:
         在 3D 空間中畫出路徑點連線
         :param points: 包含 [x, y, z] 的清單或 numpy array
         """
-        # 1. 如果畫面上已經有舊的軌跡線，先把它移除
+        # 如果已經有路徑線了，先移除舊的
         if hasattr(self, 'path_actor') and self.path_actor is not None:
             self.plotter.remove_actor(self.path_actor)
             self.path_actor = None
             
-        # 2. 如果點不到 2 個（無法連成線），就直接結束
         if not points or len(points) < 2:
-            return
-            
-        # 3. 把座標轉換為 PyVista 吃的 numpy 格式
+            return  # 至少需要兩個點才能畫線
         points_array = np.array(points)
-        
-        # 4. 建立連續線段 (PolyData)
         path_line = pv.lines_from_points(points_array)
         
-        # 5. 加入到 plotter 中，設定顏色、線寬
-        # 使用 name 參數可以確保如果重複加入，PyVista 會自動覆蓋同名的物件
+        # 加入到 plotter 中，設定顏色、線寬
         self.path_actor = self.plotter.add_mesh(
             path_line, 
             color='white', 
