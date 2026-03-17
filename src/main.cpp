@@ -13,12 +13,12 @@
 // 實體變數定義區
 const JointConfig JOINTS[6] = {
     // step, dir, en, lim, lim_active, h_spd, h_pos, bounce, j_ctrl_spd, max_spd, ramp
-    {54, 55, 38,  2,  LOW,   300, -28,  250, 14000, 30000, 800}, 
-    {60, 61, 56, 12,  HIGH, -600,  50,  450, 17000, 30000, 800}, 
-    {43, 48, 58, 14,  HIGH,  750, -70,  550, 17000, 30000, 600}, 
-    {26, 28, 24, 15,  LOW,   900, -145, 400, 17000, 30000, 200}, 
-    {36, 34, 30, 63,  HIGH,  750, -124, 300, 17000, 30000, 200}, 
-    {59, 57, 40, 64,  LOW,  1000,   2,  400, 25000, 30000, 200}  
+    {54, 55, 38,  2,  LOW,   300, -28,  250, 14000, 30000, 400}, 
+    {60, 61, 56, 12,  HIGH, -600,  50,  450, 17000, 30000, 400}, 
+    {43, 48, 58, 14,  HIGH,  750, -70,  550, 17000, 30000, 400}, 
+    {26, 28, 24, 15,  LOW,   900, -145, 400, 15000, 30000, 200}, 
+    {36, 34, 30, 63,  HIGH,  750, -124, 300, 15000, 30000, 200}, 
+    {59, 57, 40, 64,  LOW,  1000,   2,  400, 20000, 30000, 200}  
 };
 
 // 電流設定陣列
@@ -99,10 +99,11 @@ void updateRingBuffer() {
 
             long deltaSteps[6] = {0};
             for (int i = 0; i < 6; i++) {
-                deltaSteps[i] = abs(pt.targetSteps[i] - lastBufTarget[i]);
+                // 改回純理論值相減，徹底消除追跡震盪！
+                deltaSteps[i] = abs(pt.targetSteps[i] - lastBufTarget[i]); 
             }
 
-            // 🛡️ 防爆網
+            // 防爆網
             for (int i = 0; i < 6; i++) {
                 if (deltaSteps[i] > 0) {
                     float minSafeTime = deltaSteps[i] / (JOINTS[i].maxSpeedSteps10 / 10.0);
@@ -116,12 +117,9 @@ void updateRingBuffer() {
             for (int i = 0; i < 6; i++) {
                 if (deltaSteps[i] > 0) {
                     
-                    // 修正 1：回歸最完美的 1.0 (100% 同步)，消滅提早到站的煞車碎震！
                     float syncStepsPerSec = (deltaSteps[i] / maxTime) * 1.0; 
                     
-                    // 修正 2：加上 0.5 進行四捨五入！防止 C++ 轉整數時微幅吃掉速度導致累積延遲
-                    long mobaSpeed = (long)(syncStepsPerSec * 10.0 + 0.5); 
-                    
+                    long mobaSpeed = (long)(syncStepsPerSec * 10.0 + 0.5);                     
                     if (mobaSpeed < 1) mobaSpeed = 1;
 
                     steppers[i]->setSpeedSteps(mobaSpeed);

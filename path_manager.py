@@ -10,6 +10,20 @@ from scipy.spatial.transform import Slerp
 import kinematics
 import math
 
+import kinematics
+import math
+from motion_profile import TrapezoidalProfile
+
+# 關節極限 (PTP 用)
+MAX_JOINT_SPEED = 60.0   # 關節最高轉速 (度/秒)
+MAX_JOINT_ACCEL = 60.0  # 關節最高加速度 (度/秒^2)
+
+# 直角空間極限 (LIN 用)
+MAX_LIN_SPEED = 100.0    # TCP 直線極速 (mm/秒)
+MAX_LIN_ACCEL = 100.0    # TCP 直線加速度 (mm/秒^2)
+MAX_ROT_SPEED = 60.0     # TCP 旋轉極速 (度/秒)
+MAX_ROT_ACCEL = 60.0    # TCP 旋轉加速度 (度/秒^2)
+
 # --- 1. PTP 執行器 ---
 class PTPExecutor(QThread):
     update_signal = pyqtSignal(list)
@@ -24,29 +38,61 @@ class PTPExecutor(QThread):
         self.animation_time = animation_time
 
     def run(self):
-        # 1. 【硬體端：發送指令】
-        if self.serial_ref and self.serial_ref.is_connected:
-            # 開跑前先清空舊的到位旗標
-            if hasattr(self.serial_ref, 'motion_done_event'):
-                self.serial_ref.motion_done_event.clear()
-            # PTP 模式對應 move_mode = 1
-            self.serial_ref.send_joints(list(self.end_joints), self.speed_factor, move_mode=1)
+        # 1. 找出移動量最大的一個關節，作為計算時間的基準 (Leader Joint)
+        diffs = np.abs(self.end_joints - self.start_joints)
+        max_dist_deg = np.max(diffs)
+        
+        # 如果距離太短，直接結束
+        if max_dist_deg < 0.1:
+            self.finished_signal.emit()
+            return
+            
+        # 2. 啟動梯形加減速引擎！(套用 GUI 傳來的速度百分比)
+        target_speed = MAX_JOINT_SPEED * self.speed_factor
+        target_accel = MAX_JOINT_ACCEL * self.speed_factor
+        profile = TrapezoidalProfile(max_dist_deg, target_speed, target_accel)
+        
+        # 3. 核心切片迴圈 
+        interval = 0.040
+        t = 0.0
+        counter = 0
+        gui_skip_frames = 1 
+        
+        while t <= profile.T_total:
+            # 向引擎詢問現在的進度 (0.0 ~ 1.0)
+            progress = profile.get_progress(t)
+            
+            # 線性內插算出當下 6 顆馬達的角度
+            current = self.start_joints + (self.end_joints - self.start_joints) * progress
+            
+            # 更新 GUI
+            if counter % gui_skip_frames == 0:
+                self.update_signal.emit(list(current))
+                
+            # 發送給 Arduino (注意：現在 PTP 也改用 move_mode=2 塞水桶了！)
+            if self.serial_ref and self.serial_ref.is_connected:
+                self.serial_ref.send_joints(list(current), interval, move_mode=2)
+                self.serial_ref.wait_for_ok(timeout=3.0)
+                
+            t += interval
+            counter += 1
+        
+        # 算一下最後一個切片跟真正終點的誤差
+        current_err = np.abs(np.array(self.end_joints) - current)
+        max_err = np.max(current_err)
 
-        # 2. 【軟體端：乖乖播完 UI 動畫】(不提早打斷，避免滑桿瞬間跳躍引發爆衝)
-        effective_duration = max(0.1, float(self.animation_time))
-        steps = int(effective_duration * 30) 
+        self.update_signal.emit(list(self.end_joints))
         
-        for i in range(steps + 1):
-            t = i / steps
-            current = self.start_joints + (self.end_joints - self.start_joints) * t
-            self.update_signal.emit(list(current)) 
-            time.sleep(effective_duration / steps)
-        
-        # 3. 【等待硬體到位】
         if self.serial_ref and self.serial_ref.is_connected:
+            # 如果誤差大於 0.01 度，代表切片沒切乾淨，用極短時間(5ms)瞬間吸附
+            if max_err > 0.01:
+                self.serial_ref.send_joints(list(self.end_joints), 0.005, move_mode=2)
+                self.serial_ref.wait_for_ok(timeout=3.0)
+                
+            # 整個水桶射完後，等待實體馬達把最後一點跑完
             if hasattr(self.serial_ref, 'wait_for_motion_complete'):
                 self.serial_ref.wait_for_motion_complete(timeout=10.0)
-            
+                
         self.finished_signal.emit()
 
 # --- 2. LIN 執行器 ---
@@ -79,98 +125,105 @@ class CartesianExecutor(QThread):
         pos_start = T_tcp_start[:3, 3]
         pos_end = T_tcp_end[:3, 3]
         
-        key_rots = R.from_matrix([T_tcp_start[:3, :3], T_tcp_end[:3, :3]])
-        key_times = [0, 1]
-        
-        try:
-            slerp = Slerp(key_times, key_rots)
-        except Exception as e:
-            self.error_signal.emit(f"Slerp Init Failed: {e}")
-            return
-
+        # 1. 計算直線距離 (mm)
         dist_mm = np.linalg.norm(pos_end - pos_start) * 1000.0
-        R_diff = T_tcp_end[:3, :3] @ T_tcp_start[:3, :3].T
-        angle_rad = np.linalg.norm(R.from_matrix(R_diff).as_rotvec())
-        angle_deg = np.degrees(angle_rad)
         
-        # 核心修正：捨棄不合理的「固定動畫時間」！
-        # 改為：根據「實際物理距離」與「速度百分比」來計算真實需要的時間
-
-        MAX_LIN_SPEED = 150.0  # 手臂的最高直線極速 (mm/s)，你可依實機手感微調
-        MAX_ROT_SPEED = 60.0   # 手臂的最高旋轉極速 (deg/s)
+        # 2. 計算旋轉角度 (度)
+        key_rots = R.from_matrix([T_tcp_start[:3, :3], T_tcp_end[:3, :3]])
+        slerp = Slerp([0, 1], key_rots)
+        rot_diff = key_rots[0].inv() * key_rots[1]
+        dist_deg = np.linalg.norm(rot_diff.as_rotvec()) * (180.0 / math.pi)
         
-        target_lin_speed = MAX_LIN_SPEED * self.speed_factor
-        target_rot_speed = MAX_ROT_SPEED * self.speed_factor
-        
-        time_for_lin = dist_mm / max(0.1, target_lin_speed)
-        time_for_rot = angle_deg / max(0.1, target_rot_speed)
-        
-        # 總時間取「平移」和「旋轉」兩者中較耗時的那個，確保兩者都不會超速
-        effective_duration = max(0.1, time_for_lin, time_for_rot)
-
-        # 1. 畫質控：維持高解析度的空間切片 (每 2mm 或 1度 切一刀)
-        ideal_spatial_steps = max(2, int(dist_mm / 2.0), int(angle_deg / 1.0))
-        
-        # 2. 硬體算力極限：不再管通訊延遲，只管 Arduino 的算力極限！
-        # 壓榨到極限的 0.015 秒 (相當於 66Hz 更新率)，這已經是工業級的插補頻率了
-        hardware_limit_steps = max(2, int(effective_duration / 0.015))
-        
-        # 3. 決策：兩者取小
-        steps = min(ideal_spatial_steps, hardware_limit_steps)
-        
-        # Phase 1: 預先計算 (Planning) 加上 S-Curve
-        trajectory_points = []
-        current_seed = self.start_joints.copy()
-        
-        self.update_signal.emit(list(self.start_joints))
-        
-        for i in range(1, steps + 1):
-            linear_t = i / steps 
-            # 【核心】：Sine Ease-in-out，讓軌跡頭尾點距縮短，達到自然的加減速
-            t = (1 - math.cos(linear_t * math.pi)) / 2.0
+        # 3. 如果沒位移也沒旋轉，才真的不跑
+        if dist_mm < 0.1 and dist_deg < 0.1:
+            self.finished_signal.emit()
+            return
             
-            curr_pos = pos_start + (pos_end - pos_start) * t
-            curr_rot = slerp([t]).as_matrix()[0]
+        # 4. 決定這次是「平移為主」還是「旋轉為主」，套用不同的物理極限
+        if dist_mm >= dist_deg:
+            target_speed = MAX_LIN_SPEED * self.speed_factor
+            target_accel = MAX_LIN_ACCEL * self.speed_factor
+            profile = TrapezoidalProfile(dist_mm, target_speed, target_accel)
+        else:
+            target_speed = MAX_ROT_SPEED * self.speed_factor
+            target_accel = MAX_ROT_ACCEL * self.speed_factor
+            profile = TrapezoidalProfile(dist_deg, target_speed, target_accel)
+            
+        # 1. 啟動梯形加減速引擎！
+        target_speed = MAX_LIN_SPEED * self.speed_factor
+        target_accel = MAX_LIN_ACCEL * self.speed_factor
+        profile = TrapezoidalProfile(dist_mm, target_speed, target_accel)
+
+        # 2. 核心切片迴圈 
+        interval = 0.040
+        t = 0.0
+        counter = 0
+        gui_skip_frames = 1
+        
+        current_seed = self.start_joints.copy()
+        self.update_signal.emit(list(self.start_joints))
+
+        while t <= profile.T_total:
+            progress = profile.get_progress(t)
+            
+            # 算出 XYZ 與姿態
+            curr_pos = pos_start + (pos_end - pos_start) * progress
+            curr_rot = slerp([progress]).as_matrix()[0]
             
             T_tcp_target = np.eye(4)
             T_tcp_target[:3, :3] = curr_rot
             T_tcp_target[:3, 3] = curr_pos
-            
             T_flange_target = T_tcp_target @ tcp_inv
+            
+            # 逆運動學求解
             ik_result, error = kinematics.inverse_kinematics(T_flange_target, current_seed)
-            
             if ik_result is not None:
-                current_seed = ik_result
-                trajectory_points.append(list(ik_result))
-            else:
-                self.error_signal.emit(f"LIN Error: Unreachable at step {i}")
-                return
 
-        # Phase 2: 穩定串流 (Streaming)
-        interval = effective_duration / steps
-        # 動態計算 GUI 更新間隔：目標維持大約 10 FPS
-        points_per_sec = steps / effective_duration
-        gui_skip_frames = max(1, int(points_per_sec / 10.0)) 
-        
-        counter = 0 
-        
-        for joints in trajectory_points:
-            # 使用動態計算出來的間隔來更新畫面
-            if counter % gui_skip_frames == 0 or counter == len(trajectory_points) - 1:
-                self.update_signal.emit(joints)
-            counter += 1
-            
+                # 奇異點主動防禦檢查
+                is_singular, warning_msg = kinematics.check_singularity(ik_result)
+                if is_singular:
+                    # 只要碰到奇異點，立刻拋出錯誤訊號並強制中斷整條軌跡！
+                    error_str = f"軌跡中斷：在時間 {t:.2f}s 處遭遇 {warning_msg}"
+                    self.error_signal.emit(error_str)
+                    
+                    # 為了安全，還可以補發一個 STOP 訊號給 Arduino
+                    if self.serial_ref and self.serial_ref.is_connected:
+                        self.serial_ref.send_command("STOP")
+                        
+                    return  # 直接結束 run()，絕對不把這包毒藥發給硬體！
+
+                current_seed = ik_result
+            else:
+                self.error_signal.emit(f"LIN 運算錯誤: 位置無法到達 (時間 {t:.2f}s)")
+                return
+                
+            # 發送與更新
+            if counter % gui_skip_frames == 0:
+                self.update_signal.emit(list(ik_result))
+                
             if self.serial_ref and self.serial_ref.is_connected:
-                self.serial_ref.send_joints(joints, interval, move_mode=2)
-                self.serial_ref.wait_for_ok(timeout=1.0)
-            
-        # 整個 LIN 陣列射完後，等待馬達把最後一段路走完
+                self.serial_ref.send_joints(list(ik_result), interval, move_mode=2)
+                self.serial_ref.wait_for_ok(timeout=3.0)
+                
+            t += interval
+            counter += 1
+        
+        # 算一下最後一個 IK 切片跟真正終點的誤差
+        current_err = np.abs(np.array(self.target_joints) - ik_result)
+        max_err = np.max(current_err)
+
+        self.update_signal.emit(list(self.target_joints))
+        
         if self.serial_ref and self.serial_ref.is_connected:
-             if hasattr(self.serial_ref, 'wait_for_motion_complete'):
+            if max_err > 0.01:
+                self.serial_ref.send_joints(list(self.target_joints), 0.005, move_mode=2)
+                self.serial_ref.wait_for_ok(timeout=3.0)
+                
+            if hasattr(self.serial_ref, 'wait_for_motion_complete'):
                 self.serial_ref.wait_for_motion_complete(timeout=10.0)
 
         self.finished_signal.emit()
-
+        
 # --- PathManager (邏輯核心) ---
 class PathManager(QObject):
     log_signal = pyqtSignal(str)

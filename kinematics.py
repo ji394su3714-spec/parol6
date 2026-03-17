@@ -202,3 +202,39 @@ def calculate_jog_joints(current_joints, axis, step_val, frame, T_total_offset):
             return None, f"Limit Hit J{i+1}"
 
     return list(new_joints), None
+
+def check_singularity(joint_angles):
+    """
+    檢查 6 軸機械手臂是否處於奇異點 (Singularity) 附近。
+    :param joint_angles: [j1, j2, j3, j4, j5, j6] (單位: 度)
+    :return: (is_singular, warning_msg) -> (布林值, 警告訊息字串)
+    """
+    if len(joint_angles) < 6:
+        return False, ""
+
+    is_singular = False
+    warnings = []
+
+    j3 = joint_angles[2]
+    j5 = joint_angles[4]
+
+    # --- 1. 手腕奇異點 (Wrist Singularity) ---
+    # 當 J5 接近 0 度或 180 度時，J4 和 J6 會排成一直線(共線)。
+    # 此時系統會不知道該轉 J4 還是轉 J6，導致運算出的速度趨近無限大。
+    if abs(j5) < 5.0 or abs(abs(j5) - 180.0) < 5.0:
+        is_singular = True
+        warnings.append(f"手腕奇異點 (J5={j5:.1f}°)")
+
+    # --- 2. 手肘奇異點 (Elbow Singularity) ---
+    # 你的硬體 0 點是垂直的。所以伸直的極限點應該在 +90 度或 -90 度附近。
+    # 我們檢查 J3 是否非常接近 90 度或 -90 度
+    #if abs(abs(j3) - 90.0) < 5.0:  # 檢查 85 ~ 95 度的危險區間
+    #    is_singular = True
+    #    warnings.append(f"手肘奇異點/手臂伸直極限 (J3={j3:.1f}°)")
+
+    # --- 3. 肩膀奇異點 (Shoulder Singularity) ---
+    # 需透過正向運動學算出 J5 中心的 XY 座標，檢查是否在底座正上方。
+    # 這裡我們預留擴充空間，你可以未來加上去。
+    
+    msg = " | ".join(warnings) if is_singular else ""
+    return is_singular, msg

@@ -3,13 +3,14 @@
 #include "Config.h"
 
 void processCommand() {
+    // 1. 緊急停止 (E-STOP)
     if (strncmp(tempChars, "STOP", 4) == 0) {
         for(int i = 0; i < 6; i++) {
             homingState[i] = 0;  
             steppers[i]->doSteps(0);
         }
 
-        // 補上這段！緊急把水桶裡的水全部倒掉！
+        // 緊急把水桶裡的水全部倒掉！
         bufHead = 0;
         bufTail = 0;
         bufCount = 0;
@@ -21,6 +22,7 @@ void processCommand() {
         return;
     }
 
+    // 2. 字串解析
     float tempParsed[8] = {0.0};
     int parseCount = 0; 
     char * strtokIndx = strtok(tempChars, ",");
@@ -76,13 +78,19 @@ void processCommand() {
     }
     if (homingTriggered) Serial.println("OK");
 
-    // 4. 一般移動分派 (Jog / PTP / LIN 大一統引擎)
+    // 4. 一般移動分派 (大一統引擎)
     if (!isAnyHoming() && !homingTriggered) {
 
-        // 核心分流：如果是 LIN 模式 (Mode 2)，直接裝入環形緩衝區！
+        // ==========================================
+        // 模式 2：大一統串流模式 (Streaming) - 塞進水桶
+        // 負責：PTP, LIN, CIRC (Python 已計算好完美加減速)
+        // ==========================================
         if (moveMode == 2) {
             if (bufCount < BUF_SIZE) {
                 for(int i = 0; i < 6; i++) {
+                    // 🌟 補上這行：強制關閉硬體加減速，徹底交給 Python 控制！
+                    steppers[i]->setRampLen(0);
+                    
                     if (receivedAngles[i] != 999.0) {
                         ringBuf[bufHead].targetSteps[i] = receivedAngles[i] * getStepsPerDeg(i);
                     } else {
@@ -101,67 +109,37 @@ void processCommand() {
                 } else {
                     pendingOK = true;
                 }
+            } else {
+                Serial.println("BufferFull");
             }
             normalMoveActive = true;
             return; // 裝桶完畢，直接下班離開函式！
         }
-
-        // 以下為 Jog (Mode 0) 與 PTP (Mode 1) 的即時發車邏輯
-        long deltaSteps[6] = {0};
-        float timeNeeded[6] = {0.0};
-        float maxTime = 0.0;
-
-        // 【第一階段：收集距離與基礎時間預算】
-        for (int i = 0; i < 6; i++) {
-            if (receivedAngles[i] != 999.0) {
-                long targetSteps = receivedAngles[i] * getStepsPerDeg(i);
-                deltaSteps[i] = abs(targetSteps - steppers[i]->currentPosition());
-                
-                float currentMaxSpeedSec = (JOINTS[i].jointControlSpd10 * param7) / 10.0;
-                if (currentMaxSpeedSec > 0 && deltaSteps[i] > 0) {
-                    timeNeeded[i] = deltaSteps[i] / currentMaxSpeedSec;
-                    if (timeNeeded[i] > maxTime) maxTime = timeNeeded[i];
-                }
-            }
-        }
-
-        // 【第二階段：防失步安全網 (全體等比例降速)】
-        // 檢查 Jog/PTP 的移動會不會超速，若會，則強迫拉長全隊的時間！
-        for (int i = 0; i < 6; i++) {
-            if (receivedAngles[i] != 999.0 && deltaSteps[i] > 0) {
-                float minSafeTime = deltaSteps[i] / (JOINTS[i].maxSpeedSteps10 / 10.0);
-                if (minSafeTime > maxTime) {
-                    maxTime = minSafeTime; 
-                }
-            }
-        }
-
-        // 【第三階段：正式發車 (僅處理 Jog 與 PTP)】
-        for (int i = 0; i < 6; i++) {
-            if (receivedAngles[i] != 999.0) {
-                long targetSteps = receivedAngles[i] * getStepsPerDeg(i);
-                
-                if (maxTime > 0.0 && deltaSteps[i] > 0) {
+        
+        // ==========================================
+        // 模式 0：手動/點動模式 (Jogging)
+        // 負責：UI 滑桿、Jog 按鈕 (交給硬體 MobaTools 防暴衝)
+        // ==========================================
+        else if (moveMode == 0) {
+            for (int i = 0; i < 6; i++) {
+                if (receivedAngles[i] != 999.0) {
+                    long targetSteps = receivedAngles[i] * getStepsPerDeg(i);
                     
-                    // PTP 需要精準停靠給 1.0；Jog 連續移動給 0.95 滯後避震
-                    float speedTolerance = (moveMode == 1) ? 1.0 : 0.95; 
-                    float syncStepsPerSec = (deltaSteps[i] / maxTime) * speedTolerance;
-                    
-                    long mobaSpeed = (long)(syncStepsPerSec * 10.0);
+                    // 根據 UI 傳來的百分比計算速度
+                    float currentMaxSpeedSec = (JOINTS[i].jointControlSpd10 * param7) / 10.0;
+                    long mobaSpeed = (long)(currentMaxSpeedSec * 10.0);
                     if (mobaSpeed < 1) mobaSpeed = 1; 
+
                     steppers[i]->setSpeedSteps(mobaSpeed);
                     
-                    // PTP 與 Jog 皆由 Arduino 負責產生避震 Ramp
-                    float accelTimeSec = 0.3; 
-                    long syncRamp = syncStepsPerSec * (accelTimeSec / 2.0);
-                    if (syncRamp < 5) syncRamp = 5; 
-                    steppers[i]->setRampLen(syncRamp);
+                    // 啟用硬體加減速 (維持手動操作的避震手感)
+                    steppers[i]->setRampLen(JOINTS[i].rampSteps);
+                    steppers[i]->writeSteps(targetSteps); 
                 }
-                steppers[i]->writeSteps(targetSteps); 
             }
+            normalMoveActive = true;
+            Serial.println("OK"); 
         }
-        normalMoveActive = true;
-        Serial.println("OK"); 
     }
 }
 
@@ -178,7 +156,7 @@ void recvWithStartEndMarkers() {
             if (rc != endMarker) {
                 receivedChars[ndx] = rc;
                 ndx++;
-                if (ndx >= NUM_CHARS) ndx = NUM_CHARS - 1; // 修正使用常數
+                if (ndx >= NUM_CHARS) ndx = NUM_CHARS - 1; 
             } else {
                 receivedChars[ndx] = '\0';
                 recvInProgress = false;

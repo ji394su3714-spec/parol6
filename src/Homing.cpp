@@ -165,7 +165,7 @@ void updateHomingLogic() {
         // 狀態 6：J5 撞到開關了，等待 J6 準備好
         else if (homingState[i] == 6 && i == 4) {
             if (homingState[5] == 5) {
-                steppers[4]->setRampLen(150);
+                steppers[4]->setRampLen(100);
                 steppers[4]->setSpeedSteps(abs(JOINTS[4].homingSpeed) * 15);
                 long offsetJ5 = JOINTS[4].homingPos * getStepsPerDeg(4);
                 steppers[4]->doSteps(offsetJ5);
