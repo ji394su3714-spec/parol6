@@ -4,7 +4,7 @@
 
 // 核心：二段式歸零狀態機 (Double-Tap)
 void updateHomingLogic() {
-    const float J6_PREP_ANGLE = 90.0; 
+    const float J6_PREP_ANGLE = -90.0; 
     static unsigned long j6DelayStartTime = 0; 
     
     for (int i = 0; i < 6; i++) {
@@ -33,7 +33,7 @@ void updateHomingLogic() {
                 }
                 if (readyToBounce) {
                     steppers[i]->setRampLen(10);
-                    steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 15);
+                    steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 13);
                     int bounceDir = (JOINTS[i].homingSpeed > 0) ? -1 : 1;
                     long bounceDist = JOINTS[i].bounceSteps * bounceDir;
                     steppers[i]->doSteps(bounceDist); 
@@ -104,7 +104,7 @@ void updateHomingLogic() {
                         steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 20);
                     } 
                     else if (i == 3) {
-                        steppers[i]->setRampLen(100);
+                        steppers[i]->setRampLen(150);
                         steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 15);
                     }
                     long offsetSteps = JOINTS[i].homingPos * getStepsPerDeg(i);

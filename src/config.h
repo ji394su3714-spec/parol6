@@ -17,10 +17,11 @@ struct MotorCurrentConfig {
     float hold_ratio;
 };
 
-// 驅動晶片採樣電阻與腳位
 #define R_SENSE_2209 0.11f  
 #define R_SENSE_5160 0.075f
+#define R_SENSE_2240 0.075f // 🌟 為了滿足函式庫數學運算，必須給 0.075f
 #define Y_CS_PIN 39
+#define E2_CS_PIN 42 // 🌟 J6 (TMC2240 SPI)
 
 // 宣告外部常數陣列
 extern const JointConfig JOINTS[6];

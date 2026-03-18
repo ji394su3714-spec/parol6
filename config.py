@@ -19,7 +19,7 @@ URDF_PARAMS = [
     # Joint 5 (Link4 -> Link5)
     {'xyz': [0, 0, -0.1053], 'rpy': [0, -1.5708, 3.1416], 'axis': 'z', 'invert': True},
     # Joint 6 (Link5 -> Link6)
-    {'xyz': [-0.0741, 0, 0], 'rpy': [3.1416, 1.5708, 0], 'axis': 'z', 'invert': True}
+    {'xyz': [-0.0741, 0, 0], 'rpy': [3.1416, 1.5708, 0], 'axis': 'z'}
 ]
 
 IK_POS_TOLERANCE = 0.1  # 設定為 0.1 mm 
