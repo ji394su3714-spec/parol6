@@ -10,9 +10,6 @@ from scipy.spatial.transform import Slerp
 import kinematics
 from motion_profile import TrapezoidalProfile
 
-# ==========================================
-# 🌟 工業級物理極限設定
-# ==========================================
 # 關節極限 (PTP 用)
 MAX_JOINT_SPEED = 90.0   # 關節最高轉速 (度/秒)
 MAX_JOINT_ACCEL = 90.0  # 關節最高加速度 (度/秒^2)
@@ -125,9 +122,7 @@ class CartesianExecutor(QThread):
             self.finished_signal.emit()
             return
             
-        # ==========================================
-        # 🌟 工業級修正：瓶頸時間同步法
-        # ==========================================
+        # 修正：瓶頸時間同步法
         time_for_lin = dist_mm / (MAX_LIN_SPEED * self.speed_factor) if MAX_LIN_SPEED > 0 else 0
         time_for_rot = dist_deg / (MAX_ROT_SPEED * self.speed_factor) if MAX_ROT_SPEED > 0 else 0
 

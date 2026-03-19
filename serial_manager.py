@@ -83,8 +83,6 @@ class SerialManager(QObject):
     def send_joints(self, joints, speed_factor=None, move_mode=0):
         """ 發送指令給 Arduino (支援第 8 參數：運動模式) """
         if not self.is_connected or not self.ser: return
-        
-        # 發送前務必清空交握旗標
         self.ok_event.clear()
         self.motion_done_event.clear()
         
@@ -108,23 +106,19 @@ class SerialManager(QObject):
                 if self.ser.in_waiting:
                     line = self.ser.readline().decode('utf-8', errors='ignore').strip()
                     if line: 
-                        # 1. 攔截一般移動到位訊號 "Done"
                         if line == "Done":
                             self.motion_done_event.set() 
                             continue 
 
-                        # 2. 攔截歸零專屬完成訊號 "HomingDone"
                         if line == "HomingDone":
                             self.motion_done_event.set() 
                             self.log_signal.emit(">> [HW] All Axes Homing Completed!") 
                             continue 
 
-                        # 3. 攔截 "OK" 
                         if line == "OK":
                             self.ok_event.set() 
                             continue
 
-                        # 4. 其他訊息正常顯示
                         self.log_signal.emit(f"[HW] {line}")
                 else:
                     time.sleep(0.01)

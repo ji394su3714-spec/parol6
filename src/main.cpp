@@ -29,7 +29,7 @@ const MotorCurrentConfig MOTOR_CURRENTS[6] = {
     {900,  0.5f},  // J3
     {850,  0.25f}, // J4
     {750,  0.25f}, // J5
-    {1200, 0.25f}  // 🌟 J6 (TMC2240) 額定電流 1.2A，待機降至 25% (300mA) 保持冰涼
+    {1200, 0.25f}  // J6 (TMC2240) 額定電流 1.2A
 };
 
 const float GEAR_RATIOS[6] = {6.4, 20.0, 18.1, 4.0, 4.0, 10.0};
@@ -76,7 +76,7 @@ long lastBufTarget[6] = {0};
 unsigned long lastPointTimeUs = 0;
 unsigned long currentPointIntervalUs = 0;
 
-// 🌟 核心播放機：絕對座標微超速追跡版 (純理論值，無碎震)
+// 核心播放機：絕對座標微超速追跡版 (純理論值，無碎震)
 void updateRingBuffer() {
     if (bufCount > 0) {
         unsigned long nowUs = micros(); 
@@ -165,9 +165,7 @@ void setup() {
     delay(1000);
     Serial.println("\n--- System Booting ---");
 
-    // =========================================================
-    // 🚨 預防 SPI 當機的起手式
-    // =========================================================
+    // 預防 SPI 當機的起手式
     pinMode(53, OUTPUT);
     digitalWrite(53, HIGH);
 
@@ -181,16 +179,18 @@ void setup() {
     SPI.begin();
     pinMode(LED_PIN, OUTPUT);
 
-    Serial.println("[Init] Starting UART ports...");
+    //Serial.println("[Init] Starting UART ports...");
     serial_J1.begin(115200);
     serial_J3.begin(115200);
     serial_J4.begin(115200);
     serial_J5.begin(115200);
 
-    // =========================================================
     // 驅動初始化函式定義
-    // =========================================================
-    auto setupTMC2209 = [](TMC2209Stepper &drv, uint16_t mA, float hold_ratio) {
+    auto setupTMC2209 = [](TMC2209Stepper &drv, SoftwareSerial &serial, uint16_t mA, float hold_ratio, const char* name) {
+        
+        serial.listen(); // 🌟 關鍵：強制微控制器把耳朵轉向這個通道！
+        delay(20);       // 給予切換緩衝時間
+        
         drv.begin();
         drv.pdn_disable(true);     
         drv.I_scale_analog(false); 
@@ -199,7 +199,17 @@ void setup() {
         drv.microsteps(8);        
         drv.en_spreadCycle(false); 
         drv.pwm_autoscale(true);   
-        drv.TCOOLTHRS(0); 
+        drv.TCOOLTHRS(0);
+
+        // 內建 UART 照妖鏡：馬上檢查晶片有沒有回應
+        Serial.print("[UART Check] ");
+        Serial.print(name);
+        Serial.print(": ");
+        if (drv.test_connection() == 0) {
+            Serial.println("✅ OK (Software Controlled)");
+        } else {
+            Serial.println("❌ FAILED (Falling back to Vref screw!)");
+        }
     };
 
     // 🌟 裸機 (Bare-Metal) SPI 引擎：完全無依賴的 TMC2240 啟動器
@@ -216,7 +226,7 @@ void setup() {
             SPI.endTransaction();
         };
         
-        // 1. 開啟 StealthChop (極致安靜模式)
+        // 1. 開啟 StealthChop
         writeReg(cs_pin, 0x00, 0x00000002);
         
         // 2. 設定運行與待機電流！
@@ -237,16 +247,14 @@ void setup() {
         writeReg(cs_pin, 0x6C, 0x15410155);
     };
 
-    // =========================================================
     // 執行各軸設定
-    // =========================================================
-    Serial.println("[Init] Configuring UART Drivers (2209)...");
-    setupTMC2209(driver_J1, MOTOR_CURRENTS[0].run_mA, MOTOR_CURRENTS[0].hold_ratio);
-    setupTMC2209(driver_J3, MOTOR_CURRENTS[2].run_mA, MOTOR_CURRENTS[2].hold_ratio);
-    setupTMC2209(driver_J4, MOTOR_CURRENTS[3].run_mA, MOTOR_CURRENTS[3].hold_ratio);
-    setupTMC2209(driver_J5, MOTOR_CURRENTS[4].run_mA, MOTOR_CURRENTS[4].hold_ratio);
+    //Serial.println("[Init] Configuring UART Drivers (2209)...");
+    setupTMC2209(driver_J1, serial_J1, MOTOR_CURRENTS[0].run_mA, MOTOR_CURRENTS[0].hold_ratio, "J1");
+    setupTMC2209(driver_J3, serial_J3, MOTOR_CURRENTS[2].run_mA, MOTOR_CURRENTS[2].hold_ratio, "J3");
+    setupTMC2209(driver_J4, serial_J4, MOTOR_CURRENTS[3].run_mA, MOTOR_CURRENTS[3].hold_ratio, "J4");
+    setupTMC2209(driver_J5, serial_J5, MOTOR_CURRENTS[4].run_mA, MOTOR_CURRENTS[4].hold_ratio, "J5");
 
-    Serial.println("[Init] Configuring J2 (5160 SPI)...");
+    //Serial.println("[Init] Configuring J2 (5160 SPI)...");
     driver_J2.begin();
     driver_J2.toff(5);
     driver_J2.rms_current(MOTOR_CURRENTS[1].run_mA, MOTOR_CURRENTS[1].hold_ratio);
@@ -254,13 +262,11 @@ void setup() {
     driver_J2.en_pwm_mode(true);
     driver_J2.pwm_autoscale(true);
 
-    Serial.println("[Init] Configuring J6 (2240 Bare-Metal SPI)...");
+    //Serial.println("[Init] Configuring J6 (2240 Bare-Metal SPI)...");
     setupTMC2240_RawSPI(E2_CS_PIN, MOTOR_CURRENTS[5].run_mA, MOTOR_CURRENTS[5].hold_ratio);
 
-    // =========================================================
     // MobaTools 馬達掛載
-    // =========================================================
-    Serial.println("[Init] Attaching Motors...");
+    //Serial.println("[Init] Attaching Motors...");
     for (int i = 0; i < 6; i++) {
         steppers[i]->attach(JOINTS[i].stepPin, JOINTS[i].dirPin);
         pinMode(JOINTS[i].enPin, OUTPUT);
