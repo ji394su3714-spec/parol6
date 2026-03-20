@@ -78,17 +78,15 @@ void processCommand() {
     }
     if (homingTriggered) Serial.println("OK");
 
-    // 4. 一般移動分派 (大一統引擎)
+    // 4. 一般移動分派
     if (!isAnyHoming() && !homingTriggered) {
 
-        // ==========================================
-        // 模式 2：大一統串流模式 (Streaming) - 塞進水桶
+        // 模式 1：串流模式 (Streaming) - 塞進水桶
         // 負責：PTP, LIN, CIRC (Python 已計算好完美加減速)
-        // ==========================================
         if (moveMode == 2) {
             if (bufCount < BUF_SIZE) {
                 for(int i = 0; i < 6; i++) {
-                    // 🌟 補上這行：強制關閉硬體加減速，徹底交給 Python 控制！
+                    // 關閉硬體加減速，徹底交給 Python 控制！
                     steppers[i]->setRampLen(0);
                     
                     if (receivedAngles[i] != 999.0) {
@@ -113,13 +111,11 @@ void processCommand() {
                 Serial.println("BufferFull");
             }
             normalMoveActive = true;
-            return; // 裝桶完畢，直接下班離開函式！
+            return;
         }
         
-        // ==========================================
         // 模式 0：手動/點動模式 (Jogging)
         // 負責：UI 滑桿、Jog 按鈕 (交給硬體 MobaTools 防暴衝)
-        // ==========================================
         else if (moveMode == 0) {
             for (int i = 0; i < 6; i++) {
                 if (receivedAngles[i] != 999.0) {
@@ -132,7 +128,7 @@ void processCommand() {
 
                     steppers[i]->setSpeedSteps(mobaSpeed);
                     
-                    // 啟用硬體加減速 (維持手動操作的避震手感)
+                    // 啟用硬體加減速 (維持手動操作的避震手感)---->可能需要修復
                     steppers[i]->setRampLen(JOINTS[i].rampSteps);
                     steppers[i]->writeSteps(targetSteps); 
                 }

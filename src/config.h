@@ -3,7 +3,7 @@
 
 #include <Arduino.h>
 
-// 1. 關節配置與硬體參數結構
+// 關節配置與硬體參數結構
 struct JointConfig {
     byte stepPin; byte dirPin; byte enPin; byte limitPin; bool limitActiveState;
     float homingSpeed; float homingPos; long bounceSteps; 
@@ -11,7 +11,7 @@ struct JointConfig {
     int rampSteps;      
 };
 
-// 2. 馬達電流配置結構
+// 馬達電流配置結構
 struct MotorCurrentConfig {
     uint16_t run_mA; 
     float hold_ratio;
@@ -19,9 +19,10 @@ struct MotorCurrentConfig {
 
 #define R_SENSE_2209 0.11f  
 #define R_SENSE_5160 0.075f
-#define R_SENSE_2240 0.075f // 🌟 為了滿足函式庫數學運算，必須給 0.075f
+#define R_SENSE_2240 0.075f // 為了滿足函式庫數學運算，必須給 0.075f
 #define Y_CS_PIN 39
-#define E2_CS_PIN 42 // 🌟 J6 (TMC2240 SPI)
+#define E1_CS_PIN 32 // J5 (TMC2240 SPI)
+#define E2_CS_PIN 42 // J6 (TMC2240 SPI)
 
 // 宣告外部常數陣列
 extern const JointConfig JOINTS[6];

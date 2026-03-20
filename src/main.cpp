@@ -5,6 +5,7 @@
 #include <MobaTools.h>
 
 // 引入拆分出來的模組
+#include "TMC_RawSPI.h"
 #include "Config.h"
 #include "Globals.h"
 #include "Homing.h"
@@ -13,39 +14,37 @@
 // 實體變數定義區
 const JointConfig JOINTS[6] = {
     // step, dir, en, lim, lim_active, h_spd, h_pos, bounce, j_ctrl_spd, max_spd, ramp
-    {54, 55, 38,  2,  LOW,   300, -28,  250, 12000, 30000, 400}, // J1 (2209)
-    {60, 61, 56, 12,  HIGH, -600,  50,  450, 17000, 30000, 400}, // J2 (5160)
-    {43, 48, 58, 14,  HIGH,  750, -70,  650, 17000, 30000, 400}, // J3 (2209)
-    {26, 28, 24, 15,  LOW,   900, -145, 400, 15000, 30000, 200}, // J4 (2209)
-    {36, 34, 30, 63,  HIGH,  700, -124, 300, 15000, 30000, 200}, // J5 (2209)
-    {59, 57, 40, 64,  LOW,   900,    2, 400, 20000, 30000, 200}  // J6 (2240)
+    {54, 55, 38,  2,  LOW,   300, -28,  250, 12000, 50000, 300}, // J1 (2209)
+    {60, 61, 56, 12,  HIGH, -600,  50,  450, 17000, 50000, 400}, // J2 (5160)
+    {43, 48, 58, 14,  HIGH,  750, -70,  650, 17000, 50000, 400}, // J3 (2209)
+    {26, 28, 24, 15,  LOW,   900, -145, 400, 15000, 50000, 200}, // J4 (2209)
+    {36, 34, 30, 63,  HIGH,  700, -124, 300, 15000, 50000, 200}, // J5 (2209)
+    {59, 57, 40, 64,  LOW,   900,    2, 400, 20000, 50000, 200}  // J6 (2240)
 };
 
 // 電流設定陣列
 const MotorCurrentConfig MOTOR_CURRENTS[6] = {
     // run_mA, hold_ratio
-    {1000, 0.5f},  // J1
-    {1000, 0.5f},  // J2 (TMC5160)
-    {900,  0.5f},  // J3
-    {850,  0.25f}, // J4
-    {750,  0.25f}, // J5
-    {1200, 0.25f}  // J6 (TMC2240) 額定電流 1.2A
+    {1100,  0.4f}, // J1
+    {1100,  0.7f}, // J2
+    {900,   0.7f}, // J3
+    {900,  0.25f}, // J4
+    {900,  0.25f}, // J5
+    {750,  0.25f}  // J6
 };
 
 const float GEAR_RATIOS[6] = {6.4, 20.0, 18.1, 4.0, 4.0, 10.0};
 
-// 宣告 UART 通訊埠 (J1, J3, J4, J5)
+// 宣告 UART 通訊埠 (J1, J3, J4)
 SoftwareSerial serial_J1(71, 72);
 SoftwareSerial serial_J3(78, 79);
 SoftwareSerial serial_J4(76, 77);
-SoftwareSerial serial_J5(80, 81);
 
 // 宣告驅動器物件 (J6 由 Bare-Metal SPI 接管，無需物件)
 TMC2209Stepper driver_J1(&serial_J1, R_SENSE_2209, 0);
 TMC5160Stepper driver_J2(Y_CS_PIN, R_SENSE_5160);       
 TMC2209Stepper driver_J3(&serial_J3, R_SENSE_2209, 0);
 TMC2209Stepper driver_J4(&serial_J4, R_SENSE_2209, 0);
-TMC2209Stepper driver_J5(&serial_J5, R_SENSE_2209, 0);
 
 MoToStepper stepper_J1(1600, STEPDIR);
 MoToStepper stepper_J2(1600, STEPDIR);
@@ -118,7 +117,7 @@ void updateRingBuffer() {
                 if (deltaSteps[i] > 0) {
                     float syncStepsPerSec = (deltaSteps[i] / maxTime) * 1.0; 
                     long mobaSpeed = (long)(syncStepsPerSec * 10.0 + 0.5);                    
-                    if (mobaSpeed < 1) mobaSpeed = 1;
+                    if (mobaSpeed < 100) mobaSpeed = 100;
 
                     steppers[i]->setSpeedSteps(mobaSpeed);
                     steppers[i]->setRampLen(0); 
@@ -165,32 +164,21 @@ void setup() {
     delay(1000);
     Serial.println("\n--- System Booting ---");
 
-    // 預防 SPI 當機的起手式
-    pinMode(53, OUTPUT);
-    digitalWrite(53, HIGH);
-
-    pinMode(Y_CS_PIN, OUTPUT);
-    digitalWrite(Y_CS_PIN, HIGH);
-    
-    // 確保 J6 的 CS 也是先拉高，避免干擾 SPI 匯流排
-    pinMode(E2_CS_PIN, OUTPUT);
-    digitalWrite(E2_CS_PIN, HIGH);
+// 預防 SPI 當機：把所有的 CS 腳位在 SPI 啟動前強制拉高
+    pinMode(53, OUTPUT);        digitalWrite(53, HIGH);
+    pinMode(Y_CS_PIN, OUTPUT);  digitalWrite(Y_CS_PIN, HIGH);
+    pinMode(E1_CS_PIN, OUTPUT); digitalWrite(E1_CS_PIN, HIGH);
+    pinMode(E2_CS_PIN, OUTPUT); digitalWrite(E2_CS_PIN, HIGH);
 
     SPI.begin();
     pinMode(LED_PIN, OUTPUT);
 
-    //Serial.println("[Init] Starting UART ports...");
     serial_J1.begin(115200);
     serial_J3.begin(115200);
     serial_J4.begin(115200);
-    serial_J5.begin(115200);
 
-    // 驅動初始化函式定義
-    auto setupTMC2209 = [](TMC2209Stepper &drv, SoftwareSerial &serial, uint16_t mA, float hold_ratio, const char* name) {
-        
-        serial.listen(); // 🌟 關鍵：強制微控制器把耳朵轉向這個通道！
-        delay(20);       // 給予切換緩衝時間
-        
+    // 驅動TMC2209初始化
+    auto setupTMC2209 = [](TMC2209Stepper &drv, uint16_t mA, float hold_ratio) {
         drv.begin();
         drv.pdn_disable(true);     
         drv.I_scale_analog(false); 
@@ -199,60 +187,13 @@ void setup() {
         drv.microsteps(8);        
         drv.en_spreadCycle(false); 
         drv.pwm_autoscale(true);   
-        drv.TCOOLTHRS(0);
-
-        // 內建 UART 照妖鏡：馬上檢查晶片有沒有回應
-        Serial.print("[UART Check] ");
-        Serial.print(name);
-        Serial.print(": ");
-        if (drv.test_connection() == 0) {
-            Serial.println("✅ OK (Software Controlled)");
-        } else {
-            Serial.println("❌ FAILED (Falling back to Vref screw!)");
-        }
+        drv.TCOOLTHRS(0); 
     };
 
-    // 🌟 裸機 (Bare-Metal) SPI 引擎：完全無依賴的 TMC2240 啟動器
-    auto setupTMC2240_RawSPI = [](uint8_t cs_pin, uint16_t run_mA, float hold_ratio) {
-        auto writeReg = [](uint8_t cs, uint8_t addr, uint32_t data) {
-            SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE3));
-            digitalWrite(cs, LOW);
-            SPI.transfer(addr | 0x80); // MSB=1 代表寫入指令
-            SPI.transfer((data >> 24) & 0xFF);
-            SPI.transfer((data >> 16) & 0xFF);
-            SPI.transfer((data >> 8) & 0xFF);
-            SPI.transfer(data & 0xFF);
-            digitalWrite(cs, HIGH);
-            SPI.endTransaction();
-        };
-        
-        // 1. 開啟 StealthChop
-        writeReg(cs_pin, 0x00, 0x00000002);
-        
-        // 2. 設定運行與待機電流！
-        // TMC2240 ICS 最大峰值電流為 3000mA。IRUN 最大 31
-        writeReg(cs_pin, 0x00, 0x0000000A); 
-        
-        uint8_t irun = (run_mA * 31) / 3000;
-        if (irun > 31) irun = 31;
-        if (irun < 1) irun = 1;
-        
-        uint8_t ihold = (uint8_t)(irun * hold_ratio); // 完美套用省電比例
-        uint8_t iholddelay = 6; // 煞車降流的平滑延遲
-        
-        uint32_t ihold_irun_val = ((uint32_t)iholddelay << 16) | ((uint32_t)irun << 8) | ihold;
-        writeReg(cs_pin, 0x10, ihold_irun_val);
-        
-        // 3. 啟動馬達並設定 8 微步
-        writeReg(cs_pin, 0x6C, 0x15410155);
-    };
-
-    // 執行各軸設定
-    //Serial.println("[Init] Configuring UART Drivers (2209)...");
-    setupTMC2209(driver_J1, serial_J1, MOTOR_CURRENTS[0].run_mA, MOTOR_CURRENTS[0].hold_ratio, "J1");
-    setupTMC2209(driver_J3, serial_J3, MOTOR_CURRENTS[2].run_mA, MOTOR_CURRENTS[2].hold_ratio, "J3");
-    setupTMC2209(driver_J4, serial_J4, MOTOR_CURRENTS[3].run_mA, MOTOR_CURRENTS[3].hold_ratio, "J4");
-    setupTMC2209(driver_J5, serial_J5, MOTOR_CURRENTS[4].run_mA, MOTOR_CURRENTS[4].hold_ratio, "J5");
+    //Serial.println("[Init] Configuring UART Drivers (J1, J3, J4)...");
+    setupTMC2209(driver_J1, MOTOR_CURRENTS[0].run_mA, MOTOR_CURRENTS[0].hold_ratio);
+    setupTMC2209(driver_J3, MOTOR_CURRENTS[2].run_mA, MOTOR_CURRENTS[2].hold_ratio);
+    setupTMC2209(driver_J4, MOTOR_CURRENTS[3].run_mA, MOTOR_CURRENTS[3].hold_ratio);
 
     //Serial.println("[Init] Configuring J2 (5160 SPI)...");
     driver_J2.begin();
@@ -262,10 +203,10 @@ void setup() {
     driver_J2.en_pwm_mode(true);
     driver_J2.pwm_autoscale(true);
 
-    //Serial.println("[Init] Configuring J6 (2240 Bare-Metal SPI)...");
+    //Serial.println("[Init] Configuring J5 & J6 (2240 Bare-Metal SPI)...");
+    setupTMC2240_RawSPI(E1_CS_PIN, MOTOR_CURRENTS[4].run_mA, MOTOR_CURRENTS[4].hold_ratio);
     setupTMC2240_RawSPI(E2_CS_PIN, MOTOR_CURRENTS[5].run_mA, MOTOR_CURRENTS[5].hold_ratio);
 
-    // MobaTools 馬達掛載
     //Serial.println("[Init] Attaching Motors...");
     for (int i = 0; i < 6; i++) {
         steppers[i]->attach(JOINTS[i].stepPin, JOINTS[i].dirPin);
@@ -318,5 +259,23 @@ void loop() {
         }
     } else {
         digitalWrite(LED_PIN, HIGH);  
+    }
+
+    // 每隔 5 秒鐘，印出溫度狀態
+    static unsigned long lastTempReport = 0;
+    if (millis() - lastTempReport >= 5000) {
+        lastTempReport = millis();
+        
+        String statusJ2 = readTMC5160ThermalStatus(Y_CS_PIN);
+        float tempJ5 = readTMC2240Temp(E1_CS_PIN);
+        float tempJ6 = readTMC2240Temp(E2_CS_PIN);
+        
+        Serial.print("[Thermal] J2(5160): ");
+        Serial.print(statusJ2);
+        Serial.print("  |  J5(2240): ");
+        Serial.print(tempJ5, 1);
+        Serial.print(" °C  |  J6(2240): ");
+        Serial.print(tempJ6, 1);
+        Serial.println(" °C");
     }
 }

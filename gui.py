@@ -268,7 +268,7 @@ class RobotGUI(QMainWindow):
         self.setup_waypoints_manager()
         left_widget = QWidget()
         left_widget.setLayout(self.left_panel)
-        left_widget.setFixedWidth(700)
+        left_widget.setFixedWidth(750)
         self.content_layout.addWidget(left_widget)
 
     #  JointControlRow
@@ -486,6 +486,7 @@ class RobotGUI(QMainWindow):
         
         actions = [
             ("Record", self.trigger_record),
+            ("Set AUX", self.trigger_set_aux), # 🌟 新增 Set AUX 按鈕
             ("Del ALL", self.confirm_delete_all),
             ("Save", self.path_manager.save_to_file),
             ("Load", self.path_manager.load_from_file)
@@ -606,9 +607,12 @@ class RobotGUI(QMainWindow):
     def trigger_record(self):
         default_delay = 0.0
         default_type = "PTP"
-        
         self.path_manager.record_point(self.current_joints, default_delay, default_type)
-        self.log(f"Recorded Point (Default: {default_type}, {default_delay}s)")
+        # log 移交給 path_manager 去印，避免重複
+
+    # 傳遞當前關節給 path_manager 作為 AUX
+    def trigger_set_aux(self):
+        self.path_manager.set_aux_point(self.current_joints)
     def on_speed_change(self, text):
         try:
             val = int(text.replace("%", ""))
@@ -659,11 +663,9 @@ class RobotGUI(QMainWindow):
     
     def on_manager_update_joints(self, joints):
         # 1. 打開防護罩：告訴系統「現在是動畫在跑，絕對不准發送 Serial 碎指令！」
-        self.is_animating = True 
-        
+        self.is_animating = True         
         self.current_joints = joints
         for i, angle in enumerate(self.current_joints):
-            # 這行會轉動滑桿
             self.joint_rows[i].set_value(angle) 
             
         # 2. 畫面更新完畢，關閉防護罩

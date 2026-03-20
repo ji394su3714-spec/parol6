@@ -166,7 +166,7 @@ void updateHomingLogic() {
         else if (homingState[i] == 6 && i == 4) {
             if (homingState[5] == 5) {
                 steppers[4]->setRampLen(100);
-                steppers[4]->setSpeedSteps(abs(JOINTS[4].homingSpeed) * 15);
+                steppers[4]->setSpeedSteps(abs(JOINTS[4].homingSpeed) * 14);
                 long offsetJ5 = JOINTS[4].homingPos * getStepsPerDeg(4);
                 steppers[4]->doSteps(offsetJ5);
                 homingState[4] = 3; 

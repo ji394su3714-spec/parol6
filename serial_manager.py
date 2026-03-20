@@ -90,7 +90,7 @@ class SerialManager(QObject):
             data_str = ",".join([f"{angle:.2f}" for angle in joints])
             
             if speed_factor is not None:
-                # 提高到 3 位小數以確保 LIN 模式的 interval_sec 精度
+                # 提高到 3 位小數以確保 模式 1的 interval_sec 精度
                 packet = f"<{data_str},{speed_factor:.3f},{move_mode}>\n"
             else:
                 packet = f"<{data_str},1.000,0>\n"
