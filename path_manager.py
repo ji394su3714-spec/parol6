@@ -11,14 +11,14 @@ import kinematics
 from motion_profile import TrapezoidalProfile
 
 # 關節極限 (PTP 用)
-MAX_JOINT_SPEED = 90.0   # 關節最高轉速 (度/秒)
-MAX_JOINT_ACCEL = 90.0  # 關節最高加速度 (度/秒^2)
+MAX_JOINT_SPEED = 180.0   # 關節最高轉速 (度/秒)
+MAX_JOINT_ACCEL = 180.0   # 關節最高加速度 (度/秒^2)
 
 # 直角空間極限 (LIN/CIRC 用)
-MAX_LIN_SPEED = 150.0    # TCP 直線極速 (mm/秒)
-MAX_LIN_ACCEL = 150.0    # TCP 直線加速度 (mm/秒^2)
-MAX_ROT_SPEED = 90.0     # TCP 旋轉極速 (度/秒)
-MAX_ROT_ACCEL = 90.0    # TCP 旋轉加速度 (度/秒^2)
+MAX_LIN_SPEED = 200.0    # TCP 直線極速 (mm/秒)
+MAX_LIN_ACCEL = 200.0    # TCP 直線加速度 (mm/秒^2)
+MAX_ROT_SPEED = 180.0     # TCP 旋轉極速 (度/秒)
+MAX_ROT_ACCEL = 180.0     # TCP 旋轉加速度 (度/秒^2)
 
 
 # --- 1. PTP 執行器 ---

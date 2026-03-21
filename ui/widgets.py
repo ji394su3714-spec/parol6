@@ -330,7 +330,7 @@ class WaypointHeader(QFrame):
         lbl_speed.setAlignment(Qt.AlignCenter)
         layout.addWidget(lbl_speed)
         
-        # 6. 操作 (2個按鈕30px + 中間間距5px = 65px)
+        # 6. 操作
         lbl_action = QLabel("")
         lbl_action.setFixedWidth(65)
         lbl_action.setAlignment(Qt.AlignCenter)
@@ -388,7 +388,6 @@ class WaypointRow(QWidget):
         dl.setContentsMargins(0, 0, 0, 0)
         dl.setSpacing(2)
         
-        # Delay 不需要 click_cb
         self.edit_delay = InlineEdit("", self, self.save_delay, Qt.AlignRight)
         dl.addWidget(self.edit_delay)
         dl.addStretch()
@@ -397,10 +396,18 @@ class WaypointRow(QWidget):
         self.update_delay_display(data.get('delay', 0.0))
 
         # --- 5. 速度 Speed ---
-        self.speed_lbl = DropdownLabel(self, ["1%", "10%", "50%", "100%"], self.save_speed, align=Qt.AlignRight)
-        self.speed_lbl.setFixedWidth(75) 
+        sw = QWidget()
+        sw.setFixedWidth(75) 
+        sl = QHBoxLayout(sw)
+        sl.setContentsMargins(0, 0, 0, 0)
+        sl.setSpacing(2)
+
+        self.edit_speed = InlineEdit("", self, self.save_speed, Qt.AlignRight)
+        sl.addWidget(self.edit_speed)
+        sl.addStretch()
+        layout.addWidget(sw)
+        
         self.update_speed_display()
-        layout.addWidget(self.speed_lbl)
         
         # --- 6. 操作按鈕 ---
         eye_icon = 'fa5s.eye' if is_active else 'fa5s.eye-slash'
@@ -473,18 +480,23 @@ class WaypointRow(QWidget):
         else:
             self.edit_delay.setText(f"{delay_val}s")
 
-    def save_speed(self, speed_str):
-        val = float(speed_str.replace('%', ''))
-        self.data['speed'] = val
+    def save_speed(self, text):
+        clean_text = text.replace('%', '').strip()
+        try:
+            # 如果清空不輸入，預設回到 50.0
+            val = 50.0 if not clean_text else float(clean_text)
+            self.data['speed'] = val
+        except ValueError:
+            pass 
+            
         self.update_speed_display()
 
     def update_speed_display(self):
         spd = self.data.get('speed', 50.0)
         if spd == 50.0:
-            self.speed_lbl.setText("        ") 
+            self.edit_speed.setText("        ") 
         else:
-            self.speed_lbl.setText(f"{int(spd)}%")
-            self.speed_lbl.setStyleSheet("color: black; background: transparent; font-weight: normal;")
+            self.edit_speed.setText(f"{int(spd)}%")
 
     # --- 數值更新 ---
     def update_speed(self, val):

@@ -340,7 +340,7 @@ class RobotGUI(QMainWindow):
         
         top_row.addWidget(QLabel("Speed:"))
         self.jog_speed_combo = QComboBox()
-        self.jog_speed_combo.addItems(["1%", "10%", "50%", "100%"])
+        self.jog_speed_combo.addItems(["25%", "50%", "75%", "100%"])
         self.jog_speed_combo.setCurrentText("50%")
         self.jog_speed_combo.setFixedWidth(100)
         top_row.addWidget(self.jog_speed_combo)

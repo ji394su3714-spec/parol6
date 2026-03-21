@@ -35,12 +35,12 @@ const MotorCurrentConfig MOTOR_CURRENTS[6] = {
 
 const float GEAR_RATIOS[6] = {6.4, 20.0, 18.1, 4.0, 4.0, 10.0};
 
-// 宣告 UART 通訊埠 (J1, J3, J4)
-SoftwareSerial serial_J1(71, 72);
-SoftwareSerial serial_J3(78, 79);
-SoftwareSerial serial_J4(76, 77);
+// 宣告 UART 通訊埠
+SoftwareSerial serial_J1(71, 72); //J1
+SoftwareSerial serial_J3(78, 79); //J3
+SoftwareSerial serial_J4(76, 77); //J4
 
-// 宣告驅動器物件 (J6 由 Bare-Metal SPI 接管，無需物件)
+// 宣告驅動器物件
 TMC2209Stepper driver_J1(&serial_J1, R_SENSE_2209, 0);
 TMC5160Stepper driver_J2(Y_CS_PIN, R_SENSE_5160);       
 TMC2209Stepper driver_J3(&serial_J3, R_SENSE_2209, 0);
@@ -75,7 +75,7 @@ long lastBufTarget[6] = {0};
 unsigned long lastPointTimeUs = 0;
 unsigned long currentPointIntervalUs = 0;
 
-// 核心播放機：絕對座標微超速追跡版 (純理論值，無碎震)
+// 核心播放機：絕對座標微超速追跡版
 void updateRingBuffer() {
     if (bufCount > 0) {
         unsigned long nowUs = micros(); 
