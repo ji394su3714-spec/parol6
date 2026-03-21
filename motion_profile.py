@@ -1,3 +1,4 @@
+# motion_profile.py
 import math
 
 MAX_JOINT_SPEEDS = [130.0, 42.0, 46.0, 210.0, 210.0, 85.0]  # 各軸安全極速 (度/秒)
