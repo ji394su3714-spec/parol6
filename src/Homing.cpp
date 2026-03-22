@@ -104,8 +104,8 @@ void updateHomingLogic() {
                         steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 20);
                     } 
                     else if (i == 3) {
-                        steppers[i]->setRampLen(150);
-                        steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 15);
+                        steppers[i]->setRampLen(100);
+                        steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 20);
                     }
                     long offsetSteps = JOINTS[i].homingPos * getStepsPerDeg(i);
                     steppers[i]->doSteps(offsetSteps); 

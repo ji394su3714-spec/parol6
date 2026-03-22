@@ -13,34 +13,25 @@
 
 // 實體變數定義區
 const JointConfig JOINTS[6] = {
-    // step, dir, en, lim, lim_active, h_spd, h_pos, bounce, j_ctrl_spd, max_spd, ramp
-    {54, 55, 38,  2,  LOW,   300, -28,  250, 12000, 50000, 300}, // J1 (2209)
-    {60, 61, 56, 12,  HIGH, -600,  50,  450, 17000, 50000, 400}, // J2 (5160)
-    {43, 48, 58, 14,  HIGH,  750, -70,  650, 17000, 50000, 400}, // J3 (2209)
-    {26, 28, 24, 15,  LOW,   900, -145, 400, 15000, 50000, 200}, // J4 (2209)
-    {36, 34, 30, 63,  HIGH,  700, -124, 300, 15000, 50000, 200}, // J5 (2209)
-    {59, 57, 40, 64,  LOW,   900,    2, 400, 20000, 50000, 200}  // J6 (2240)
+    {54, 55, 38,  2,  LOW,   300, -28,  250, 12000, 50000, 300}, 
+    {60, 61, 56, 12,  HIGH, -600,  50,  450, 17000, 50000, 400}, 
+    {43, 48, 58, 14,  HIGH,  750, -70,  650, 17000, 50000, 400}, 
+    {26, 28, 24, 15,  LOW,   950, -145, 400, 15000, 50000, 200}, 
+    {36, 34, 30, 63,  HIGH,  700, -124, 300, 15000, 50000, 200}, 
+    {59, 57, 40, 64,  LOW,   900,    2, 400, 20000, 50000, 200}  
 };
 
-// 電流設定陣列
 const MotorCurrentConfig MOTOR_CURRENTS[6] = {
-    // run_mA, hold_ratio
-    {1100,  0.4f}, // J1
-    {1100,  0.7f}, // J2
-    {900,   0.7f}, // J3
-    {900,  0.25f}, // J4
-    {900,  0.25f}, // J5
-    {750,  0.25f}  // J6
+    {1100,  0.5f}, {1100,  0.75f}, {900,   0.75f}, 
+    {900,  0.25f}, {900,  0.25f}, {750,  0.25f}  
 };
 
 const float GEAR_RATIOS[6] = {6.4, 20.0, 18.1, 4.0, 4.0, 10.0};
 
-// 宣告 UART 通訊埠
-SoftwareSerial serial_J1(71, 72); //J1
-SoftwareSerial serial_J3(78, 79); //J3
-SoftwareSerial serial_J4(76, 77); //J4
+SoftwareSerial serial_J1(71, 72);
+SoftwareSerial serial_J3(78, 79);
+SoftwareSerial serial_J4(76, 77);
 
-// 宣告驅動器物件
 TMC2209Stepper driver_J1(&serial_J1, R_SENSE_2209, 0);
 TMC5160Stepper driver_J2(Y_CS_PIN, R_SENSE_5160);       
 TMC2209Stepper driver_J3(&serial_J3, R_SENSE_2209, 0);
@@ -62,7 +53,6 @@ char receivedChars[NUM_CHARS];
 char tempChars[NUM_CHARS];
 float receivedAngles[6] = {0.0};
 
-// 實體化環形緩衝區變數
 BufPoint ringBuf[BUF_SIZE];
 byte bufHead = 0;
 byte bufTail = 0;
@@ -70,12 +60,13 @@ byte bufCount = 0;
 bool isBufPlaying = false;
 bool pendingOK = false;
 
-// 實體化新的計時變數
+// 修正版計時與補償變數
 long lastBufTarget[6] = {0}; 
 unsigned long lastPointTimeUs = 0;
 unsigned long currentPointIntervalUs = 0;
+float speedRemainder[6] = {0.0}; // 新增：小數點誤差記憶體
 
-// 核心播放機：絕對座標微超速追跡版
+// 核心播放機：完美時間軸 + Sigma-Delta 微積分補償
 void updateRingBuffer() {
     if (bufCount > 0) {
         unsigned long nowUs = micros(); 
@@ -83,6 +74,7 @@ void updateRingBuffer() {
         if (!isBufPlaying) {
             for(int i = 0; i < 6; i++) {
                 lastBufTarget[i] = steppers[i]->currentPosition();
+                speedRemainder[i] = 0.0; // 啟動時清空誤差記憶
             }
             lastPointTimeUs = nowUs;
             currentPointIntervalUs = 0; 
@@ -102,7 +94,6 @@ void updateRingBuffer() {
                 deltaSteps[i] = abs(pt.targetSteps[i] - lastBufTarget[i]); 
             }
 
-            // 防爆網
             for (int i = 0; i < 6; i++) {
                 if (deltaSteps[i] > 0) {
                     float minSafeTime = deltaSteps[i] / (JOINTS[i].maxSpeedSteps10 / 10.0);
@@ -112,12 +103,19 @@ void updateRingBuffer() {
                 }
             }
 
-            // 算速度並發車 
             for (int i = 0; i < 6; i++) {
                 if (deltaSteps[i] > 0) {
-                    float syncStepsPerSec = (deltaSteps[i] / maxTime) * 1.0; 
-                    long mobaSpeed = (long)(syncStepsPerSec * 10.0 + 0.5);                    
-                    if (mobaSpeed < 100) mobaSpeed = 100;
+                    float syncStepsPerSec = (deltaSteps[i] / maxTime); 
+                    
+                    // Sigma-Delta 小數點保留
+                    // 加上前一次被砍掉的小數點誤差
+                    float exactSpeed10 = (syncStepsPerSec * 10.0) + speedRemainder[i];
+                    long mobaSpeed = (long)exactSpeed10;
+                    
+                    // 把這次砍掉的小數點存起來，下一個 30ms 補回來
+                    speedRemainder[i] = exactSpeed10 - (float)mobaSpeed; 
+
+                    if (mobaSpeed < 10) mobaSpeed = 10; 
 
                     steppers[i]->setSpeedSteps(mobaSpeed);
                     steppers[i]->setRampLen(0); 
@@ -126,7 +124,12 @@ void updateRingBuffer() {
                 lastBufTarget[i] = pt.targetSteps[i];
             }
 
-            lastPointTimeUs = nowUs;
+            // 修正時間軸偏移 (Time Drift)：保證完美 30ms 節奏不拉長
+            lastPointTimeUs += currentPointIntervalUs;
+            if (nowUs > lastPointTimeUs + 50000) { 
+                lastPointTimeUs = nowUs; // 防止嚴重斷流時的異常暴衝
+            }
+            
             currentPointIntervalUs = (unsigned long)(maxTime * 1000000.0);
             isBufPlaying = true;
 
@@ -146,7 +149,6 @@ void updateRingBuffer() {
 
 boolean newData = false;
 
-// 輔助函式
 float getStepsPerDeg(int axis) {
     return (MOTOR_STEPS * MICROSTEPS * GEAR_RATIOS[axis]) / 360.0;
 }
@@ -158,13 +160,11 @@ bool isAnyHoming() {
     return false;
 }
 
-// 啟動與主迴圈
 void setup() {
     Serial.begin(250000); 
     delay(1000);
     Serial.println("\n--- System Booting ---");
 
-// 預防 SPI 當機：把所有的 CS 腳位在 SPI 啟動前強制拉高
     pinMode(53, OUTPUT);        digitalWrite(53, HIGH);
     pinMode(Y_CS_PIN, OUTPUT);  digitalWrite(Y_CS_PIN, HIGH);
     pinMode(E1_CS_PIN, OUTPUT); digitalWrite(E1_CS_PIN, HIGH);
@@ -177,25 +177,22 @@ void setup() {
     serial_J3.begin(115200);
     serial_J4.begin(115200);
 
-    // 驅動TMC2209初始化
     auto setupTMC2209 = [](TMC2209Stepper &drv, uint16_t mA, float hold_ratio) {
         drv.begin();
         drv.pdn_disable(true);     
         drv.I_scale_analog(false); 
         drv.toff(5);               
         drv.rms_current(mA, hold_ratio); 
-        drv.microsteps(8);        
+        drv.microsteps(8); 
         drv.en_spreadCycle(false); 
         drv.pwm_autoscale(true);   
         drv.TCOOLTHRS(0); 
     };
 
-    //Serial.println("[Init] Configuring UART Drivers (J1, J3, J4)...");
     setupTMC2209(driver_J1, MOTOR_CURRENTS[0].run_mA, MOTOR_CURRENTS[0].hold_ratio);
     setupTMC2209(driver_J3, MOTOR_CURRENTS[2].run_mA, MOTOR_CURRENTS[2].hold_ratio);
     setupTMC2209(driver_J4, MOTOR_CURRENTS[3].run_mA, MOTOR_CURRENTS[3].hold_ratio);
 
-    //Serial.println("[Init] Configuring J2 (5160 SPI)...");
     driver_J2.begin();
     driver_J2.toff(5);
     driver_J2.rms_current(MOTOR_CURRENTS[1].run_mA, MOTOR_CURRENTS[1].hold_ratio);
@@ -203,11 +200,9 @@ void setup() {
     driver_J2.en_pwm_mode(true);
     driver_J2.pwm_autoscale(true);
 
-    //Serial.println("[Init] Configuring J5 & J6 (2240 Bare-Metal SPI)...");
     setupTMC2240_RawSPI(E1_CS_PIN, MOTOR_CURRENTS[4].run_mA, MOTOR_CURRENTS[4].hold_ratio);
     setupTMC2240_RawSPI(E2_CS_PIN, MOTOR_CURRENTS[5].run_mA, MOTOR_CURRENTS[5].hold_ratio);
 
-    //Serial.println("[Init] Attaching Motors...");
     for (int i = 0; i < 6; i++) {
         steppers[i]->attach(JOINTS[i].stepPin, JOINTS[i].dirPin);
         pinMode(JOINTS[i].enPin, OUTPUT);
@@ -222,8 +217,7 @@ void setup() {
 }
 
 void loop() {
-
-    updateRingBuffer(); // 每微秒都在檢查要不要換檔
+    updateRingBuffer(); 
 
     recvWithStartEndMarkers();
     if (newData) {
@@ -261,15 +255,12 @@ void loop() {
         digitalWrite(LED_PIN, HIGH);  
     }
 
-    // 每隔 5 秒鐘，印出溫度狀態
     static unsigned long lastTempReport = 0;
     if (millis() - lastTempReport >= 5000) {
         lastTempReport = millis();
-        
         String statusJ2 = readTMC5160ThermalStatus(Y_CS_PIN);
         float tempJ5 = readTMC2240Temp(E1_CS_PIN);
         float tempJ6 = readTMC2240Temp(E2_CS_PIN);
-        
         Serial.print("[Thermal] J2(5160): ");
         Serial.print(statusJ2);
         Serial.print("  |  J5(2240): ");

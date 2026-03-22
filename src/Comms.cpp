@@ -83,7 +83,7 @@ void processCommand() {
 
         // 模式 1：串流模式 (Streaming) - 塞進水桶
         // 負責：PTP, LIN, CIRC (Python 已計算好完美加減速)
-        if (moveMode == 2) {
+        if (moveMode == 1) {
             if (bufCount < BUF_SIZE) {
                 for(int i = 0; i < 6; i++) {
                     // 關閉硬體加減速，徹底交給 Python 控制！

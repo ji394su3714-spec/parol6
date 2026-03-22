@@ -1,4 +1,3 @@
-# path_manager.py
 import json
 import time
 import numpy as np
@@ -11,13 +10,14 @@ from scipy.spatial.transform import Slerp
 import kinematics
 from motion_profile import TrapezoidalProfile
 
-# 關節極限 (PTP 用)
-MAX_JOINT_SPEED = 180.0   # 關節最高轉速 (度/秒)
-MAX_JOINT_ACCEL = 180.0   # 關節最高加速度 (度/秒^2)
+# 關節專屬極限 
+# J1~J6 對應: [底座, 大臂, 小臂, 旋轉腕, 俯仰腕, 法蘭盤]
+MAX_JOINT_SPEEDS = np.array([90.0, 27.0, 30.0, 185.0, 185.0, 56.0]) # 各軸最高轉速 (度/秒)
+MAX_JOINT_ACCELS = np.array([200.0, 60.0, 80.0, 500.0, 500.0, 150.0]) # 各軸最高加速度 (度/秒^2)
 
 # 直角空間極限 (LIN/CIRC 用)
 MAX_LIN_SPEED = 200.0    # TCP 直線極速 (mm/秒)
-MAX_LIN_ACCEL = 200.0    # TCP 直線加速度 (mm/秒^2)
+MAX_LIN_ACCEL = 300.0    # TCP 直線加速度 (mm/秒^2)
 MAX_ROT_SPEED = 180.0     # TCP 旋轉極速 (度/秒)
 MAX_ROT_ACCEL = 180.0     # TCP 旋轉加速度 (度/秒^2)
 
@@ -36,23 +36,42 @@ class PTPExecutor(QThread):
 
     def run(self):
         diffs = np.abs(self.end_joints - self.start_joints)
-        max_dist_deg = np.max(diffs)
         
-        if max_dist_deg < 0.1:
+        if np.max(diffs) < 0.1:
             self.finished_signal.emit()
             return
             
-        target_speed = MAX_JOINT_SPEED * self.speed_factor
-        target_accel = MAX_JOINT_ACCEL * self.speed_factor
-        profile = TrapezoidalProfile(max_dist_deg, target_speed, target_accel)
+        #  1.找出需要花最久時間的「瓶頸軸」
+        bottleneck_profile = None
+        max_duration = 0.0
         
-        interval = 0.030
+        for i in range(6):
+            if diffs[i] > 1e-6:
+                allowed_v = MAX_JOINT_SPEEDS[i] * self.speed_factor
+                allowed_a = MAX_JOINT_ACCELS[i] * self.speed_factor
+                
+                p = TrapezoidalProfile(diffs[i], allowed_v, allowed_a)
+                if p.T_total > max_duration:
+                    max_duration = p.T_total
+                    bottleneck_profile = p
+                    
+        if bottleneck_profile is None:
+            self.finished_signal.emit()
+            return
+
+        interval = 0.050
         t = 0.0
         counter = 0
-        gui_skip_frames = 10 
+        gui_skip_frames = 10
         
-        while t <= profile.T_total:
-            progress = profile.get_progress(t)
+        # ==========================================
+        # 🌟 2. 完美同步：所有軸套用瓶頸軸的進度 (0~1)
+        # ==========================================
+        while t <= bottleneck_profile.T_total:
+            # 取得瓶頸軸目前的進度百分比
+            progress = bottleneck_profile.get_progress(t)
+            
+            # 將進度等比例映射到所有軸 (快的軸會自動放慢配合)
             current = self.start_joints + (self.end_joints - self.start_joints) * progress
             
             if counter % gui_skip_frames == 0:
@@ -79,7 +98,6 @@ class PTPExecutor(QThread):
                 self.serial_ref.wait_for_motion_complete(timeout=10.0)
                 
         self.finished_signal.emit()
-
 
 # --- 2. 笛卡爾空間執行器 (處理 LIN 與 CIRC) ---
 class CartesianExecutor(QThread):
@@ -170,15 +188,37 @@ class CartesianExecutor(QThread):
         time_for_rot = dist_deg / (MAX_ROT_SPEED * self.speed_factor) if MAX_ROT_SPEED > 0 else 0
 
         if time_for_lin >= time_for_rot:
+            dist_main = dist_mm
             target_speed = MAX_LIN_SPEED * self.speed_factor
             target_accel = MAX_LIN_ACCEL * self.speed_factor
-            profile = TrapezoidalProfile(dist_mm, target_speed, target_accel)
         else:
+            dist_main = dist_deg
             target_speed = MAX_ROT_SPEED * self.speed_factor
             target_accel = MAX_ROT_ACCEL * self.speed_factor
-            profile = TrapezoidalProfile(dist_deg, target_speed, target_accel)
 
-        interval = 0.030
+        profile = TrapezoidalProfile(dist_main, target_speed, target_accel)
+
+        # LIN/CIRC 安全防護網 (Joint Limit Safeguard)
+        diffs_joints = np.abs(self.target_joints - self.start_joints)
+        if profile.T_total > 0:
+            for i in range(6):
+                # 估算該軸在這個軌跡中被要求的平均轉速
+                avg_joint_v = diffs_joints[i] / profile.T_total
+                allowed_v = MAX_JOINT_SPEEDS[i] * self.speed_factor
+                
+                # 如果超速了 (通常是 J2 或 J3)
+                if avg_joint_v > allowed_v:
+                    # 算出超速比例 (例如 1.5 倍)
+                    overspeed_ratio = avg_joint_v / allowed_v
+                    
+                    # 將 TCP 總體速度與加速度「等比例下修」以保護關節
+                    target_speed /= overspeed_ratio
+                    target_accel /= (overspeed_ratio ** 2) # 加速度必須除以比例的平方
+                    
+                    # 重新產生更慢、更安全的梯形 Profile
+                    profile = TrapezoidalProfile(dist_main, target_speed, target_accel)
+
+        interval = 0.050
         t = 0.0
         counter = 0
         gui_skip_frames = 10
@@ -274,7 +314,7 @@ class PathManager(QObject):
         self.temp_aux_joints = list(joints)
         self.log_signal.emit(">> [CIRC] AUX point saved! Move to END point and press Record.")
 
-    def record_point(self, current_joints, delay=0.0, move_type="PTP", speed=50.0):
+    def record_point(self, current_joints, delay=0.0, move_type="PTP", speed=100.0):
         aux = None
         # 智慧判定：如果剛剛有設定 AUX，這次的記錄強制轉為 CIRC 圓弧
         if self.temp_aux_joints is not None:
@@ -344,7 +384,7 @@ class PathManager(QObject):
                     for pt in self.waypoints:
                         if 'active' not in pt: pt['active'] = True
                         if 'type' not in pt: pt['type'] = "PTP"
-                        if 'speed' not in pt: pt['speed'] = 50.0
+                        #if 'speed' not in pt: pt['speed'] = 50.0
                 
                 self.list_update_signal.emit()
                 self.log_signal.emit(f"Path loaded from {filename}")
