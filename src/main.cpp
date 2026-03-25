@@ -13,17 +13,21 @@
 
 // 實體變數定義區
 const JointConfig JOINTS[6] = {
-    {54, 55, 38,  2,  LOW,   300, -28,  250, 12000, 50000, 300}, 
-    {60, 61, 56, 12,  HIGH, -600,  50,  450, 17000, 50000, 400}, 
-    {43, 48, 58, 14,  HIGH,  750, -70,  650, 17000, 50000, 400}, 
-    {26, 28, 24, 15,  LOW,   950, -145, 400, 15000, 50000, 200}, 
-    {36, 34, 30, 63,  HIGH,  700, -124, 300, 15000, 50000, 200}, 
-    {59, 57, 40, 64,  LOW,   900,    2, 400, 20000, 50000, 200}  
+    {54, 55, 38,  2,  LOW,   300, -28,  250, 12000, 30000, 350}, 
+    {60, 61, 56, 12,  HIGH, -600,  50,  450, 17000, 30000, 350}, 
+    {43, 48, 58, 14,  HIGH,  750, -70,  650, 17000, 30000, 350}, 
+    {26, 28, 24, 15,  LOW,   950, -145, 400, 15000, 30000, 350}, 
+    {36, 34, 30, 63,  HIGH,  700, -124, 300, 15000, 30000, 350}, 
+    {59, 57, 40, 64,  LOW,   900,    2, 400, 20000, 30000, 350}  
 };
 
 const MotorCurrentConfig MOTOR_CURRENTS[6] = {
-    {1100,  0.5f}, {1100,  0.75f}, {900,   0.75f}, 
-    {900,  0.25f}, {900,  0.25f}, {750,  0.25f}  
+    {1100, 0.25f},
+    {1100, 0.75f}, 
+    {900,  0.75f}, 
+    {900,  0.25f},
+    {900,  0.25f}, 
+    {750,  0.25f}  
 };
 
 const float GEAR_RATIOS[6] = {6.4, 20.0, 18.1, 4.0, 4.0, 10.0};
@@ -64,20 +68,33 @@ bool pendingOK = false;
 long lastBufTarget[6] = {0}; 
 unsigned long lastPointTimeUs = 0;
 unsigned long currentPointIntervalUs = 0;
-float speedRemainder[6] = {0.0}; // 新增：小數點誤差記憶體
+float speedRemainder[6] = {0.0}; 
+unsigned long firstPacketWaitUs = 0; // 新增：蓄水池計時器
 
-// 核心播放機：完美時間軸 + Sigma-Delta 微積分補償
+// 核心播放機：
 void updateRingBuffer() {
     if (bufCount > 0) {
         unsigned long nowUs = micros(); 
         
         if (!isBufPlaying) {
+            // 優化 ：工業級蓄水池 (Pre-buffering)
+            // 強制等待水桶裝滿至少 4 個切片，或者等待超過 50 毫秒才發車！
+            // 這樣能徹底吸收 Windows 的通訊浮動，告別斷流卡頓！
+            if (firstPacketWaitUs == 0) firstPacketWaitUs = nowUs;
+
+            if (bufCount < 4 && (nowUs - firstPacketWaitUs < 50000)) {
+                return; // 繼續憋氣蓄水，不准發車
+            }
+
+            // 水蓄夠了，準備發車！
+            firstPacketWaitUs = 0;
             for(int i = 0; i < 6; i++) {
                 lastBufTarget[i] = steppers[i]->currentPosition();
-                speedRemainder[i] = 0.0; // 啟動時清空誤差記憶
+                speedRemainder[i] = 0.0; 
             }
             lastPointTimeUs = nowUs;
             currentPointIntervalUs = 0; 
+            isBufPlaying = true;
         }
 
         if (nowUs - lastPointTimeUs >= currentPointIntervalUs) {
@@ -107,12 +124,9 @@ void updateRingBuffer() {
                 if (deltaSteps[i] > 0) {
                     float syncStepsPerSec = (deltaSteps[i] / maxTime); 
                     
-                    // Sigma-Delta 小數點保留
-                    // 加上前一次被砍掉的小數點誤差
                     float exactSpeed10 = (syncStepsPerSec * 10.0) + speedRemainder[i];
                     long mobaSpeed = (long)exactSpeed10;
                     
-                    // 把這次砍掉的小數點存起來，下一個 30ms 補回來
                     speedRemainder[i] = exactSpeed10 - (float)mobaSpeed; 
 
                     if (mobaSpeed < 10) mobaSpeed = 10; 
@@ -124,15 +138,13 @@ void updateRingBuffer() {
                 lastBufTarget[i] = pt.targetSteps[i];
             }
 
-            // 修正時間軸偏移 (Time Drift)：保證完美 30ms 節奏不拉長
             lastPointTimeUs += currentPointIntervalUs;
             if (nowUs > lastPointTimeUs + 50000) { 
-                lastPointTimeUs = nowUs; // 防止嚴重斷流時的異常暴衝
+                lastPointTimeUs = nowUs; 
             }
             
             currentPointIntervalUs = (unsigned long)(maxTime * 1000000.0);
-            isBufPlaying = true;
-
+            
             if (pendingOK && bufCount < BUF_SIZE) {
                 Serial.println("OK");
                 pendingOK = false;
@@ -142,7 +154,10 @@ void updateRingBuffer() {
         if (isBufPlaying) {
             bool moving = false;
             for(int i = 0; i < 6; i++) if(steppers[i]->moving()) moving = true;
-            if (!moving) isBufPlaying = false;
+            if (!moving) {
+                isBufPlaying = false;
+                firstPacketWaitUs = 0; // 重置蓄水池
+            }
         }
     }
 }
@@ -255,18 +270,22 @@ void loop() {
         digitalWrite(LED_PIN, HIGH);  
     }
 
+    // 每隔 5 秒鐘，印出溫度狀態
     static unsigned long lastTempReport = 0;
     if (millis() - lastTempReport >= 5000) {
         lastTempReport = millis();
-        String statusJ2 = readTMC5160ThermalStatus(Y_CS_PIN);
-        float tempJ5 = readTMC2240Temp(E1_CS_PIN);
-        float tempJ6 = readTMC2240Temp(E2_CS_PIN);
-        Serial.print("[Thermal] J2(5160): ");
-        Serial.print(statusJ2);
-        Serial.print("  |  J5(2240): ");
-        Serial.print(tempJ5, 1);
-        Serial.print(" °C  |  J6(2240): ");
-        Serial.print(tempJ6, 1);
-        Serial.println(" °C");
+        
+        if (!isBufPlaying && !isMoving) {
+            String statusJ2 = readTMC5160ThermalStatus(Y_CS_PIN);
+            float tempJ5 = readTMC2240Temp(E1_CS_PIN);
+            float tempJ6 = readTMC2240Temp(E2_CS_PIN);
+            Serial.print("[Thermal] J2(5160): ");
+            Serial.print(statusJ2);
+            Serial.print("  |  J5(2240): ");
+            Serial.print(tempJ5, 1);
+            Serial.print(" °C  |  J6(2240): ");
+            Serial.print(tempJ6, 1);
+            Serial.println(" °C");
+        }
     }
 }

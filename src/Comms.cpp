@@ -128,7 +128,7 @@ void processCommand() {
 
                     steppers[i]->setSpeedSteps(mobaSpeed);
                     
-                    // 啟用硬體加減速 (維持手動操作的避震手感)---->可能需要修復
+                    // 啟用硬體加減速 (維持手動操作的避震手感)---->可能需要修復同步性
                     steppers[i]->setRampLen(JOINTS[i].rampSteps);
                     steppers[i]->writeSteps(targetSteps); 
                 }

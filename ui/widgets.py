@@ -16,7 +16,7 @@ def create_repeat_btn(text, style_class, width, height, delay=200, interval=50):
     btn.setAutoRepeatInterval(interval)
     return btn
 
-# --- 圓形按鈕 (保持不變) ---
+# --- 圓形按鈕 ---
 class CircularButton(QPushButton):
     def __init__(self, icon_name, tooltip, parent=None, checkable=False, checked=False):
         super().__init__(parent)

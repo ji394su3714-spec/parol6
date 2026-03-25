@@ -12,7 +12,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "PTP",
-        "speed": 20.0,
+        "speed": 50.0,
         "active": true,
         "note": ""
     },
@@ -29,7 +29,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "PTP",
-        "speed": 60.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -46,7 +46,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "PTP",
-        "speed": 60.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -63,7 +63,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "PTP",
-        "speed": 60.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -80,7 +80,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "PTP",
-        "speed": 60.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -97,7 +97,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "PTP",
-        "speed": 60.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -114,7 +114,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "PTP",
-        "speed": 60.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -131,7 +131,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "PTP",
-        "speed": 90.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -148,7 +148,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "PTP",
-        "speed": 90.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -165,7 +165,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "PTP",
-        "speed": 90.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -182,7 +182,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "PTP",
-        "speed": 90.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -216,7 +216,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "PTP",
-        "speed": 60.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -233,7 +233,24 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "PTP",
-        "speed": 60.0,
+        "speed": 100.0,
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 15",
+        "joints": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "aux_joints": null,
+        "delay": 0.0,
+        "type": "PTP",
+        "speed": 50.0,
         "active": true,
         "note": ""
     }

@@ -29,7 +29,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 90.0,
+        "speed": 80.0,
         "active": true,
         "note": ""
     },
@@ -46,7 +46,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 90.0,
+        "speed": 80.0,
         "active": true,
         "note": ""
     },
@@ -63,7 +63,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 50.0,
+        "speed": 60.0,
         "active": true,
         "note": ""
     },
@@ -80,7 +80,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 90.0,
+        "speed": 80.0,
         "active": true,
         "note": ""
     },
@@ -97,7 +97,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 90.0,
+        "speed": 80.0,
         "active": true,
         "note": ""
     },
@@ -114,7 +114,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "PTP",
-        "speed": 50.0,
+        "speed": 90.0,
         "active": true,
         "note": ""
     },
@@ -148,7 +148,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 70.0,
+        "speed": 80.0,
         "active": true,
         "note": ""
     },
@@ -165,7 +165,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 70.0,
+        "speed": 80.0,
         "active": true,
         "note": ""
     },

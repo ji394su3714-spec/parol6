@@ -11,16 +11,15 @@ import kinematics
 from motion_profile import TrapezoidalProfile
 
 # 關節專屬極限 
-# J1~J6 對應: [底座, 大臂, 小臂, 旋轉腕, 俯仰腕, 法蘭盤]
-MAX_JOINT_SPEEDS = np.array([90.0, 27.0, 30.0, 185.0, 185.0, 56.0]) # 各軸最高轉速 (度/秒)
-MAX_JOINT_ACCELS = np.array([200.0, 60.0, 80.0, 500.0, 500.0, 150.0]) # 各軸最高加速度 (度/秒^2)
+# J1~J6
+MAX_JOINT_SPEEDS = np.array([81.0, 27.0, 30.0, 129.0, 129.0, 56.0]) # 各軸最高轉速 (度/秒)
+MAX_JOINT_ACCELS = np.array([150.0, 60.0, 70.0, 280.0, 280.0, 120.0]) # 各軸最高加速度 (度/秒^2)
 
 # 直角空間極限 (LIN/CIRC 用)
-MAX_LIN_SPEED = 200.0    # TCP 直線極速 (mm/秒)
-MAX_LIN_ACCEL = 300.0    # TCP 直線加速度 (mm/秒^2)
-MAX_ROT_SPEED = 180.0     # TCP 旋轉極速 (度/秒)
-MAX_ROT_ACCEL = 180.0     # TCP 旋轉加速度 (度/秒^2)
-
+MAX_LIN_SPEED = 100.0    # TCP 直線極速 (mm/秒)
+MAX_LIN_ACCEL = 200.0    # TCP 直線加速度 (mm/秒^2)
+MAX_ROT_SPEED = 100.0     # TCP 旋轉極速 (度/秒)
+MAX_ROT_ACCEL = 90.0     # TCP 旋轉加速度 (度/秒^2)
 
 # --- 1. PTP 執行器 ---
 class PTPExecutor(QThread):
@@ -59,14 +58,12 @@ class PTPExecutor(QThread):
             self.finished_signal.emit()
             return
 
-        interval = 0.050
+        interval = 0.020
         t = 0.0
         counter = 0
-        gui_skip_frames = 10
-        
-        # ==========================================
-        # 🌟 2. 完美同步：所有軸套用瓶頸軸的進度 (0~1)
-        # ==========================================
+        gui_skip_frames = 5
+ 
+        # 2. 完美同步：所有軸套用瓶頸軸的進度 (0~1)
         while t <= bottleneck_profile.T_total:
             # 取得瓶頸軸目前的進度百分比
             progress = bottleneck_profile.get_progress(t)
@@ -218,10 +215,10 @@ class CartesianExecutor(QThread):
                     # 重新產生更慢、更安全的梯形 Profile
                     profile = TrapezoidalProfile(dist_main, target_speed, target_accel)
 
-        interval = 0.050
+        interval = 0.020
         t = 0.0
         counter = 0
-        gui_skip_frames = 10
+        gui_skip_frames = 5
         
         current_seed = self.start_joints.copy()
         self.update_signal.emit(list(self.start_joints))
