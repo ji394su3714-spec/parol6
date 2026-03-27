@@ -113,6 +113,62 @@ void processCommand() {
             normalMoveActive = true;
             return;
         }
+
+        // 模式 2：原生 PTP (純時間加減速，零切片直驅)
+        else if (moveMode == 2) {
+            float speedFactor = param7; // Python 傳來的速度比例
+            if (speedFactor <= 0.0) speedFactor = 1.0;
+
+            // 加減速時間(秒)
+            float T_acc = 0.15; //<--在gui進階選項裡可調整
+
+            float maxTime = 0.0;
+            long deltaSteps[6] = {0};
+
+            // 1. 尋找瓶頸：算出哪一根軸要花最久的時間
+            for (int i = 0; i < 6; i++) {
+                if (receivedAngles[i] != 999.0) {
+                    long targetSteps = receivedAngles[i] * getStepsPerDeg(i);
+                    deltaSteps[i] = abs(targetSteps - steppers[i]->currentPosition());
+                    
+                    // 該軸的物理極速 * 速度比例
+                    float v_max = (JOINTS[i].maxSpeedSteps10 / 10.0) * speedFactor;
+                    float t_needed = deltaSteps[i] / v_max;
+                    if (t_needed > maxTime) {
+                        maxTime = t_needed;
+                    }
+                }
+            }
+
+            // 2. 同步發車與「動態時間斜率」計算
+            for (int i = 0; i < 6; i++) {
+                if (receivedAngles[i] != 999.0 && deltaSteps[i] > 0) {
+                    // 算出該軸配合瓶頸的同步巡航速度 (步/秒)
+                    float syncSpeed = deltaSteps[i] / maxTime;
+                    long mobaSpeed = (long)(syncSpeed * 10.0 + 0.5);
+                    if (mobaSpeed < 10) mobaSpeed = 10;
+
+                    // 用「時間」反推「步數」，徹底消滅煩人的 ramp 陣列！
+                    long dynamicRamp = (long)((syncSpeed * T_acc) / 2.0);
+                    
+                    // 防呆：如果移動距離太短，加速段最多只能佔總距離的一半 (變成三角形軌跡)
+                    if (dynamicRamp > deltaSteps[i] / 2) {
+                        dynamicRamp = deltaSteps[i] / 2;
+                    }
+
+                    // 覆蓋原本寫死的 ramp，套用我們動態算出來的時間步數！
+                    steppers[i]->setSpeedSteps(mobaSpeed);
+                    steppers[i]->setRampLen(dynamicRamp); 
+                    
+                    long targetSteps = receivedAngles[i] * getStepsPerDeg(i);
+                    steppers[i]->writeSteps(targetSteps);
+                }
+            }
+
+            normalMoveActive = true; 
+            Serial.println("OK");    
+            return;
+        }
         
         // 模式 0：手動/點動模式 (Jogging)
         // 負責：UI 滑桿、Jog 按鈕 (交給硬體 MobaTools 防暴衝)
@@ -128,7 +184,7 @@ void processCommand() {
 
                     steppers[i]->setSpeedSteps(mobaSpeed);
                     
-                    // 啟用硬體加減速 (維持手動操作的避震手感)---->可能需要修復同步性
+                    // 啟用硬體加減速 (維持手動操作的避震手感)---->可能需要修復同步問題
                     steppers[i]->setRampLen(JOINTS[i].rampSteps);
                     steppers[i]->writeSteps(targetSteps); 
                 }

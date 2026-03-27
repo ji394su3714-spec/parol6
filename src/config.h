@@ -7,7 +7,7 @@
 struct JointConfig {
     byte stepPin; byte dirPin; byte enPin; byte limitPin; bool limitActiveState;
     float homingSpeed; float homingPos; long bounceSteps; 
-    long jointControlSpd10; long maxSpeedSteps10; 
+    long jointControlSpd10; long maxSpeedSteps10; //<--在gui進階選項裡可調整
     int rampSteps;      
 };
 

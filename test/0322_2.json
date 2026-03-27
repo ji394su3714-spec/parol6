@@ -11,8 +11,8 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "PTP",
-        "speed": 50.0,
+        "type": "N_PTP",
+        "speed": 25.0,
         "active": true,
         "note": ""
     },
@@ -28,7 +28,7 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "PTP",
+        "type": "N_PTP",
         "speed": 100.0,
         "active": true,
         "note": ""
@@ -45,7 +45,7 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "PTP",
+        "type": "N_PTP",
         "speed": 100.0,
         "active": true,
         "note": ""
@@ -62,7 +62,7 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "PTP",
+        "type": "N_PTP",
         "speed": 100.0,
         "active": true,
         "note": ""
@@ -79,7 +79,7 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "PTP",
+        "type": "N_PTP",
         "speed": 100.0,
         "active": true,
         "note": ""
@@ -96,7 +96,7 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "PTP",
+        "type": "N_PTP",
         "speed": 100.0,
         "active": true,
         "note": ""
@@ -113,7 +113,7 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "PTP",
+        "type": "N_PTP",
         "speed": 100.0,
         "active": true,
         "note": ""
@@ -130,7 +130,7 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "PTP",
+        "type": "N_PTP",
         "speed": 100.0,
         "active": true,
         "note": ""
@@ -147,7 +147,7 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "PTP",
+        "type": "N_PTP",
         "speed": 100.0,
         "active": true,
         "note": ""
@@ -164,7 +164,7 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "PTP",
+        "type": "N_PTP",
         "speed": 100.0,
         "active": true,
         "note": ""
@@ -181,7 +181,7 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "PTP",
+        "type": "N_PTP",
         "speed": 100.0,
         "active": true,
         "note": ""
@@ -198,8 +198,8 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "PTP",
-        "speed": 20.0,
+        "type": "N_PTP",
+        "speed": 25.0,
         "active": true,
         "note": ""
     },
@@ -215,7 +215,7 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "PTP",
+        "type": "N_PTP",
         "speed": 100.0,
         "active": true,
         "note": ""
@@ -232,7 +232,7 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "PTP",
+        "type": "N_PTP",
         "speed": 100.0,
         "active": true,
         "note": ""
@@ -240,17 +240,17 @@
     {
         "name": "Point 15",
         "joints": [
+            -90.0,
+            -24.73,
+            70.0,
             0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
+            -35.48,
             0.0
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "PTP",
-        "speed": 50.0,
+        "type": "N_PTP",
+        "speed": 25.0,
         "active": true,
         "note": ""
     }

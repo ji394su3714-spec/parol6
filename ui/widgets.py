@@ -1,7 +1,7 @@
 # ui/widgets.py
 from PyQt5.QtWidgets import (QListWidget, QMenu, QPushButton, QFrame, QHBoxLayout, QVBoxLayout, QSpinBox, QLineEdit,
                              QLabel, QWidget, QSlider, QDoubleSpinBox, QTextEdit, QSizePolicy)
-from PyQt5.QtCore import QTimer, Qt, QSize, pyqtSignal, QEvent
+from PyQt5.QtCore import Qt, QSize, pyqtSignal
 from PyQt5.QtGui import QRegion
 import qtawesome as qta
 from ui import styles
@@ -310,7 +310,7 @@ class WaypointHeader(QFrame):
         
         # 2. 新增：類型 (Type)
         lbl_type = QLabel("")
-        lbl_type.setFixedWidth(50) # 對齊下方的 type_lbl
+        lbl_type.setFixedWidth(75) # 對齊下方的 type_lbl
         lbl_type.setAlignment(Qt.AlignCenter)
         layout.addWidget(lbl_type)
         
@@ -365,9 +365,9 @@ class WaypointRow(QWidget):
         self.lbl_index.setStyleSheet("color: black; font-weight: normal;" if is_active else "color: gray;")
         layout.addWidget(self.lbl_index)
         
-        # --- 2. 動作類型 PTP/LIN ---
-        self.type_lbl = DropdownLabel(self, ["PTP", "LIN", "CIRC", "I/O"], self.save_type)
-        self.type_lbl.setFixedWidth(50) 
+        # --- 2. 動作類型 PTP/LIN/... ---
+        self.type_lbl = DropdownLabel(self, ["PTP", "N_PTP", "LIN", "CIRC", "I/O"], self.save_type)
+        self.type_lbl.setFixedWidth(75) 
         self.update_type_display()
         layout.addWidget(self.type_lbl)
         
@@ -397,7 +397,7 @@ class WaypointRow(QWidget):
         self.update_delay_display(data.get('delay', 0.0))
 
         # --- 5. 速度 Speed ---
-        self.speed_lbl = DropdownLabel(self, ["20%", "50%", "60%", "70%", "80%", "90%", "100%"], self.save_speed, align=Qt.AlignRight)
+        self.speed_lbl = DropdownLabel(self, ["10%", "25%", "50%", "80%", "90%", "100%"], self.save_speed, align=Qt.AlignRight)
         self.speed_lbl.setFixedWidth(75) 
         self.update_speed_display()
         layout.addWidget(self.speed_lbl)
