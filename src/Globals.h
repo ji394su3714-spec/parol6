@@ -39,5 +39,8 @@ extern long lastBufTarget[6];
 extern unsigned long lastPointTimeUs;
 extern unsigned long currentPointIntervalUs;
 
+extern long global_hw_max_steps;
+extern float global_T_acc;
+
 void updateRingBuffer();
 #endif

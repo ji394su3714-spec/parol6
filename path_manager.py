@@ -28,12 +28,46 @@ MAX_ROT_JERK = MAX_ROT_ACCEL * 10.0     # TCP 旋轉加加速度 (度/秒^3)
 MAX_TOTAL_PULSE_SLICE = 22000.0   # 切片模式極限 (CPU 負載重，邊跑邊解碼)<--在gui進階選項裡可調整
 MAX_TOTAL_PULSE_NATIVE = 60000.0  # 原生模式極限 (CPU 負載極輕，專注發射脈衝)<--在gui進階選項裡可調整
 
+# 🌟 新增：N_PTP 預設起步時間
+N_PTP_T_ACC = 0.15
+
 # 步數換算：定義減速比，計算所有軸的 (微步數 * 減速比) / 360度
 GEAR_RATIOS = np.array([6.4, 20.0, 18.1, 4.0, 4.0, 10.0])
 STEPS_PER_DEG = (1600.0 * GEAR_RATIOS) / 360.0
 
 # 對應 C++ JOINTS 陣列裡 mode=2 的專屬硬體極速 (max_spd)
 HW_MAX_STEPS = np.array([50000, 50000, 50000, 50000, 50000, 50000]) #<--在gui進階選項裡可調整(自動跟隨c++內的設定)
+
+# 更新與通訊函數
+def update_advanced_settings(lin_spd, lin_acc, rot_spd, rot_acc, slice_pulse, native_pulse, hw_max, t_acc):
+    global MAX_LIN_SPEED, MAX_LIN_ACCEL, MAX_LIN_JERK
+    global MAX_ROT_SPEED, MAX_ROT_ACCEL, MAX_ROT_JERK
+    global MAX_TOTAL_PULSE_SLICE, MAX_TOTAL_PULSE_NATIVE
+    global HW_MAX_STEPS, N_PTP_T_ACC
+    
+    # 1. 更新 Python 大腦裡的速限
+    MAX_LIN_SPEED = lin_spd
+    MAX_LIN_ACCEL = lin_acc
+    MAX_LIN_JERK = lin_acc * 10.0
+    
+    MAX_ROT_SPEED = rot_spd
+    MAX_ROT_ACCEL = rot_acc
+    MAX_ROT_JERK = rot_acc * 10.0
+    
+    MAX_TOTAL_PULSE_SLICE = slice_pulse
+    MAX_TOTAL_PULSE_NATIVE = native_pulse
+    HW_MAX_STEPS = np.array([hw_max]*6, dtype=float)
+    N_PTP_T_ACC = t_acc
+    
+    print(f">> [Config] Advanced Settings Updated. Native Hz: {native_pulse}, T_acc: {t_acc}s")
+
+# 🌟 讓 PathManager 可以發送設定給 MCU
+def send_config_to_mcu(serial_manager):
+    if serial_manager and serial_manager.is_connected:
+        # 封包格式: <SET_CFG, HW_MAX_STEPS, T_ACC>
+        cmd = f"<SET_CFG,{int(HW_MAX_STEPS[0])},{N_PTP_T_ACC}>"
+        serial_manager.send_command(cmd)
+        print(f">> [Config] Sent to MCU: {cmd}")
 
 # --- 1. PTP 執行器 (軟體切片 S-Curve) ---
 class PTPExecutor(QThread):

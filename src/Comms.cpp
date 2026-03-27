@@ -22,6 +22,21 @@ void processCommand() {
         return;
     }
 
+    // 🌟 攔截 Python 傳來的動態設定指令
+    if (strncmp(tempChars, "SET_CFG", 7) == 0) {
+        char * strtokIndx = strtok(tempChars, ","); // SET_CFG
+        
+        strtokIndx = strtok(NULL, ",");
+        if (strtokIndx != NULL) global_hw_max_steps = atol(strtokIndx);
+        
+        strtokIndx = strtok(NULL, ",");
+        if (strtokIndx != NULL) global_T_acc = atof(strtokIndx);
+        
+        Serial.print("Config OK: MaxSteps="); Serial.print(global_hw_max_steps);
+        Serial.print(", T_acc="); Serial.println(global_T_acc);
+        return;
+    }
+
     // 2. 字串解析
     float tempParsed[8] = {0.0};
     int parseCount = 0; 
@@ -120,7 +135,7 @@ void processCommand() {
             if (speedFactor <= 0.0) speedFactor = 1.0;
 
             // 加減速時間(秒)
-            float T_acc = 0.15; //<--在gui進階選項裡可調整
+            //float T_acc = 0.15; //<--在gui進階選項裡可調整
 
             float maxTime = 0.0;
             long deltaSteps[6] = {0};
@@ -132,7 +147,7 @@ void processCommand() {
                     deltaSteps[i] = abs(targetSteps - steppers[i]->currentPosition());
                     
                     // 該軸的物理極速 * 速度比例
-                    float v_max = (JOINTS[i].maxSpeedSteps10 / 10.0) * speedFactor;
+                    float v_max = (global_hw_max_steps / 10.0) * speedFactor;
                     float t_needed = deltaSteps[i] / v_max;
                     if (t_needed > maxTime) {
                         maxTime = t_needed;
@@ -149,7 +164,7 @@ void processCommand() {
                     if (mobaSpeed < 10) mobaSpeed = 10;
 
                     // 用「時間」反推「步數」，徹底消滅煩人的 ramp 陣列！
-                    long dynamicRamp = (long)((syncSpeed * T_acc) / 2.0);
+                    long dynamicRamp = (long)((syncSpeed * global_T_acc) / 2.0);
                     
                     // 防呆：如果移動距離太短，加速段最多只能佔總距離的一半 (變成三角形軌跡)
                     if (dynamicRamp > deltaSteps[i] / 2) {

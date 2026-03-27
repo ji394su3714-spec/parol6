@@ -15,6 +15,8 @@ from serial_manager import SerialManager
 
 from simulation_standalone import RobotSimulation
 from path_manager import PathManager
+from ui.advanced_dialog import AdvancedSettingsDialog
+import path_manager
 import config
 import kinematics
 
@@ -150,6 +152,16 @@ class RobotGUI(QMainWindow):
         btn_tool.setProperty("class", "TopBtn")  
         btn_tool.clicked.connect(self.open_tcp_settings)
         layout.addWidget(btn_tool)
+
+        # 👇 新增：進階調機按鈕 👇
+        btn_adv = QPushButton(" ADVANCED")
+        btn_adv.setFixedHeight(BTN_HEIGHT)
+        btn_adv.setIcon(qta.icon('fa5s.cogs', color='white')) # 使用齒輪圖示
+        btn_adv.setObjectName("btn_adv") 
+        btn_adv.setProperty("class", "TopBtn")  
+        btn_adv.clicked.connect(self.open_advanced_settings)
+        layout.addWidget(btn_adv)
+        # 👆 新增結束 👆
         
         layout.addStretch()
         self.root_layout.addWidget(top_bar)
@@ -163,6 +175,20 @@ class RobotGUI(QMainWindow):
             self.log(f"Active Tool Switched: {tool_name}")
             self.sim.update_simulation(self.current_joints, user_offset)
             self.update_monitor()
+
+    # 👇 新增：開啟進階設定視窗與發送機制 👇
+    def open_advanced_settings(self):
+        dialog = AdvancedSettingsDialog(self)
+        
+        # dialog.exec_() 如果回傳 True，代表使用者按了「儲存並套用」
+        if dialog.exec_(): 
+            # 判斷硬體是否連線，如果連線中，就透過 path_manager 發送 <SET_CFG> 給 Arduino
+            if hasattr(self, 'serial_manager') and self.serial_manager.is_connected:
+                path_manager.send_config_to_mcu(self.serial_manager)
+                self.log(">> [System] 已將進階調機參數同步發送至硬體！")
+            else:
+                self.log(">> [System] 參數已更新至 Python 大腦，等待硬體連線。")
+    # 👆 新增結束 👆
 
     def update_monitor(self):
         """計算當前 TCP 的絕對座標，並更新 UI 顯示"""
