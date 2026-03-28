@@ -1,6 +1,6 @@
 import pyvista as pv
 from pyvistaqt import BackgroundPlotter
-from PyQt5.QtCore import QTimer
+from PyQt6.QtCore import QTimer
 import numpy as np
 import config
 import os

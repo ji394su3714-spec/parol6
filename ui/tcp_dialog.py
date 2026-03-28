@@ -1,8 +1,8 @@
 # ui/tcp_dialog.py
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget, 
+from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget, 
                              QListWidgetItem, QGroupBox, QFormLayout, QDoubleSpinBox, 
                              QLabel, QPushButton, QInputDialog, QMessageBox, QWidget, QDialogButtonBox)
-from PyQt5.QtCore import Qt
+from PyQt6.QtCore import Qt
 
 class TCPSettingsDialog(QDialog):
     def __init__(self, tcp_manager, parent=None):

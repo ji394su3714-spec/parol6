@@ -2,9 +2,10 @@
 import sys
 import datetime
 import numpy as np
-from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox, 
-                             QDoubleSpinBox, QFrame, QDialog,QListWidgetItem, QMessageBox, QComboBox, QMenu, QAction)
-from PyQt5.QtCore import Qt, QTimer
+from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox, 
+                             QDoubleSpinBox, QFrame, QDialog,QListWidgetItem, QMessageBox, QComboBox, QMenu)
+from PyQt6.QtGui import QAction
+from PyQt6.QtCore import Qt, QTimer
 import qtawesome as qta
 
 from ui import styles
@@ -24,7 +25,7 @@ class RobotGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(config.APP_TITLE)
-        self.resize(1920, 1200)
+        self.resize(1280, 800)
 
         # 核心模組
         self.sim = RobotSimulation(self)
@@ -153,7 +154,7 @@ class RobotGUI(QMainWindow):
         btn_tool.clicked.connect(self.open_tcp_settings)
         layout.addWidget(btn_tool)
 
-        # 👇 新增：進階調機按鈕 👇
+        # 新增：進階調機按鈕
         btn_adv = QPushButton(" ADVANCED")
         btn_adv.setFixedHeight(BTN_HEIGHT)
         btn_adv.setIcon(qta.icon('fa5s.cogs', color='white')) # 使用齒輪圖示
@@ -161,14 +162,13 @@ class RobotGUI(QMainWindow):
         btn_adv.setProperty("class", "TopBtn")  
         btn_adv.clicked.connect(self.open_advanced_settings)
         layout.addWidget(btn_adv)
-        # 👆 新增結束 👆
         
         layout.addStretch()
         self.root_layout.addWidget(top_bar)
 
     def open_tcp_settings(self):
         dialog = TCPSettingsDialog(self.tcp_manager, self)
-        if dialog.exec_():
+        if dialog.exec():
             user_offset = self.tcp_manager.get_active_matrix()
             tool_name = self.tcp_manager.get_active_tool_data()['name']
             
@@ -176,19 +176,18 @@ class RobotGUI(QMainWindow):
             self.sim.update_simulation(self.current_joints, user_offset)
             self.update_monitor()
 
-    # 👇 新增：開啟進階設定視窗與發送機制 👇
+    # 新增：開啟進階設定視窗與發送機制
     def open_advanced_settings(self):
         dialog = AdvancedSettingsDialog(self)
         
-        # dialog.exec_() 如果回傳 True，代表使用者按了「儲存並套用」
-        if dialog.exec_(): 
+        # dialog.exec() 如果回傳 True，代表使用者按了「儲存並套用」
+        if dialog.exec(): 
             # 判斷硬體是否連線，如果連線中，就透過 path_manager 發送 <SET_CFG> 給 Arduino
             if hasattr(self, 'serial_manager') and self.serial_manager.is_connected:
                 path_manager.send_config_to_mcu(self.serial_manager)
                 self.log(">> [System] 已將進階調機參數同步發送至硬體！")
             else:
                 self.log(">> [System] 參數已更新至 Python 大腦，等待硬體連線。")
-    # 👆 新增結束 👆
 
     def update_monitor(self):
         """計算當前 TCP 的絕對座標，並更新 UI 顯示"""
@@ -284,7 +283,7 @@ class RobotGUI(QMainWindow):
 
     def show_run_menu(self):
         pos = self.btn_run_menu.mapToGlobal(self.btn_run_menu.rect().bottomRight())
-        self.run_menu.exec_(pos)
+        self.run_menu.exec(pos)
 
     def setup_left_panel(self):
         self.left_panel = QVBoxLayout()
@@ -444,7 +443,7 @@ class RobotGUI(QMainWindow):
         btn_ok.clicked.connect(dialog.accept)
         layout.addWidget(btn_ok)
 
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.Accepted:
             self.current_step_size = spin.value()
             self.log(f"Step size updated to: {self.current_step_size} mm/°")
 
@@ -496,7 +495,7 @@ class RobotGUI(QMainWindow):
         
         # 2. 加入自訂的 ListWidget
         self.waypoint_list = WaypointListWidget() 
-        self.waypoint_list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.waypoint_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         scrollbar = self.waypoint_list.verticalScrollBar()
         scrollbar.rangeChanged.connect(
@@ -512,7 +511,7 @@ class RobotGUI(QMainWindow):
         
         actions = [
             ("Record", self.trigger_record),
-            ("Set AUX", self.trigger_set_aux), # 🌟 新增 Set AUX 按鈕
+            ("Set AUX", self.trigger_set_aux), # 新增 Set AUX 按鈕
             ("Del ALL", self.confirm_delete_all),
             ("Save", self.path_manager.save_to_file),
             ("Load", self.path_manager.load_from_file)
@@ -648,18 +647,18 @@ class RobotGUI(QMainWindow):
 
     def confirm_delete_all(self):
         reply = QMessageBox.question(self, 'Delete All', "Delete ALL waypoints?",
-                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if reply == QMessageBox.Yes:
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
             self.path_manager.delete_all_points()
 
     def confirm_homing(self):
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("WARNING")
         msg_box.setText("警告! 即將進行原點復歸 (Homing)。\n\n手臂進行物理校正移動。\n請確保手臂姿態安全。")
-        msg_box.setIcon(QMessageBox.Warning)
-        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
-        msg_box.setDefaultButton(QMessageBox.Cancel)
-        if msg_box.exec_() == QMessageBox.Yes:
+        msg_box.setIcon(QMessageBox.Icon.Warning)
+        msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        msg_box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if msg_box.exec() == QMessageBox.StandardButton.Yes:
             self.log("[HOMING] Sending Trigger")
             
             homing_cmd = [999.0, 999.0, 999.0, 999.0, 999.0, 999.0]

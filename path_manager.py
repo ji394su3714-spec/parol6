@@ -2,8 +2,8 @@ import json
 import time
 import numpy as np
 import math
-from PyQt5.QtCore import QObject, QThread, pyqtSignal, QTimer
-from PyQt5.QtWidgets import QFileDialog
+from PyQt6.QtCore import QObject, QThread, pyqtSignal, QTimer
+from PyQt6.QtWidgets import QFileDialog
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
 
@@ -16,27 +16,27 @@ MAX_JOINT_ACCELS = np.array([150.0, 70.0, 72.0, 280.0, 280.0, 140.0])   # 各軸
 MAX_JOINT_JERKS = MAX_JOINT_ACCELS * 10.0                               # 各軸最高加加速度 (Jerk, 度/秒^3)
 
 # 直角空間極限 (LIN/CIRC 用)
-MAX_LIN_SPEED = 150.0    # TCP 直線極速 (mm/秒) #<--在gui進階選項裡可調整
-MAX_LIN_ACCEL = 200.0    # TCP 直線加速度 (mm/秒^2) #<--在gui進階選項裡可調整
+MAX_LIN_SPEED = 100.0    # TCP 直線極速 (mm/秒) 
+MAX_LIN_ACCEL = 200.0    # TCP 直線加速度 (mm/秒^2)
 MAX_LIN_JERK = MAX_LIN_ACCEL * 10.0    # TCP 直線加加速度 (mm/秒^3)
 
-MAX_ROT_SPEED = 90.0     # TCP 旋轉極速 (度/秒) #<--在gui進階選項裡可調整
-MAX_ROT_ACCEL = 120.0     # TCP 旋轉加速度 (度/秒^2) #<--在gui進階選項裡可調整
+MAX_ROT_SPEED = 45.0     # TCP 旋轉極速 (度/秒)
+MAX_ROT_ACCEL = 90.0     # TCP 旋轉加速度 (度/秒^2)
 MAX_ROT_JERK = MAX_ROT_ACCEL * 10.0     # TCP 旋轉加加速度 (度/秒^3)
 
 # 晶片總體算力防護網參數
-MAX_TOTAL_PULSE_SLICE = 22000.0   # 切片模式極限 (CPU 負載重，邊跑邊解碼)<--在gui進階選項裡可調整
-MAX_TOTAL_PULSE_NATIVE = 60000.0  # 原生模式極限 (CPU 負載極輕，專注發射脈衝)<--在gui進階選項裡可調整
+MAX_TOTAL_PULSE_SLICE = 25000.0   # 切片模式極限 (CPU 負載重，邊跑邊解碼)
+MAX_TOTAL_PULSE_NATIVE = 60000.0  # 原生模式極限 (CPU 負載極輕，專注發射脈衝)
 
-# 🌟 新增：N_PTP 預設起步時間
-N_PTP_T_ACC = 0.15
+# N_PTP 預設起步時間
+N_PTP_T_ACC = 0.2
 
 # 步數換算：定義減速比，計算所有軸的 (微步數 * 減速比) / 360度
 GEAR_RATIOS = np.array([6.4, 20.0, 18.1, 4.0, 4.0, 10.0])
 STEPS_PER_DEG = (1600.0 * GEAR_RATIOS) / 360.0
 
 # 對應 C++ JOINTS 陣列裡 mode=2 的專屬硬體極速 (max_spd)
-HW_MAX_STEPS = np.array([50000, 50000, 50000, 50000, 50000, 50000]) #<--在gui進階選項裡可調整(自動跟隨c++內的設定)
+HW_MAX_STEPS = np.array([50000, 50000, 50000, 50000, 50000, 50000])
 
 # 更新與通訊函數
 def update_advanced_settings(lin_spd, lin_acc, rot_spd, rot_acc, slice_pulse, native_pulse, hw_max, t_acc):
@@ -61,7 +61,7 @@ def update_advanced_settings(lin_spd, lin_acc, rot_spd, rot_acc, slice_pulse, na
     
     print(f">> [Config] Advanced Settings Updated. Native Hz: {native_pulse}, T_acc: {t_acc}s")
 
-# 🌟 讓 PathManager 可以發送設定給 MCU
+# 讓 PathManager 可以發送設定給 MCU
 def send_config_to_mcu(serial_manager):
     if serial_manager and serial_manager.is_connected:
         # 封包格式: <SET_CFG, HW_MAX_STEPS, T_ACC>

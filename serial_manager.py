@@ -2,7 +2,7 @@ import serial
 import serial.tools.list_ports
 import time
 import threading
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal
 
 class SerialManager(QObject):
     log_signal = pyqtSignal(str)

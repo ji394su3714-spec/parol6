@@ -1,10 +1,11 @@
 # ui/widgets.py
-from PyQt5.QtWidgets import (QListWidget, QMenu, QPushButton, QFrame, QHBoxLayout, QVBoxLayout, QSpinBox, QLineEdit,
+from PyQt6.QtWidgets import (QListWidget, QMenu, QPushButton, QFrame, QHBoxLayout, QVBoxLayout, QSpinBox, QLineEdit,
                              QLabel, QWidget, QSlider, QDoubleSpinBox, QTextEdit, QSizePolicy)
-from PyQt5.QtCore import Qt, QSize, pyqtSignal
-from PyQt5.QtGui import QRegion
+from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtGui import QRegion
 import qtawesome as qta
-from ui import styles
+
+# 已經幫你刪除沒用到的 from ui import styles
 
 def create_repeat_btn(text, style_class, width, height, delay=200, interval=50):
     """按鈕工廠：快速生成支援連發的按鈕"""
@@ -22,7 +23,8 @@ class CircularButton(QPushButton):
         super().__init__(parent)
         self.setFixedSize(55, 55)       
         self.setToolTip(tooltip)
-        self.setCursor(Qt.PointingHandCursor)   
+        # 修正：游標常數
+        self.setCursor(Qt.CursorShape.PointingHandCursor)   
         self.setIcon(qta.icon(icon_name, color='#34495e'))
         self.setIconSize(QSize(28, 28))
         if checkable:
@@ -31,7 +33,7 @@ class CircularButton(QPushButton):
             
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.setMask(QRegion(self.rect(), QRegion.Ellipse))
+        self.setMask(QRegion(self.rect(), QRegion.RegionType.Ellipse)) # 修正：遮罩常數
         radius = self.width() // 2
         c_normal, c_hover = "#95a5a6", "#7f8c8d"
         self.setStyleSheet(f"""
@@ -66,7 +68,7 @@ class CartesianControlRow(QWidget):
         self.btn_minus.setAutoRepeat(enabled)
         self.btn_plus.setAutoRepeat(enabled)
 
-# --- Monitor Frame (保持不變) ---
+# --- Monitor Frame ---
 class MonitorFrame(QFrame):
     def __init__(self, label_text, value_widget, parent=None):
         super().__init__(parent)
@@ -79,7 +81,8 @@ class MonitorFrame(QFrame):
         lbl.setStyleSheet("color: #aaa; font-size: 24px; font-weight: bold; border: none;")
         val = value_widget
         val.setStyleSheet("color: #4cd964; font-size: 24px; font-weight: bold; border: none;") 
-        val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        # 修正：對齊常數
+        val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(lbl)
         layout.addStretch()
         layout.addWidget(val)
@@ -93,45 +96,67 @@ class JointControlRow(QWidget):
         super().__init__(parent)
         self.index = index
         
-        # 改為純橫向佈局
         self._layout = QHBoxLayout(self)
-        self._layout.setContentsMargins(0, 3, 0, 3) # 上下留一點點呼吸空間
+        self._layout.setContentsMargins(0, 3, 0, 3) 
         self._layout.setSpacing(10)
         
-        # 1. 標籤 (例如: J1)
         self.lbl = QLabel(f"J{index+1}")
         self.lbl.setFixedWidth(30)
         self.lbl.setStyleSheet("font-weight: bold; font-size: 24px;")
         
-        # 2. 數值框 (圖片中緊跟在標籤後)
         self.spin = QDoubleSpinBox()
         self.spin.setRange(min_val, max_val)
         self.spin.setDecimals(1) 
         self.spin.setSingleStep(1.0)
         self.spin.setFixedWidth(85)
-        self.spin.setButtonSymbols(QDoubleSpinBox.NoButtons)
-        self.spin.setAlignment(Qt.AlignCenter)
+        self.spin.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons) # 修正：按鈕符號常數
+        self.spin.setAlignment(Qt.AlignmentFlag.AlignCenter) # 修正：對齊常數
+
+        # 👇 新增這兩行：強制限制高度，並歸零 Padding
+        self.spin.setFixedHeight(40) # 限制高度 (旁邊的 slider 是 25，設 26 視覺上最剛好)
+        self.spin.setStyleSheet("QDoubleSpinBox { padding: 0px; margin: 0px; }")
         
-        # 3. 負方向按鈕 (◀) 
         self.btn_minus = create_repeat_btn("◀", "JointBtn", 36, 36)
         
-        # 4. 滑桿
-        self.slider = QSlider(Qt.Horizontal)
+        # 修正：方向常數
+        self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(int(min_val * 100), int(max_val * 100))
-        self.slider.setFixedHeight(25)
-        self.slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        
-        # 5. 正方向按鈕 (▶) 
+        self.slider.setFixedHeight(28)
+        self.slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+# 👇 替換為這段：俐落方正把手 + 無進度條軌道
+        self.slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                border: 1px solid #bbb;
+                background: #e0e0e0; /* 軌道底色 */
+                height: 6px;
+                border-radius: 0px; /* 軌道也改為直角 */
+            }
+            QSlider::sub-page:horizontal {
+                background: #e0e0e0; /* 與軌道同色，抹除進度條感 */
+                border: 1px solid #bbb;
+                border-radius: 0px;
+            }
+            QSlider::handle:horizontal {
+                background: #ffffff;
+                border: 1px solid #777;
+                width: 24px; /* 把手寬度 */
+                margin: -10px 0; /* 把手上下凸出軌道 (計算後總高度為 18px) */
+                border-radius: 3px; /* 關鍵：強制把手為正方形 */
+            }
+            QSlider::handle:horizontal:hover {
+                background: #f0f0f0;
+                border: 1px solid #333;
+            }
+        """)
         self.btn_plus = create_repeat_btn("▶", "JointBtn", 36, 36)
 
-        # 依序加入佈局
         self._layout.addWidget(self.lbl)
         self._layout.addWidget(self.spin)
         self._layout.addWidget(self.btn_minus)
         self._layout.addWidget(self.slider)
         self._layout.addWidget(self.btn_plus)
         
-        # 內部訊號連接
         self.slider.valueChanged.connect(self._on_slider_change)
         self.spin.valueChanged.connect(self._on_spin_change)
         
@@ -181,7 +206,7 @@ class LogWidget(QWidget):
         layout.addWidget(self.text_edit)
         
         self.btn_clear = QPushButton(self)
-        self.btn_clear.setCursor(Qt.PointingHandCursor)
+        self.btn_clear.setCursor(Qt.CursorShape.PointingHandCursor) # 修正：游標常數
         self.btn_clear.setIcon(qta.icon('fa5s.trash-alt', color='#7f8c8d'))
         self.btn_clear.setIconSize(QSize(22, 22))
         self.btn_clear.setFixedSize(32, 32)
@@ -189,10 +214,9 @@ class LogWidget(QWidget):
         self.btn_clear.setObjectName("btn_clear_log")
         self.btn_clear.clicked.connect(self.text_edit.clear)
 
-    # 自動處理按鈕定位 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        margin = 15 # 考慮 scrollbar 寬度與邊距
+        margin = 15 
         x = self.width() - self.btn_clear.width() - margin
         y = 5
         self.btn_clear.move(x, y)
@@ -205,9 +229,10 @@ class LogWidget(QWidget):
     def clear_log(self):
         self.text_edit.clear()
 
-# 泛用型內聯編輯器 (支援阻擋列表預覽)
+# 泛用型內聯編輯器
 class InlineEdit(QLineEdit):
-    def __init__(self, text, parent_row, save_cb, align=Qt.AlignLeft, click_cb=None):
+    # 修正：預設對齊常數
+    def __init__(self, text, parent_row, save_cb, align=Qt.AlignmentFlag.AlignLeft, click_cb=None):
         super().__init__(text)
         self.parent_row = parent_row
         self.save_cb = save_cb
@@ -228,7 +253,6 @@ class InlineEdit(QLineEdit):
 
     def mousePressEvent(self, event):
         if self.isReadOnly():
-            # 觸發專屬預覽
             if self.click_cb:
                 self.click_cb()
             event.accept() 
@@ -236,7 +260,7 @@ class InlineEdit(QLineEdit):
             super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton: # 修正：滑鼠按鍵常數
             self.setReadOnly(False)
             self.set_edit_style()
             self.setFocus()
@@ -252,10 +276,12 @@ class InlineEdit(QLineEdit):
             self.set_label_style()
             self.save_cb(self.text())
 
-# 極簡下拉選單標籤 (共用邏輯：單擊彈出選單)
+# 極簡下拉選單標籤
+# 極簡下拉選單標籤
 class DropdownLabel(QLabel):
-    def __init__(self, parent_row, options, save_cb, align=Qt.AlignCenter):
-        super().__init__()
+    # 修正 1：乖乖把 parent_row 傳給底層的 QLabel，讓它有明確的歸屬
+    def __init__(self, parent_row, options, save_cb, align=Qt.AlignmentFlag.AlignCenter):
+        super().__init__(parent_row) 
         self.parent_row = parent_row
         self.options = options
         self.save_cb = save_cb
@@ -263,10 +289,12 @@ class DropdownLabel(QLabel):
         self.setStyleSheet("color: black; background: transparent; font-weight: normal;")
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            event.accept() # 阻擋點擊事件穿透，不做 Previewing
+        if event.button() == Qt.MouseButton.LeftButton:
+            event.accept() 
             
-            menu = QMenu(self)
+            # 修正 2：不要把 self 傳進去！括號留空，讓它成為純粹的獨立彈出視窗
+            menu = QMenu() 
+            
             menu.setStyleSheet("""
                 QMenu { background-color: white; border: 1px solid #c0c0c0; }
                 QMenu::item { padding: 4px 15px; }
@@ -276,7 +304,8 @@ class DropdownLabel(QLabel):
                 action = menu.addAction(opt)
                 action.triggered.connect(lambda checked, o=opt: self.save_cb(o))
             
-            menu.exec_(self.mapToGlobal(event.pos()))
+            # 修正 3：捨棄舊的 mapToGlobal，改用 PyQt6 專屬的 globalPosition()
+            menu.exec(event.globalPosition().toPoint())
 
 # 標題列 (Header)
 class WaypointHeader(QFrame):
@@ -299,49 +328,40 @@ class WaypointHeader(QFrame):
         """)
         
         layout = QHBoxLayout(self)
-        # 左邊距與 Row 一致(5)，上下(6)，右邊距(5)
         layout.setContentsMargins(5, 6, 5, 6)
         layout.setSpacing(5)
         
-        # 1. 序號佔位
         lbl_idx = QLabel("")
-        lbl_idx.setFixedWidth(30) # 對齊下方的 lbl_index
+        lbl_idx.setFixedWidth(30) 
         layout.addWidget(lbl_idx)
         
-        # 2. 新增：類型 (Type)
         lbl_type = QLabel("")
-        lbl_type.setFixedWidth(75) # 對齊下方的 type_lbl
-        lbl_type.setAlignment(Qt.AlignCenter)
+        lbl_type.setFixedWidth(75) 
+        lbl_type.setAlignment(Qt.AlignmentFlag.AlignCenter) # 修正：對齊常數
         layout.addWidget(lbl_type)
         
-        # 3. 名稱 (彈性伸展)
         lbl_name = QLabel(" Name")
         layout.addWidget(lbl_name)
         
-        # 4. 延遲
         lbl_delay = QLabel("Delay")
         lbl_delay.setFixedWidth(75) 
-        lbl_delay.setAlignment(Qt.AlignCenter)
+        lbl_delay.setAlignment(Qt.AlignmentFlag.AlignCenter) # 修正：對齊常數
         layout.addWidget(lbl_delay)
         
-        # 5. 速度
         lbl_speed = QLabel("Speed")
         lbl_speed.setFixedWidth(75)
-        lbl_speed.setAlignment(Qt.AlignCenter)
+        lbl_speed.setAlignment(Qt.AlignmentFlag.AlignCenter) # 修正：對齊常數
         layout.addWidget(lbl_speed)
         
-        # 6. 操作 (2個按鈕30px + 中間間距5px = 65px)
         lbl_action = QLabel("")
         lbl_action.setFixedWidth(65)
-        lbl_action.setAlignment(Qt.AlignCenter)
+        lbl_action.setAlignment(Qt.AlignmentFlag.AlignCenter) # 修正：對齊常數
         layout.addWidget(lbl_action)
         
-        # 7. Scrollbar 預留佔位區
         self.lbl_scrollbar = QLabel("")
-        self.lbl_scrollbar.setFixedWidth(0) # 預設寬度為 0 (隱藏狀態)
+        self.lbl_scrollbar.setFixedWidth(0) 
         layout.addWidget(self.lbl_scrollbar)
 
-    # 讓外部可以控制佔位區的寬度
     def set_scrollbar_width(self, width):
         self.lbl_scrollbar.setFixedWidth(width)
 
@@ -359,50 +379,45 @@ class WaypointRow(QWidget):
         layout.setContentsMargins(5, 2, 5, 2)
         layout.setSpacing(5) 
         
-        # --- 1. 序號 ---
         self.lbl_index = QLabel(f"{index+1}.")
         self.lbl_index.setFixedWidth(30) 
         self.lbl_index.setStyleSheet("color: black; font-weight: normal;" if is_active else "color: gray;")
         layout.addWidget(self.lbl_index)
         
-        # --- 2. 動作類型 PTP/LIN/... ---
         self.type_lbl = DropdownLabel(self, ["PTP", "N_PTP", "LIN", "CIRC", "I/O"], self.save_type)
         self.type_lbl.setFixedWidth(75) 
         self.update_type_display()
         layout.addWidget(self.type_lbl)
         
-        # --- 3. 名稱區 ---
         name = data.get('name', f'Point {index+1}')
-        # 綁定 click_cb
-        self.edit_name = InlineEdit(name, self, self.save_new_name, Qt.AlignLeft, click_cb=self._handle_name_click)
+        # 修正：對齊常數
+        self.edit_name = InlineEdit(name, self, self.save_new_name, Qt.AlignmentFlag.AlignLeft, click_cb=self._handle_name_click)
         
         if not is_active:
             self.edit_name.setStyleSheet("background: transparent; border: none; padding: 0px; color: gray;")
             
         layout.addWidget(self.edit_name)
 
-        # --- 4. 延遲 Delay ---
         dw = QWidget()
         dw.setFixedWidth(75) 
         dl = QHBoxLayout(dw)
         dl.setContentsMargins(0, 0, 0, 0)
         dl.setSpacing(2)
         
-        # Delay 不需要 click_cb
-        self.edit_delay = InlineEdit("", self, self.save_delay, Qt.AlignRight)
+        # 修正：對齊常數
+        self.edit_delay = InlineEdit("", self, self.save_delay, Qt.AlignmentFlag.AlignRight)
         dl.addWidget(self.edit_delay)
         dl.addStretch()
         layout.addWidget(dw)
         
         self.update_delay_display(data.get('delay', 0.0))
 
-        # --- 5. 速度 Speed ---
-        self.speed_lbl = DropdownLabel(self, ["10%", "25%", "50%", "80%", "90%", "100%"], self.save_speed, align=Qt.AlignRight)
+        # 修正：對齊常數
+        self.speed_lbl = DropdownLabel(self, ["10%", "25%", "50%", "80%", "90%", "100%"], self.save_speed, align=Qt.AlignmentFlag.AlignRight)
         self.speed_lbl.setFixedWidth(75) 
         self.update_speed_display()
         layout.addWidget(self.speed_lbl)
         
-        # --- 6. 操作按鈕 ---
         eye_icon = 'fa5s.eye' if is_active else 'fa5s.eye-slash'
         eye_color = '#34495e' if is_active else '#bdc3c7'
         
@@ -422,7 +437,6 @@ class WaypointRow(QWidget):
         btn_del.clicked.connect(lambda: on_delete_cb(index))
         layout.addWidget(btn_del)
 
-    # 處理名稱點擊：讓清單反白，並觸發預覽
     def _handle_name_click(self):
         list_widget = self.parentWidget()
         while list_widget is not None and not hasattr(list_widget, 'setCurrentRow'):
@@ -433,16 +447,14 @@ class WaypointRow(QWidget):
         if self.on_preview_cb:
             self.on_preview_cb(self.index)
 
-    # 攔截所有空白處點擊，防止觸發清單預設的選擇動作
     def mousePressEvent(self, event):
         event.accept()
 
     def save_type(self, new_type):
         self.data['type'] = new_type
         self.update_type_display()
-        # 模式改變後，觸發 GUI 更新 3D 軌跡
         if self.on_update_cb:
-            from PyQt5.QtCore import QTimer
+            from PyQt6.QtCore import QTimer
             QTimer.singleShot(10, self.on_update_cb)
 
     def update_type_display(self):
@@ -480,11 +492,9 @@ class WaypointRow(QWidget):
 
     def update_speed_display(self):
         spd = self.data.get('speed', 50.0)
-        # 永遠顯示數值與百分比符號
         self.speed_lbl.setText(f"{int(spd)}%")
         self.speed_lbl.setStyleSheet("color: black; background: transparent; font-weight: normal;")
 
-    # --- 數值更新 ---
     def update_speed(self, val):
         self.data['speed'] = float(val)
 

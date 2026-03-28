@@ -18,7 +18,7 @@ const JointConfig JOINTS[6] = {
     {43, 48, 58, 14,  HIGH,  750, -70,  650, 17000, 50000, 350}, 
     {26, 28, 24, 15,  LOW,   950, -145, 400, 15000, 50000, 350}, 
     {36, 34, 30, 63,  HIGH,  700, -124, 300, 15000, 50000, 350}, 
-    {59, 57, 40, 64,  LOW,   900,    2, 400, 20000, 50000, 350}  //<--在gui進階選項裡可調整(maxSpeedSteps10)
+    {59, 57, 40, 64,  LOW,   900,    2, 400, 20000, 50000, 350}  
 };
 
 const MotorCurrentConfig MOTOR_CURRENTS[6] = {
@@ -50,6 +50,8 @@ MoToStepper stepper_J6(1600, STEPDIR);
 
 MoToStepper* steppers[6] = {&stepper_J1, &stepper_J2, &stepper_J3, &stepper_J4, &stepper_J5, &stepper_J6};
 
+long global_hw_max_steps = 50000;
+float global_T_acc = 0.2;
 byte homingState[6] = {0, 0, 0, 0, 0, 0}; 
 bool normalMoveActive = false;
 
@@ -68,29 +70,26 @@ bool pendingOK = false;
 long lastBufTarget[6] = {0}; 
 unsigned long lastPointTimeUs = 0;
 unsigned long currentPointIntervalUs = 0;
-float speedRemainder[6] = {0.0}; 
-unsigned long firstPacketWaitUs = 0; // 新增：蓄水池計時器
+unsigned long firstPacketWaitUs = 0; // 蓄水池計時器
 
-// 核心播放機：
+// ========================================================
+// 🚀 核心播放機 (終極前饋優化版)
+// ========================================================
 void updateRingBuffer() {
     if (bufCount > 0) {
         unsigned long nowUs = micros(); 
         
         if (!isBufPlaying) {
-            // 優化 ：工業級蓄水池 (Pre-buffering)
-            // 強制等待水桶裝滿至少 4 個切片，或者等待超過 50 毫秒才發車！
-            // 這樣能徹底吸收 Windows 的通訊浮動，告別斷流卡頓！
+            // 🌟 升級版深水庫：蓄滿 10 個切片 (約200ms) 才准發車，徹底吸收 USB 通訊抖動！
             if (firstPacketWaitUs == 0) firstPacketWaitUs = nowUs;
 
-            if (bufCount < 4 && (nowUs - firstPacketWaitUs < 50000)) {
-                return; // 繼續憋氣蓄水，不准發車
+            if (bufCount < 10 && (nowUs - firstPacketWaitUs < 200000)) {
+                return; // 繼續憋氣蓄水
             }
 
-            // 水蓄夠了，準備發車！
             firstPacketWaitUs = 0;
             for(int i = 0; i < 6; i++) {
                 lastBufTarget[i] = steppers[i]->currentPosition();
-                speedRemainder[i] = 0.0; 
             }
             lastPointTimeUs = nowUs;
             currentPointIntervalUs = 0; 
@@ -103,47 +102,43 @@ void updateRingBuffer() {
             bufTail = (bufTail + 1) % BUF_SIZE;
             bufCount--;
 
-            float maxTime = pt.interval_us / 1000000.0;
-            if (maxTime < 0.005) maxTime = 0.005;
-
-            long deltaSteps[6] = {0};
-            for (int i = 0; i < 6; i++) {
-                deltaSteps[i] = abs(pt.targetSteps[i] - lastBufTarget[i]); 
-            }
+            unsigned long interval = pt.interval_us;
+            if (interval < 5000) interval = 5000; 
 
             for (int i = 0; i < 6; i++) {
-                if (deltaSteps[i] > 0) {
-                    float minSafeTime = deltaSteps[i] / (JOINTS[i].maxSpeedSteps10 / 10.0);
-                    if (minSafeTime > maxTime) {
-                        maxTime = minSafeTime;
-                    }
+                long target = pt.targetSteps[i];
+                long idealDelta = abs(target - lastBufTarget[i]); 
+                
+                // 🌟 1. 算出物理上落後的「欠步債務」
+                long physicalDebt = abs(lastBufTarget[i] - steppers[i]->currentPosition());
+
+                unsigned long mobaSpeed = 0;
+                
+                // 🌟 2. 完美平滑的前饋基準速度 (Feed-Forward)
+                // 恢復最純粹的數學公式，絕對不超頻、不震動
+                if (idealDelta > 0) {
+                    mobaSpeed = (idealDelta * 10000000ULL) / interval;
                 }
-            }
+                
+                // 🌟 3. 柔性 P-Controller 追趕補償 (Proportional Control)
+                // 每落後 1 步，MobaSpeed 就增加 50 (等於增加 5 步/秒)
+                // 這就像一條橡皮筋，平滑地把落後的進度拉回來，完美免疫 ±1 步的雜訊震動！
+                mobaSpeed += (physicalDebt * 50);
 
-            for (int i = 0; i < 6; i++) {
-                if (deltaSteps[i] > 0) {
-                    float syncStepsPerSec = (deltaSteps[i] / maxTime); 
-                    
-                    float exactSpeed10 = (syncStepsPerSec * 10.0) + speedRemainder[i];
-                    long mobaSpeed = (long)exactSpeed10;
-                    
-                    speedRemainder[i] = exactSpeed10 - (float)mobaSpeed; 
-
+                // 如果真的有速度需求，才下達指令
+                if (mobaSpeed > 0) {
                     if (mobaSpeed < 10) mobaSpeed = 10; 
-
                     steppers[i]->setSpeedSteps(mobaSpeed);
                     steppers[i]->setRampLen(0); 
-                    steppers[i]->writeSteps(pt.targetSteps[i]);
                 }
-                lastBufTarget[i] = pt.targetSteps[i];
+                
+                steppers[i]->writeSteps(target);
+                lastBufTarget[i] = target;
             }
 
             lastPointTimeUs += currentPointIntervalUs;
-            if (nowUs > lastPointTimeUs + 50000) { 
-                lastPointTimeUs = nowUs; 
-            }
-            
-            currentPointIntervalUs = (unsigned long)(maxTime * 1000000.0);
+            if (nowUs > lastPointTimeUs + 50000) { lastPointTimeUs = nowUs; }
+            currentPointIntervalUs = interval;
             
             if (pendingOK && bufCount < BUF_SIZE) {
                 Serial.println("OK");
@@ -151,12 +146,20 @@ void updateRingBuffer() {
             }
         }
     } else {
+        // ==========================================
+        // 🌟 粗暴的 40ms 停頓與收攏已經徹底移除！
+        // 因為債務在移動過程中已經被橡皮筋平滑消化了，
+        // 現在只要水桶空了，馬達自然就會在完美的瞬間定桿！
+        // ==========================================
         if (isBufPlaying) {
             bool moving = false;
-            for(int i = 0; i < 6; i++) if(steppers[i]->moving()) moving = true;
+            for(int i = 0; i < 6; i++) {
+                if(steppers[i]->stepsToDo() > 0) moving = true;
+            }
+
             if (!moving) {
                 isBufPlaying = false;
-                firstPacketWaitUs = 0; // 重置蓄水池
+                firstPacketWaitUs = 0; 
             }
         }
     }
@@ -243,10 +246,8 @@ void loop() {
 
     updateHomingLogic();
 
-    // 彩蛋解法：0 毫秒延遲 + 絕對防搶拍
     bool isMoving = false; 
     for (int i = 0; i < 6; i++) {
-        // 只要還有任何一步沒走完，就代表任務還在進行中！
         if (steppers[i]->stepsToDo() != 0) { 
             isMoving = true;
             break; 
@@ -272,7 +273,6 @@ void loop() {
         digitalWrite(LED_PIN, HIGH);  
     }
 
-    // 每隔 15 秒鐘，印出溫度狀態
     static unsigned long lastTempReport = 0;
     if (millis() - lastTempReport >= 15000) {
         lastTempReport = millis();

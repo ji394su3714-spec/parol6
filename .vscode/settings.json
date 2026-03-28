@@ -1,3 +1,10 @@
 {
-    "cmake.sourceDirectory": "C:/Users/ji394/Desktop/parol6.gui/assets/urdf"
+    "cmake.sourceDirectory": "C:/Users/ji394/Desktop/parol6.gui/assets/urdf",
+    "python-envs.pythonProjects": [
+        {
+            "path": ".",
+            "envManager": "ms-python.python:system",
+            "packageManager": "ms-python.python:pip"
+        }
+    ]
 }

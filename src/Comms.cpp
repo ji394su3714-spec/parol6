@@ -22,7 +22,7 @@ void processCommand() {
         return;
     }
 
-    // 🌟 攔截 Python 傳來的動態設定指令
+    // 攔截 Python 傳來的動態設定指令
     if (strncmp(tempChars, "SET_CFG", 7) == 0) {
         char * strtokIndx = strtok(tempChars, ","); // SET_CFG
         
@@ -135,7 +135,7 @@ void processCommand() {
             if (speedFactor <= 0.0) speedFactor = 1.0;
 
             // 加減速時間(秒)
-            //float T_acc = 0.15; //<--在gui進階選項裡可調整
+            //float T_acc = 0.15; //移到path_manager
 
             float maxTime = 0.0;
             long deltaSteps[6] = {0};

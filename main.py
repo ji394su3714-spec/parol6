@@ -1,7 +1,14 @@
+import os
 import sys
+os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "0"
 import traceback
-from PyQt5.QtWidgets import QApplication
+
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import Qt
 from gui import RobotGUI
+app = QApplication(sys.argv)
+app.setStyle("Fusion")
+app.styleHints().setColorScheme(Qt.ColorScheme.Light)
 
 def main():
     app = QApplication(sys.argv)

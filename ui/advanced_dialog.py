@@ -1,6 +1,6 @@
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QLineEdit, 
+from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QLineEdit, 
                              QPushButton, QHBoxLayout, QMessageBox, QGroupBox)
-from PyQt5.QtGui import QDoubleValidator, QIntValidator
+from PyQt6.QtGui import QDoubleValidator, QIntValidator
 import path_manager
 
 class AdvancedSettingsDialog(QDialog):
