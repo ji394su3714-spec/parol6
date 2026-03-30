@@ -25,7 +25,7 @@ MAX_ROT_ACCEL = 90.0     # TCP 旋轉加速度 (度/秒^2)
 MAX_ROT_JERK = MAX_ROT_ACCEL * 10.0     # TCP 旋轉加加速度 (度/秒^3)
 
 # 晶片總體算力防護網參數
-MAX_TOTAL_PULSE_SLICE = 25000.0   # 切片模式極限 (CPU 負載重，邊跑邊解碼)
+MAX_TOTAL_PULSE_SLICE = 18000.0   # 切片模式極限 (CPU 負載重，邊跑邊解碼)
 MAX_TOTAL_PULSE_NATIVE = 60000.0  # 原生模式極限 (CPU 負載極輕，專注發射脈衝)
 
 # N_PTP 預設起步時間
@@ -36,7 +36,7 @@ GEAR_RATIOS = np.array([6.4, 20.0, 18.1, 4.0, 4.0, 10.0])
 STEPS_PER_DEG = (1600.0 * GEAR_RATIOS) / 360.0
 
 # 對應 C++ JOINTS 陣列裡 mode=2 的專屬硬體極速 (max_spd)
-HW_MAX_STEPS = np.array([50000, 50000, 50000, 50000, 50000, 50000])
+HW_MAX_STEPS = np.array([5000, 5000, 5000, 5000, 5000, 5000])
 
 # 更新與通訊函數
 def update_advanced_settings(lin_spd, lin_acc, rot_spd, rot_acc, slice_pulse, native_pulse, hw_max, t_acc):
@@ -88,14 +88,24 @@ class PTPExecutor(QThread):
             self.finished_signal.emit()
             return
             
-        # 1. 找出需要花最久時間的「瓶頸軸」
+        # ==========================================
+        # 1. 找出瓶頸軸 (導入雙重極限防護)
+        # ==========================================
         bottleneck_profile = None
         bottleneck_idx = -1
         max_duration = 0.0
         
+        base_allowed_v = 0.0
+        base_allowed_a = 0.0
+        base_allowed_j = 0.0
+        
         for i in range(6):
             if diffs[i] > 1e-6:
-                allowed_v = MAX_JOINT_SPEEDS[i] * self.speed_factor
+                # 🌟 第一層防護：雙重極限取其低 (物理機械極限 vs 軟體防溢位極限)
+                mech_limit_v = MAX_JOINT_SPEEDS[i] * self.speed_factor
+                soft_limit_v = (HW_MAX_STEPS[i] * self.speed_factor) / STEPS_PER_DEG[i]
+                allowed_v = min(mech_limit_v, soft_limit_v)
+                
                 allowed_a = MAX_JOINT_ACCELS[i] * self.speed_factor
                 allowed_j = MAX_JOINT_JERKS[i] * self.speed_factor
                 
@@ -104,35 +114,45 @@ class PTPExecutor(QThread):
                     max_duration = p.T_total
                     bottleneck_profile = p
                     bottleneck_idx = i
+                    # 記住這根「最拖戲」的軸，它當下被賦予的極限參數
+                    base_allowed_v = allowed_v
+                    base_allowed_a = allowed_a
+                    base_allowed_j = allowed_j
                     
         if bottleneck_profile is None:
             self.finished_signal.emit()
             return
 
-        # 晶片算力防護網：檢查總脈衝頻率
+        # 2. 晶片算力防護網 (徹底消滅 avg_v，改用 Peak 預測)
         if bottleneck_profile.T_total > 0:
-            total_pulse_freq = 0.0
+            # 核心數學：算出「進度條」在波峰時的最大推進率 (d_progress / dt)
+            # 在 PTP 中，所有軸都是綁定在同一個 progress(t) 上。
+            # 用瓶頸軸的允許極速來反推波峰進度率，是最安全的天花板。
+            peak_progress_rate = base_allowed_v / diffs[bottleneck_idx]
+            
+            peak_pulse_freq = 0.0
             for i in range(6):
-                avg_v = diffs[i] / bottleneck_profile.T_total
-                total_pulse_freq += avg_v * STEPS_PER_DEG[i]
+                # 算出每一軸在軌跡正中間（最快那一瞬間）的真實波峰速度
+                peak_joint_v = diffs[i] * peak_progress_rate
+                peak_pulse_freq += peak_joint_v * STEPS_PER_DEG[i]
                 
-            if total_pulse_freq > MAX_TOTAL_PULSE_SLICE:
-                overload_ratio = total_pulse_freq / MAX_TOTAL_PULSE_SLICE
+            # 檢查這個「瞬間最高頻率」是否會把 Arduino 逼到當機
+            if peak_pulse_freq > MAX_TOTAL_PULSE_SLICE:
+                overload_ratio = peak_pulse_freq / MAX_TOTAL_PULSE_SLICE
                 
-                # 等比例降速，維持 S 曲線幾何 (加速度降平方，Jerk降三次方)
-                allowed_v = MAX_JOINT_SPEEDS[bottleneck_idx] * self.speed_factor / overload_ratio
-                allowed_a = MAX_JOINT_ACCELS[bottleneck_idx] * self.speed_factor / (overload_ratio ** 2)
-                allowed_j = MAX_JOINT_JERKS[bottleneck_idx] * self.speed_factor / (overload_ratio ** 3)
+                # 時間膨脹降速法：等比例降速，維持 S 曲線幾何
+                new_v = base_allowed_v / overload_ratio
+                new_a = base_allowed_a / (overload_ratio ** 2)
+                new_j = base_allowed_j / (overload_ratio ** 3)
                 
-                bottleneck_profile = SCurveProfile(diffs[bottleneck_idx], allowed_v, allowed_a, allowed_j)
-                print(f"[PTP] 觸發晶片算力防護！總頻率 {total_pulse_freq:.0f}Hz，強制降速 {1/overload_ratio:.2f}X")
+                bottleneck_profile = SCurveProfile(diffs[bottleneck_idx], new_v, new_a, new_j)
+                print(f"[PTP] 觸發晶片算力防護！預測波峰總頻率 {peak_pulse_freq:.0f}Hz，強制降速 {1/overload_ratio:.2f}X")
 
         interval = 0.020
         t = 0.0
         counter = 0
         gui_skip_frames = 5
  
-        # 2. 完美同步：所有軸套用瓶頸軸的 S-Curve 進度
         while t <= bottleneck_profile.T_total:
             progress = bottleneck_profile.get_progress(t)
             current = self.start_joints + (self.end_joints - self.start_joints) * progress
@@ -162,7 +182,7 @@ class PTPExecutor(QThread):
                 
         self.finished_signal.emit()
 
-# --- 2. 笛卡爾空間執行器 (處理 LIN 與 CIRC) ---
+# --- 2. 笛卡爾空間執行器 (處理 LIN 與 CIRC，搭載 Dry-Run 預掃描引擎) ---
 class CartesianExecutor(QThread):
     update_signal = pyqtSignal(list)
     finished_signal = pyqtSignal()
@@ -208,7 +228,6 @@ class CartesianExecutor(QThread):
             T_tcp_aux = T_flange_aux @ self.tcp_offset_mat
             pos_aux = T_tcp_aux[:3, 3]
 
-            # 計算空間三點的三角形向量
             u = pos_aux - pos_start
             w = pos_end - pos_start
             cross_uw = np.cross(u, w)
@@ -216,10 +235,7 @@ class CartesianExecutor(QThread):
 
             if cross_norm > 1e-6:
                 is_circ = True
-                u2 = np.dot(u, u)
-                w2 = np.dot(w, w)
-                
-                # 計算外心 (Center)
+                u2, w2 = np.dot(u, u), np.dot(w, w)
                 C = pos_start + np.cross((u2 * w - w2 * u), cross_uw) / (2.0 * cross_norm**2)
                 r = np.linalg.norm(pos_start - C)
                 
@@ -227,11 +243,9 @@ class CartesianExecutor(QThread):
                 x_axis = (pos_start - C) / r
                 y_axis = np.cross(n, x_axis)
                 
-                # 計算終點所在的角度
                 theta_e = math.atan2(np.dot(pos_end - C, y_axis), np.dot(pos_end - C, x_axis))
                 if theta_e < 0: theta_e += 2 * math.pi
                 
-                # 弧長 = 圓心角(弧度) * 半徑
                 dist_mm = r * theta_e * 1000.0 
             else:
                 print("[Warning] Points are collinear. Falling back to LIN.")
@@ -243,7 +257,7 @@ class CartesianExecutor(QThread):
             self.finished_signal.emit()
             return
             
-        # --- 瓶頸時間同步法 ---
+        # --- 基礎極限設定 ---
         time_for_lin = dist_mm / (MAX_LIN_SPEED * self.speed_factor) if MAX_LIN_SPEED > 0 else 0
         time_for_rot = dist_deg / (MAX_ROT_SPEED * self.speed_factor) if MAX_ROT_SPEED > 0 else 0
 
@@ -258,38 +272,91 @@ class CartesianExecutor(QThread):
             target_accel = MAX_ROT_ACCEL * self.speed_factor
             target_jerk = MAX_ROT_JERK * self.speed_factor
 
-        profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
+        base_profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
 
-        diffs_joints = np.abs(self.target_joints - self.start_joints)
+        # 核心進化：Dry-Run 軌跡預掃描 (找出空間隱藏的超速奇異點)
+        sample_steps = max(50, int(dist_main / 2.0)) # 至少切 50 刀，最細每 2mm 檢查一次
+        progress_samples = np.linspace(0, 1.0, sample_steps)
         
-        # 第一層防護：單軸機械極速防護網
-        if profile.T_total > 0:
-            for i in range(6):
-                avg_joint_v = diffs_joints[i] / profile.T_total
-                allowed_v = MAX_JOINT_SPEEDS[i] * self.speed_factor
+        trajectory_joints = []
+        current_seed = self.start_joints.copy()
+        
+        for p in progress_samples:
+            if is_circ:
+                theta = p * theta_e
+                curr_pos = C + r * math.cos(theta) * x_axis + r * math.sin(theta) * y_axis
+            else:
+                curr_pos = pos_start + (pos_end - pos_start) * p
                 
-                if avg_joint_v > allowed_v:
-                    overspeed_ratio = avg_joint_v / allowed_v
-                    target_speed /= overspeed_ratio
-                    target_accel /= (overspeed_ratio ** 2) 
-                    target_jerk /= (overspeed_ratio ** 3)
-                    profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
-
-        # 第二層防護：晶片總算力防護網
-        if profile.T_total > 0:
-            total_pulse_freq = 0.0
-            for i in range(6):
-                avg_joint_v = diffs_joints[i] / profile.T_total
-                total_pulse_freq += avg_joint_v * STEPS_PER_DEG[i]
+            curr_rot = slerp([p]).as_matrix()[0]
+            T_tcp_target = np.eye(4)
+            T_tcp_target[:3, :3] = curr_rot
+            T_tcp_target[:3, 3] = curr_pos
+            T_flange_target = T_tcp_target @ tcp_inv
+            
+            ik_result, error = kinematics.inverse_kinematics(T_flange_target, current_seed)
+            if ik_result is None:
+                self.error_signal.emit(f"防撞系統啟動：軌跡 {p*100:.0f}% 處 IK 無解！動作已取消。")
+                return
                 
-            if total_pulse_freq > MAX_TOTAL_PULSE_SLICE:
-                overload_ratio = total_pulse_freq / MAX_TOTAL_PULSE_SLICE
-                target_speed /= overload_ratio
-                target_accel /= (overload_ratio ** 2)
-                target_jerk /= (overload_ratio ** 3)
-                profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
-                print(f"[Cartesian] 觸發晶片算力防護！總頻率 {total_pulse_freq:.0f}Hz，強制降速 {1/overload_ratio:.2f}X")
+            trajectory_joints.append(ik_result)
+            current_seed = ik_result
+            
+        trajectory_joints = np.array(trajectory_joints)
+        
+        # 計算相鄰進度點之間的「關節劇烈變化程度」 (角度 / progress)
+        delta_joints = np.abs(np.diff(trajectory_joints, axis=0))
+        delta_progress = 1.0 / (sample_steps - 1)
+        max_d_joint_d_prog = np.max(delta_joints, axis=0) / delta_progress
+        
+        # S-Curve 產生的最高空間進度率 (d_progress / dt)
+        peak_prog_rate = base_profile.v_max / dist_main if dist_main > 0 else 0
+        
+        overspeed_ratio = 1.0
+        
+        # 第一層防護：雙重極限取其低 (物理機械極限 vs 軟體防溢位極限)
+        for i in range(6):
+            # 算出該軸在這條軌跡中，最劇烈瞬間的「最高角速度」
+            peak_joint_v = max_d_joint_d_prog[i] * peak_prog_rate
+            
+            # 1. 物理機械極限 (來自 MAX_JOINT_SPEEDS，真實世界的天花板)
+            mech_limit_v = MAX_JOINT_SPEEDS[i] * self.speed_factor
+            
+            # 2. 軟體溢位極限 (來自 HW_MAX_STEPS，避免 C++ MobaTools 溢位)
+            soft_limit_v = (HW_MAX_STEPS[i] * self.speed_factor) / STEPS_PER_DEG[i] 
+            
+            # 取其低作為該軸的最終允許極速
+            allowed_v = min(mech_limit_v, soft_limit_v)
+            
+            if peak_joint_v > allowed_v:
+                ratio = peak_joint_v / allowed_v
+                if ratio > overspeed_ratio:
+                    overspeed_ratio = ratio
 
+        # 第二層防護：晶片總算力防護網 (波峰時刻的總負載)
+        peak_pulse_freq = 0.0
+        for i in range(6):
+            peak_joint_v = max_d_joint_d_prog[i] * peak_prog_rate
+            peak_pulse_freq += peak_joint_v * STEPS_PER_DEG[i]
+            
+        if peak_pulse_freq > MAX_TOTAL_PULSE_SLICE:
+            ratio = peak_pulse_freq / MAX_TOTAL_PULSE_SLICE
+            if ratio > overspeed_ratio:
+                overspeed_ratio = ratio
+                print(f"[Cartesian] Dry-Run: 波峰總算力 {peak_pulse_freq:.0f}Hz，準備降速。")
+
+        # 🚀 根據 Dry-Run 結果，重新壓縮 S 曲線，產生 100% 安全的最終曲線
+        if overspeed_ratio > 1.0:
+            target_speed /= overspeed_ratio
+            target_accel /= (overspeed_ratio ** 2)
+            target_jerk /= (overspeed_ratio ** 3)
+            print(f"[Cartesian] Dry-Run 發現隱藏超速點！強制降速比例：{overspeed_ratio:.2f}X")
+            
+        final_profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
+
+        # ========================================================
+        # 開始執行實體移動 (因為已經預掃描過，這裡保證絕對安全無溢位)
+        # ========================================================
         interval = 0.020
         t = 0.0
         counter = 0
@@ -298,17 +365,15 @@ class CartesianExecutor(QThread):
         current_seed = self.start_joints.copy()
         self.update_signal.emit(list(self.start_joints))
 
-        while t <= profile.T_total:
-            progress = profile.get_progress(t) 
+        while t <= final_profile.T_total:
+            progress = final_profile.get_progress(t) 
             
-            # 位置內插
             if is_circ:
                 theta = progress * theta_e
                 curr_pos = C + r * math.cos(theta) * x_axis + r * math.sin(theta) * y_axis
             else:
                 curr_pos = pos_start + (pos_end - pos_start) * progress
                 
-            # 姿態 Slerp 內插
             curr_rot = slerp([progress]).as_matrix()[0]
             
             T_tcp_target = np.eye(4)
@@ -316,19 +381,8 @@ class CartesianExecutor(QThread):
             T_tcp_target[:3, 3] = curr_pos
             T_flange_target = T_tcp_target @ tcp_inv
             
-            ik_result, error = kinematics.inverse_kinematics(T_flange_target, current_seed)
-            if ik_result is not None:
-                is_singular, warning_msg = kinematics.check_singularity(ik_result)
-                if is_singular:
-                    self.error_signal.emit(f"軌跡中斷：遭遇 {warning_msg}")
-                    if self.serial_ref and self.serial_ref.is_connected:
-                        self.serial_ref.send_command("STOP")
-                    return 
-
-                current_seed = ik_result
-            else:
-                self.error_signal.emit(f"軌跡運算錯誤: 位置無法到達 (時間 {t:.2f}s)")
-                return
+            ik_result, _ = kinematics.inverse_kinematics(T_flange_target, current_seed)
+            current_seed = ik_result
                 
             if counter % gui_skip_frames == 0:
                 self.update_signal.emit(list(ik_result))

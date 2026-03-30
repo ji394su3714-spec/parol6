@@ -66,28 +66,26 @@ byte bufCount = 0;
 bool isBufPlaying = false;
 bool pendingOK = false;
 
-// 修正版計時與補償變數
+// 狀態變數：只相信理論，不管物理現實
 long lastBufTarget[6] = {0}; 
 unsigned long lastPointTimeUs = 0;
 unsigned long currentPointIntervalUs = 0;
-unsigned long firstPacketWaitUs = 0; // 蓄水池計時器
+unsigned long firstPacketWaitUs = 0; 
 
-// ========================================================
-// 🚀 核心播放機 (終極前饋優化版)
-// ========================================================
+// 核心播放機 (極簡純數學開環版)
 void updateRingBuffer() {
     if (bufCount > 0) {
         unsigned long nowUs = micros(); 
         
+        // 1. 起步蓄水池：簡單防抖，蓄滿 4 個封包就出發
         if (!isBufPlaying) {
-            // 🌟 升級版深水庫：蓄滿 10 個切片 (約200ms) 才准發車，徹底吸收 USB 通訊抖動！
             if (firstPacketWaitUs == 0) firstPacketWaitUs = nowUs;
-
-            if (bufCount < 10 && (nowUs - firstPacketWaitUs < 200000)) {
-                return; // 繼續憋氣蓄水
+            if (bufCount < 4 && (nowUs - firstPacketWaitUs < 100000)) {
+                return; // 繼續憋氣
             }
 
             firstPacketWaitUs = 0;
+            // 發車瞬間，將「數學起點」對齊當前的「物理位置」
             for(int i = 0; i < 6; i++) {
                 lastBufTarget[i] = steppers[i]->currentPosition();
             }
@@ -96,6 +94,7 @@ void updateRingBuffer() {
             isBufPlaying = true;
         }
 
+        // 2. 絕對時鐘推進 (嚴格遵守 Python 給的 0.02s 切片節奏)
         if (nowUs - lastPointTimeUs >= currentPointIntervalUs) {
             
             BufPoint pt = ringBuf[bufTail];
@@ -103,60 +102,59 @@ void updateRingBuffer() {
             bufCount--;
 
             unsigned long interval = pt.interval_us;
-            if (interval < 5000) interval = 5000; 
+            if (interval < 5000) interval = 5000; // 防呆底線
 
+            // 核心：純粹的開環前饋 (Open-Loop Feed-Forward)
             for (int i = 0; i < 6; i++) {
                 long target = pt.targetSteps[i];
+                
+                // 絕對信任理論值 (lastBufTarget)，徹底拋棄 currentPosition() 閉環！
                 long idealDelta = abs(target - lastBufTarget[i]); 
-                
-                // 🌟 1. 算出物理上落後的「欠步債務」
-                long physicalDebt = abs(lastBufTarget[i] - steppers[i]->currentPosition());
 
-                unsigned long mobaSpeed = 0;
-                
-                // 🌟 2. 完美平滑的前饋基準速度 (Feed-Forward)
-                // 恢復最純粹的數學公式，絕對不超頻、不震動
                 if (idealDelta > 0) {
-                    mobaSpeed = (idealDelta * 10000000ULL) / interval;
-                }
-                
-                // 🌟 3. 柔性 P-Controller 追趕補償 (Proportional Control)
-                // 每落後 1 步，MobaSpeed 就增加 50 (等於增加 5 步/秒)
-                // 這就像一條橡皮筋，平滑地把落後的進度拉回來，完美免疫 ±1 步的雜訊震動！
-                mobaSpeed += (physicalDebt * 50);
-
-                // 如果真的有速度需求，才下達指令
-                if (mobaSpeed > 0) {
+                    unsigned long mobaSpeed = (idealDelta * 10000000ULL) / interval;
+                    
+                    // 終極防護網：絕對防溢位鎖！
+                    // 確保 MobaTools 永遠不會因為 uint16_t 溢位而導致馬達掉速落隊
+                    if (mobaSpeed > 65535) mobaSpeed = 65535;
                     if (mobaSpeed < 10) mobaSpeed = 10; 
+
                     steppers[i]->setSpeedSteps(mobaSpeed);
                     steppers[i]->setRampLen(0); 
-                }
+                } 
                 
+                // 不管 delta 是多少，都勇敢地把目標寫進去，MobaTools 會在背景自己滑順地跑完
                 steppers[i]->writeSteps(target);
+                
+                // 更新理論座標，準備算下一刀
                 lastBufTarget[i] = target;
             }
 
+            // 推進時鐘
             lastPointTimeUs += currentPointIntervalUs;
-            if (nowUs > lastPointTimeUs + 50000) { lastPointTimeUs = nowUs; }
+            
+            // 防護：如果 Windows 卡頓太久，防止 Arduino 內部時鐘累積過多債務而暴衝
+            if (nowUs > lastPointTimeUs + 50000) { 
+                lastPointTimeUs = nowUs; 
+            }
+            
             currentPointIntervalUs = interval;
             
+            // 處理通訊：水桶有空間了，跟 Python 要下一個封包
             if (pendingOK && bufCount < BUF_SIZE) {
                 Serial.println("OK");
                 pendingOK = false;
             }
         }
     } else {
-        // ==========================================
-        // 🌟 粗暴的 40ms 停頓與收攏已經徹底移除！
-        // 因為債務在移動過程中已經被橡皮筋平滑消化了，
-        // 現在只要水桶空了，馬達自然就會在完美的瞬間定桿！
-        // ==========================================
+        // 3. 乾淨俐落的收尾
         if (isBufPlaying) {
             bool moving = false;
             for(int i = 0; i < 6; i++) {
                 if(steppers[i]->stepsToDo() > 0) moving = true;
             }
 
+            // 只要六顆馬達都真正在物理上停下來了，就宣佈路徑徹底結束
             if (!moving) {
                 isBufPlaying = false;
                 firstPacketWaitUs = 0; 
