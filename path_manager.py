@@ -12,7 +12,7 @@ from motion_profile import SCurveProfile
 
 # 關節專屬極限 (J1~J6)
 MAX_JOINT_SPEEDS = np.array([81.0, 33.0, 36.0, 129.0, 129.0, 67.0])     # 各軸最高轉速 (度/秒)
-MAX_JOINT_ACCELS = np.array([150.0, 70.0, 72.0, 280.0, 280.0, 140.0])   # 各軸最高加速度 (度/秒^2)
+MAX_JOINT_ACCELS = np.array([150.0, 75.0, 80.0, 290.0, 290.0, 140.0])   # 各軸最高加速度 (度/秒^2)
 MAX_JOINT_JERKS = MAX_JOINT_ACCELS * 10.0                               # 各軸最高加加速度 (Jerk, 度/秒^3)
 
 # 直角空間極限 (LIN/CIRC 用)
@@ -20,12 +20,12 @@ MAX_LIN_SPEED = 100.0    # TCP 直線極速 (mm/秒)
 MAX_LIN_ACCEL = 200.0    # TCP 直線加速度 (mm/秒^2)
 MAX_LIN_JERK = MAX_LIN_ACCEL * 10.0    # TCP 直線加加速度 (mm/秒^3)
 
-MAX_ROT_SPEED = 45.0     # TCP 旋轉極速 (度/秒)
-MAX_ROT_ACCEL = 90.0     # TCP 旋轉加速度 (度/秒^2)
+MAX_ROT_SPEED = 60.0     # TCP 旋轉極速 (度/秒)
+MAX_ROT_ACCEL = 180.0     # TCP 旋轉加速度 (度/秒^2)
 MAX_ROT_JERK = MAX_ROT_ACCEL * 10.0     # TCP 旋轉加加速度 (度/秒^3)
 
 # 晶片總體算力防護網參數
-MAX_TOTAL_PULSE_SLICE = 18000.0   # 切片模式極限 (CPU 負載重，邊跑邊解碼)
+MAX_TOTAL_PULSE_SLICE = 4000.0   # 切片模式極限 (CPU 負載重，邊跑邊解碼)
 MAX_TOTAL_PULSE_NATIVE = 60000.0  # 原生模式極限 (CPU 負載極輕，專注發射脈衝)
 
 # N_PTP 預設起步時間

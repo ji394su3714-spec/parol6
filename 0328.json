@@ -29,7 +29,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 90.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -46,7 +46,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 90.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -63,7 +63,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 90.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -80,7 +80,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 90.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -114,7 +114,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 90.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -131,7 +131,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 90.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -148,7 +148,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 90.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -165,7 +165,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 50.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -182,7 +182,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 50.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -199,7 +199,24 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 50.0,
+        "speed": 100.0,
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 13",
+        "joints": [
+            -5.784650456768709,
+            -15.609605909593588,
+            70.0,
+            26.281541545157488,
+            -97.32548760873311,
+            26.809961064789082
+        ],
+        "aux_joints": null,
+        "delay": 0.0,
+        "type": "PTP",
+        "speed": 25.0,
         "active": true,
         "note": ""
     }

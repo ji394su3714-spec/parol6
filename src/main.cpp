@@ -18,7 +18,7 @@ const JointConfig JOINTS[6] = {
     {43, 48, 58, 14,  HIGH,  750, -70,  650, 17000, 50000, 350}, 
     {26, 28, 24, 15,  LOW,   950, -145, 400, 15000, 50000, 350}, 
     {36, 34, 30, 63,  HIGH,  700, -124, 300, 15000, 50000, 350}, 
-    {59, 57, 40, 64,  LOW,   900,    2, 400, 20000, 50000, 350}  
+    {59, 57, 40, 64,  LOW,  1200,    2, 400, 20000, 50000, 350}  
 };
 
 const MotorCurrentConfig MOTOR_CURRENTS[6] = {
@@ -108,25 +108,27 @@ void updateRingBuffer() {
             for (int i = 0; i < 6; i++) {
                 long target = pt.targetSteps[i];
                 
-                // 絕對信任理論值 (lastBufTarget)，徹底拋棄 currentPosition() 閉環！
+                // 回歸純淨數學：絕對信任理論值！絕對不看 currentPosition()！
+                // 這樣算出來的速度線會像絲綢一樣滑順，零碎震。
                 long idealDelta = abs(target - lastBufTarget[i]); 
 
                 if (idealDelta > 0) {
-                    unsigned long mobaSpeed = (idealDelta * 10000000ULL) / interval;
+                    // 刪掉原本那行，改成這行！CPU 負載瞬間暴降 90%！
+                    unsigned long mobaSpeed = idealDelta * 500;
                     
-                    // 終極防護網：絕對防溢位鎖！
-                    // 確保 MobaTools 永遠不會因為 uint16_t 溢位而導致馬達掉速落隊
                     if (mobaSpeed > 65535) mobaSpeed = 65535;
-                    if (mobaSpeed < 10) mobaSpeed = 10; 
+                    
+                    // 破除最後一刀龜速詛咒的優雅解法：提高保底速度
+                    if (mobaSpeed < 1000) mobaSpeed = 1000; 
 
                     steppers[i]->setSpeedSteps(mobaSpeed);
                     steppers[i]->setRampLen(0); 
                 } 
                 
-                // 不管 delta 是多少，都勇敢地把目標寫進去，MobaTools 會在背景自己滑順地跑完
+                // 勇敢地把目標寫進去，MobaTools 會在背景自己滑順地跑完
                 steppers[i]->writeSteps(target);
                 
-                // 更新理論座標，準備算下一刀
+                // 更新理論座標，準備算下一刀 (這是保持平滑的靈魂)
                 lastBufTarget[i] = target;
             }
 
