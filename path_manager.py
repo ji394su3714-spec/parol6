@@ -11,22 +11,22 @@ import kinematics
 from motion_profile import SCurveProfile 
 
 # 關節專屬極限 (J1~J6)
-MAX_JOINT_SPEEDS = np.array([81.0, 33.0, 36.0, 129.0, 129.0, 67.0])     # 各軸最高轉速 (度/秒)
-MAX_JOINT_ACCELS = np.array([150.0, 75.0, 80.0, 290.0, 290.0, 140.0])   # 各軸最高加速度 (度/秒^2)
+MAX_JOINT_SPEEDS = np.array([158.20, 50.63, 55.94, 253.13, 253.13, 101.25])     # 各軸最高轉速 (度/秒)
+MAX_JOINT_ACCELS = np.array([527.34, 168.75, 186.46, 843.75, 843.75, 337.50])   # 各軸最高加速度 (度/秒^2)
 MAX_JOINT_JERKS = MAX_JOINT_ACCELS * 10.0                               # 各軸最高加加速度 (Jerk, 度/秒^3)
 
 # 直角空間極限 (LIN/CIRC 用)
 MAX_LIN_SPEED = 100.0    # TCP 直線極速 (mm/秒) 
-MAX_LIN_ACCEL = 200.0    # TCP 直線加速度 (mm/秒^2)
+MAX_LIN_ACCEL = 300.0    # TCP 直線加速度 (mm/秒^2)
 MAX_LIN_JERK = MAX_LIN_ACCEL * 10.0    # TCP 直線加加速度 (mm/秒^3)
 
-MAX_ROT_SPEED = 60.0     # TCP 旋轉極速 (度/秒)
+MAX_ROT_SPEED = 90.0     # TCP 旋轉極速 (度/秒)
 MAX_ROT_ACCEL = 180.0     # TCP 旋轉加速度 (度/秒^2)
 MAX_ROT_JERK = MAX_ROT_ACCEL * 10.0     # TCP 旋轉加加速度 (度/秒^3)
 
 # 晶片總體算力防護網參數
-MAX_TOTAL_PULSE_SLICE = 4000.0   # 切片模式極限 (CPU 負載重，邊跑邊解碼)
-MAX_TOTAL_PULSE_NATIVE = 60000.0  # 原生模式極限 (CPU 負載極輕，專注發射脈衝)
+MAX_TOTAL_PULSE_SLICE = 5000.0   # 切片模式極限 (CPU 負載重，邊跑邊解碼)
+MAX_TOTAL_PULSE_NATIVE = 80000.0  # 原生模式極限 (CPU 負載極輕，專注發射脈衝)
 
 # N_PTP 預設起步時間
 N_PTP_T_ACC = 0.2
@@ -36,7 +36,7 @@ GEAR_RATIOS = np.array([6.4, 20.0, 18.1, 4.0, 4.0, 10.0])
 STEPS_PER_DEG = (1600.0 * GEAR_RATIOS) / 360.0
 
 # 對應 C++ JOINTS 陣列裡 mode=2 的專屬硬體極速 (max_spd)
-HW_MAX_STEPS = np.array([5000, 5000, 5000, 5000, 5000, 5000])
+HW_MAX_STEPS = np.array([50000, 50000, 50000, 50000, 50000, 50000])
 
 # 更新與通訊函數
 def update_advanced_settings(lin_spd, lin_acc, rot_spd, rot_acc, slice_pulse, native_pulse, hw_max, t_acc):
@@ -73,6 +73,7 @@ def send_config_to_mcu(serial_manager):
 class PTPExecutor(QThread):
     update_signal = pyqtSignal(list)
     finished_signal = pyqtSignal()
+    log_signal = pyqtSignal(str)  # 🌟 新增這行：專屬的 Log 大聲公
     
     def __init__(self, start_joints, end_joints, serial_ref=None, speed_factor=1.0):
         super().__init__()
@@ -89,19 +90,17 @@ class PTPExecutor(QThread):
             return
             
         # ==========================================
-        # 1. 找出瓶頸軸 (導入雙重極限防護)
+        # 1. 找出瓶頸軸 (個體物理極限防護)
         # ==========================================
         bottleneck_profile = None
         bottleneck_idx = -1
         max_duration = 0.0
         
-        base_allowed_v = 0.0
-        base_allowed_a = 0.0
-        base_allowed_j = 0.0
+        base_allowed_v, base_allowed_a, base_allowed_j = 0.0, 0.0, 0.0
         
         for i in range(6):
             if diffs[i] > 1e-6:
-                # 🌟 第一層防護：雙重極限取其低 (物理機械極限 vs 軟體防溢位極限)
+                # 雙重極限取其低 (物理極限 vs 防溢位極限)
                 mech_limit_v = MAX_JOINT_SPEEDS[i] * self.speed_factor
                 soft_limit_v = (HW_MAX_STEPS[i] * self.speed_factor) / STEPS_PER_DEG[i]
                 allowed_v = min(mech_limit_v, soft_limit_v)
@@ -114,44 +113,37 @@ class PTPExecutor(QThread):
                     max_duration = p.T_total
                     bottleneck_profile = p
                     bottleneck_idx = i
-                    # 記住這根「最拖戲」的軸，它當下被賦予的極限參數
-                    base_allowed_v = allowed_v
-                    base_allowed_a = allowed_a
-                    base_allowed_j = allowed_j
+                    base_allowed_v, base_allowed_a, base_allowed_j = allowed_v, allowed_a, allowed_j
                     
         if bottleneck_profile is None:
             self.finished_signal.emit()
             return
 
-        # 2. 晶片算力防護網 (徹底消滅 avg_v，改用 Peak 預測)
+        # ==========================================
+        # 2. 晶片算力防護網 (整體系統負載防護)
+        # ==========================================
         if bottleneck_profile.T_total > 0:
-            # 核心數學：算出「進度條」在波峰時的最大推進率 (d_progress / dt)
-            # 在 PTP 中，所有軸都是綁定在同一個 progress(t) 上。
-            # 用瓶頸軸的允許極速來反推波峰進度率，是最安全的天花板。
             peak_progress_rate = base_allowed_v / diffs[bottleneck_idx]
             
-            peak_pulse_freq = 0.0
-            for i in range(6):
-                # 算出每一軸在軌跡正中間（最快那一瞬間）的真實波峰速度
-                peak_joint_v = diffs[i] * peak_progress_rate
-                peak_pulse_freq += peak_joint_v * STEPS_PER_DEG[i]
+            # 利用 numpy 陣列運算，一行算出巔峰時刻的總頻率
+            peak_pulse_freq = np.sum(diffs * peak_progress_rate * STEPS_PER_DEG)
                 
-            # 檢查這個「瞬間最高頻率」是否會把 Arduino 逼到當機
             if peak_pulse_freq > MAX_TOTAL_PULSE_SLICE:
-                overload_ratio = peak_pulse_freq / MAX_TOTAL_PULSE_SLICE
+                overspeed_ratio = peak_pulse_freq / MAX_TOTAL_PULSE_SLICE
                 
-                # 時間膨脹降速法：等比例降速，維持 S 曲線幾何
-                new_v = base_allowed_v / overload_ratio
-                new_a = base_allowed_a / (overload_ratio ** 2)
-                new_j = base_allowed_j / (overload_ratio ** 3)
-                
+                # 執行時間膨脹
+                new_v = base_allowed_v / overspeed_ratio
+                new_a = base_allowed_a / (overspeed_ratio ** 2)
+                new_j = base_allowed_j / (overspeed_ratio ** 3)
                 bottleneck_profile = SCurveProfile(diffs[bottleneck_idx], new_v, new_a, new_j)
-                print(f"[PTP] 觸發晶片算力防護！預測波峰總頻率 {peak_pulse_freq:.0f}Hz，強制降速 {1/overload_ratio:.2f}X")
-
-        interval = 0.020
+                
+                # 統一 Log 格式：速度保留比例
+                self.log_signal.emit(f"[PTP] Overload ({peak_pulse_freq:.0f}Hz)！Scale down to {(1.0/overspeed_ratio):.2f}X")
+        
+        interval = 0.02
         t = 0.0
         counter = 0
-        gui_skip_frames = 5
+        gui_skip_frames = 10
  
         while t <= bottleneck_profile.T_total:
             progress = bottleneck_profile.get_progress(t)
@@ -187,6 +179,7 @@ class CartesianExecutor(QThread):
     update_signal = pyqtSignal(list)
     finished_signal = pyqtSignal()
     error_signal = pyqtSignal(str)
+    log_signal = pyqtSignal(str) 
 
     def __init__(self, start_joints, target_joints, tcp_offset_mat, serial_ref=None, speed_factor=1.0, move_type="LIN", aux_joints=None):
         super().__init__()
@@ -275,8 +268,9 @@ class CartesianExecutor(QThread):
         base_profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
 
         # 核心進化：Dry-Run 軌跡預掃描 (找出空間隱藏的超速奇異點)
-        sample_steps = max(50, int(dist_main / 2.0)) # 至少切 50 刀，最細每 2mm 檢查一次
+        sample_steps = max(100, int(dist_main * 1.5)) 
         progress_samples = np.linspace(0, 1.0, sample_steps)
+        delta_progress = 1.0 / (sample_steps - 1)
         
         trajectory_joints = []
         current_seed = self.start_joints.copy()
@@ -304,63 +298,58 @@ class CartesianExecutor(QThread):
             
         trajectory_joints = np.array(trajectory_joints)
         
-        # 計算相鄰進度點之間的「關節劇烈變化程度」 (角度 / progress)
-        delta_joints = np.abs(np.diff(trajectory_joints, axis=0))
-        delta_progress = 1.0 / (sample_steps - 1)
-        max_d_joint_d_prog = np.max(delta_joints, axis=0) / delta_progress
+        # 🌟 核心防護計算：使用 np.gradient 取代 np.diff，精準對齊並捕捉波峰
+        d_joint_dp = np.gradient(trajectory_joints, delta_progress, axis=0)
+        max_d_joint_dp = np.max(np.abs(d_joint_dp), axis=0)
         
-        # S-Curve 產生的最高空間進度率 (d_progress / dt)
-        peak_prog_rate = base_profile.v_max / dist_main if dist_main > 0 else 0
+        d2_joint_dp2 = np.gradient(d_joint_dp, delta_progress, axis=0)
+        max_d2_joint_dp2 = np.max(np.abs(d2_joint_dp2), axis=0)
+
+        peak_prog_v = base_profile.v_max / dist_main if dist_main > 0 else 0
+        peak_prog_a = base_profile.a_max / dist_main if dist_main > 0 else 0
         
         overspeed_ratio = 1.0
         
-        # 第一層防護：雙重極限取其低 (物理機械極限 vs 軟體防溢位極限)
+        # 1 & 2. 各軸速度與加速度防護
         for i in range(6):
-            # 算出該軸在這條軌跡中，最劇烈瞬間的「最高角速度」
-            peak_joint_v = max_d_joint_d_prog[i] * peak_prog_rate
-            
-            # 1. 物理機械極限 (來自 MAX_JOINT_SPEEDS，真實世界的天花板)
-            mech_limit_v = MAX_JOINT_SPEEDS[i] * self.speed_factor
-            
-            # 2. 軟體溢位極限 (來自 HW_MAX_STEPS，避免 C++ MobaTools 溢位)
-            soft_limit_v = (HW_MAX_STEPS[i] * self.speed_factor) / STEPS_PER_DEG[i] 
-            
-            # 取其低作為該軸的最終允許極速
-            allowed_v = min(mech_limit_v, soft_limit_v)
+            # --- 速度把關 ---
+            peak_joint_v = max_d_joint_dp[i] * peak_prog_v
+            allowed_v = min(MAX_JOINT_SPEEDS[i] * self.speed_factor, 
+                            (HW_MAX_STEPS[i] * self.speed_factor) / STEPS_PER_DEG[i])
             
             if peak_joint_v > allowed_v:
-                ratio = peak_joint_v / allowed_v
-                if ratio > overspeed_ratio:
-                    overspeed_ratio = ratio
+                overspeed_ratio = max(overspeed_ratio, peak_joint_v / allowed_v)
 
-        # 第二層防護：晶片總算力防護網 (波峰時刻的總負載)
-        peak_pulse_freq = 0.0
-        for i in range(6):
-            peak_joint_v = max_d_joint_d_prog[i] * peak_prog_rate
-            peak_pulse_freq += peak_joint_v * STEPS_PER_DEG[i]
+            # --- 加速度把關 (連鎖律) ---
+            peak_joint_a = max_d2_joint_dp2[i] * (peak_prog_v ** 2) + max_d_joint_dp[i] * peak_prog_a
+            allowed_a = MAX_JOINT_ACCELS[i] * self.speed_factor
             
-        if peak_pulse_freq > MAX_TOTAL_PULSE_SLICE:
-            ratio = peak_pulse_freq / MAX_TOTAL_PULSE_SLICE
-            if ratio > overspeed_ratio:
-                overspeed_ratio = ratio
-                print(f"[Cartesian] Dry-Run: 波峰總算力 {peak_pulse_freq:.0f}Hz，準備降速。")
+            if peak_joint_a > allowed_a:
+                # 加速度拉長時間是開根號關係
+                overspeed_ratio = max(overspeed_ratio, math.sqrt(peak_joint_a / allowed_a))
 
-        # 🚀 根據 Dry-Run 結果，重新壓縮 S 曲線，產生 100% 安全的最終曲線
+        # 3. 整體算力防護
+        peak_pulse_freq = np.sum(max_d_joint_dp * peak_prog_v * STEPS_PER_DEG)
+        if peak_pulse_freq > MAX_TOTAL_PULSE_SLICE:
+            overspeed_ratio = max(overspeed_ratio, peak_pulse_freq / MAX_TOTAL_PULSE_SLICE)
+
+        # 🚀 執行降速與統一 Log
         if overspeed_ratio > 1.0:
             target_speed /= overspeed_ratio
             target_accel /= (overspeed_ratio ** 2)
             target_jerk /= (overspeed_ratio ** 3)
-            print(f"[Cartesian] Dry-Run 發現隱藏超速點！強制降速比例：{overspeed_ratio:.2f}X")
+            # 統一 Log 格式：速度保留比例
+            self.log_signal.emit(f"[{self.move_type}] Overload ({peak_pulse_freq:.0f}Hz)！Scale down to {(1.0/overspeed_ratio):.2f}X")
             
         final_profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
 
         # ========================================================
         # 開始執行實體移動 (因為已經預掃描過，這裡保證絕對安全無溢位)
         # ========================================================
-        interval = 0.020
+        interval = 0.02
         t = 0.0
         counter = 0
-        gui_skip_frames = 5
+        gui_skip_frames = 10
         
         current_seed = self.start_joints.copy()
         self.update_signal.emit(list(self.start_joints))
@@ -414,6 +403,7 @@ class NativePTPExecutor(QThread):
     update_signal = pyqtSignal(list)
     finished_signal = pyqtSignal()
     error_signal = pyqtSignal(str)
+    log_signal = pyqtSignal(str)  # 🌟 新增這行：專屬的 Log 大聲公
 
     def __init__(self, start_joints, target_joints, serial_ref=None, speed_factor=1.0):
         super().__init__()
@@ -425,7 +415,7 @@ class NativePTPExecutor(QThread):
     def run(self):
         if self.serial_ref and self.serial_ref.is_connected:
             
-            # 算力防護網：預判 C++ 原生引擎的運算結果，防止晶片當機拖尾
+            # 算力防護網：預判 C++ 原生引擎的運算結果
             diffs = np.abs(self.target_joints - self.start_joints)
             delta_steps = diffs * STEPS_PER_DEG
             max_time = 0.0
@@ -440,9 +430,10 @@ class NativePTPExecutor(QThread):
             if max_time > 0:
                 total_freq = np.sum(delta_steps / max_time)
                 if total_freq > MAX_TOTAL_PULSE_NATIVE:
-                    overload_ratio = total_freq / MAX_TOTAL_PULSE_NATIVE
-                    self.speed_factor /= overload_ratio
-                    print(f"[N_PTP] 觸發晶片算力防護！預判頻率 {total_freq:.0f}Hz，降速 {1/overload_ratio:.2f}X")
+                    overspeed_ratio = total_freq / MAX_TOTAL_PULSE_NATIVE
+                    self.speed_factor /= overspeed_ratio
+                    # 統一 Log 格式
+                    self.log_signal.emit(f"[PTP Native] Overload ({total_freq:.0f}Hz)！Scale down to {(1.0/overspeed_ratio):.2f}X")
 
             # 1. 發射指令，讓 C++ 去爆發！
             self.serial_ref.send_joints(list(self.target_joints), self.speed_factor, move_mode=2)
@@ -695,6 +686,7 @@ class PathManager(QObject):
                 aux_joints=aux_joints 
             )
             self.worker.error_signal.connect(self._on_worker_error)
+            self.worker.log_signal.connect(self.log_signal.emit)
             
         elif move_type in ["N_PTP"]:
             self.worker = NativePTPExecutor(
@@ -704,6 +696,7 @@ class PathManager(QObject):
                 speed_factor=speed_factor
             )
             self.worker.error_signal.connect(self._on_worker_error)
+            self.worker.log_signal.connect(self.log_signal.emit)
             
         else: # 舊版 PTP (切片版 S-Curve)
             self.worker = PTPExecutor(
@@ -714,6 +707,7 @@ class PathManager(QObject):
             )
             
         self.worker.update_signal.connect(self.joint_update_signal.emit)
+        self.worker.log_signal.connect(self.log_signal.emit)
         
         delay = target_data.get('delay', 0.0)
         self.worker.finished_signal.connect(lambda: self._on_point_finished(target_joints, delay))

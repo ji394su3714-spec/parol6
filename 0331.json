@@ -165,7 +165,7 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "PTP",
-        "speed": 80.0,
+        "speed": 50.0,
         "active": true,
         "note": ""
     }

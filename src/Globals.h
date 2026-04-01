@@ -21,7 +21,7 @@ float getStepsPerDeg(int axis);
 bool isAnyHoming();
 
 // 環形緩衝區 (Ring Buffer) 變數
-#define BUF_SIZE 30
+#define BUF_SIZE 100
 
 struct BufPoint {
     long targetSteps[6];

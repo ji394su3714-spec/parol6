@@ -14,8 +14,8 @@
 // 實體變數定義區
 const JointConfig JOINTS[6] = {
     {54, 55, 38,  2,  LOW,   300, -28,  250, 12000, 50000, 350}, 
-    {60, 61, 56, 12,  HIGH, -600,  50,  450, 17000, 50000, 350}, 
-    {43, 48, 58, 14,  HIGH,  750, -70,  650, 17000, 50000, 350}, 
+    {60, 61, 56, 12,  HIGH, -600,  50,  500, 17000, 50000, 350}, 
+    {43, 48, 58, 14,  HIGH,  750, -70,  600, 17000, 50000, 350}, 
     {26, 28, 24, 15,  LOW,   950, -145, 400, 15000, 50000, 350}, 
     {36, 34, 30, 63,  HIGH,  700, -124, 300, 15000, 50000, 350}, 
     {59, 57, 40, 64,  LOW,  1200,    2, 400, 20000, 50000, 350}  
@@ -66,7 +66,7 @@ byte bufCount = 0;
 bool isBufPlaying = false;
 bool pendingOK = false;
 
-// 狀態變數：只相信理論，不管物理現實
+// 狀態變數
 long lastBufTarget[6] = {0}; 
 unsigned long lastPointTimeUs = 0;
 unsigned long currentPointIntervalUs = 0;
@@ -109,12 +109,11 @@ void updateRingBuffer() {
                 long target = pt.targetSteps[i];
                 
                 // 回歸純淨數學：絕對信任理論值！絕對不看 currentPosition()！
-                // 這樣算出來的速度線會像絲綢一樣滑順，零碎震。
                 long idealDelta = abs(target - lastBufTarget[i]); 
 
                 if (idealDelta > 0) {
-                    // 刪掉原本那行，改成這行！CPU 負載瞬間暴降 90%！
-                    unsigned long mobaSpeed = idealDelta * 500;
+                    // 刪掉原本那行，改成這行！
+                    unsigned long mobaSpeed = (idealDelta * 10000UL) / (interval / 1000UL);
                     
                     if (mobaSpeed > 65535) mobaSpeed = 65535;
                     
@@ -128,7 +127,7 @@ void updateRingBuffer() {
                 // 勇敢地把目標寫進去，MobaTools 會在背景自己滑順地跑完
                 steppers[i]->writeSteps(target);
                 
-                // 更新理論座標，準備算下一刀 (這是保持平滑的靈魂)
+                // 更新理論座標
                 lastBufTarget[i] = target;
             }
 
@@ -231,6 +230,11 @@ void setup() {
         steppers[i]->setSpeedSteps(JOINTS[i].maxSpeedSteps10);
         steppers[i]->setRampLen(JOINTS[i].rampSteps); 
     }
+    // 🌟 新增：過河拆橋！釋放 SoftwareSerial 佔用的硬體中斷，把 CPU 100% 還給馬達！
+    serial_J1.end();
+    serial_J3.end();
+    serial_J4.end();
+
     Serial.println("<F6 Controller OS Ready>");
 }
 
