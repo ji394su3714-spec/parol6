@@ -180,7 +180,7 @@
             -10.0
         ],
         "aux_joints": null,
-        "delay": 0.0,
+        "delay": 0.3,
         "type": "N_PTP",
         "speed": 100.0,
         "active": true,

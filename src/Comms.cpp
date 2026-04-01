@@ -37,55 +37,49 @@ void processCommand() {
         return;
     }
 
-    // 2. 字串解析
-    float tempParsed[8] = {0.0};
+    // 2. 升級版字串解析 (純整數極速解析)
+    long tempParsedSteps[6] = {0};
+    float param7 = 1.0;
+    int moveMode = 0;
     int parseCount = 0; 
+    
     char * strtokIndx = strtok(tempChars, ",");
     while (strtokIndx != NULL && parseCount < 8) {
-        tempParsed[parseCount] = atof(strtokIndx);
+        if (parseCount < 6) {
+            tempParsedSteps[parseCount] = atol(strtokIndx); // 極速轉為長整數
+        } else if (parseCount == 6) {
+            param7 = atof(strtokIndx); // 只有第7參數 (速度比例/時間) 允許用 float 讀取
+        } else if (parseCount == 7) {
+            moveMode = atoi(strtokIndx);
+        }
         parseCount++;
         strtokIndx = strtok(NULL, ",");
     }
 
-    if (parseCount < 6) {
-        Serial.print("[HW Error] Dropped corrupted packet: ");
-        Serial.println(tempChars);
-        return; 
-    }
+    if (parseCount < 6) return; // 錯誤封包防護
 
     for(int i = 0; i < 6; i++) {
-        receivedAngles[i] = tempParsed[i];
+        receivedSteps[i] = tempParsedSteps[i];
     }
 
-    float param7 = (parseCount >= 7) ? tempParsed[6] : 1.0;
-    int moveMode = (parseCount >= 8) ? (int)tempParsed[7] : 0; 
-    
-    // 3. 歸零觸發 
-    bool group1_req = (receivedAngles[0] == 999.0 || receivedAngles[1] == 999.0 || receivedAngles[2] == 999.0);
-    bool j4_req = (receivedAngles[3] == 999.0);
-    bool j6_req = (receivedAngles[5] == 999.0);
+    // 3. 歸零觸發 (將 999.0 改為 999999)
+    bool group1_req = (receivedSteps[0] == 999999 || receivedSteps[1] == 999999 || receivedSteps[2] == 999999);
+    bool j4_req = (receivedSteps[3] == 999999);
+    bool j6_req = (receivedSteps[5] == 999999);
     bool homingTriggered = false;
 
     for (int i = 0; i < 6; i++) {
-        if (receivedAngles[i] == 999.0 && JOINTS[i].limitPin != 0 && JOINTS[i].homingSpeed != 0) {
+        if (receivedSteps[i] == 999999 && JOINTS[i].limitPin != 0 && JOINTS[i].homingSpeed != 0) {
             if (homingState[i] == 0) {
-                if (i >= 3 && group1_req) {
-                    homingState[i] = 20; 
-                    homingTriggered = true;
-                } else if (i == 4 && j6_req) {
-                    homingState[i] = 10; 
-                    homingTriggered = true;
-                } else if (i == 5 && j4_req) {
-                    homingState[i] = 10; 
-                    homingTriggered = true;
-                } else {
+                if (i >= 3 && group1_req) { homingState[i] = 20; homingTriggered = true; } 
+                else if (i == 4 && j6_req) { homingState[i] = 10; homingTriggered = true; } 
+                else if (i == 5 && j4_req) { homingState[i] = 10; homingTriggered = true; } 
+                else {
                     homingState[i] = 1; 
                     steppers[i]->setRampLen(0); 
                     long homingSpd = abs(JOINTS[i].homingSpeed) * 10;
                     steppers[i]->setSpeedSteps(homingSpd);
-                    int dir = (JOINTS[i].homingSpeed > 0) ? 1 : -1;
-                    steppers[i]->rotate(dir); 
-                    Serial.print(">>> Homing Start: J"); Serial.println(i + 1);
+                    steppers[i]->rotate((JOINTS[i].homingSpeed > 0) ? 1 : -1); 
                     homingTriggered = true;
                 }
             } 
@@ -97,31 +91,23 @@ void processCommand() {
     if (!isAnyHoming() && !homingTriggered) {
 
         // 模式 1：串流模式 (Streaming) - 塞進水桶
-        // 負責：PTP, LIN, CIRC (Python 已計算好完美加減速)
         if (moveMode == 1) {
             if (bufCount < BUF_SIZE) {
                 for(int i = 0; i < 6; i++) {
-                    // 關閉硬體加減速，徹底交給 Python 控制！
                     steppers[i]->setRampLen(0);
-                    
-                    if (receivedAngles[i] != 999.0) {
-                        ringBuf[bufHead].targetSteps[i] = receivedAngles[i] * getStepsPerDeg(i);
+                    if (receivedSteps[i] != 999999) {
+                        // 核心修改：零計算，直接把步數塞進水桶！
+                        ringBuf[bufHead].targetSteps[i] = receivedSteps[i]; 
                     } else {
-                        // 防呆：沒收到角度就維持當前目標
                         ringBuf[bufHead].targetSteps[i] = steppers[i]->currentPosition(); 
                     }
                 }
-                ringBuf[bufHead].interval_us = (unsigned long)(param7 * 1000000.0);
+                ringBuf[bufHead].interval_us = (unsigned long)param7; // Python已經換算成微秒了
 
                 bufHead = (bufHead + 1) % BUF_SIZE;
                 bufCount++;
-
-                // 水桶沒滿就馬上回 OK；滿了就扣留 OK (啟動背壓防護)
-                if (bufCount < BUF_SIZE) {
-                    Serial.println("OK");
-                } else {
-                    pendingOK = true;
-                }
+                if (bufCount < BUF_SIZE) Serial.println("OK");
+                else pendingOK = true;
             } else {
                 Serial.println("BufferFull");
             }
@@ -129,79 +115,56 @@ void processCommand() {
             return;
         }
 
-        // 模式 2：原生 PTP (純時間加減速，零切片直驅)
+        // 模式 2：原生 PTP
         else if (moveMode == 2) {
-            float speedFactor = param7; // Python 傳來的速度比例
-            if (speedFactor <= 0.0) speedFactor = 1.0;
-
-            // 加減速時間(秒)
-            //float T_acc = 0.15; //移到path_manager
-
+            float speedFactor = (param7 <= 0.0) ? 1.0 : param7;
             float maxTime = 0.0;
             long deltaSteps[6] = {0};
 
-            // 1. 尋找瓶頸：算出哪一根軸要花最久的時間
             for (int i = 0; i < 6; i++) {
-                if (receivedAngles[i] != 999.0) {
-                    long targetSteps = receivedAngles[i] * getStepsPerDeg(i);
-                    deltaSteps[i] = abs(targetSteps - steppers[i]->currentPosition());
-                    
-                    // 該軸的物理極速 * 速度比例
+                if (receivedSteps[i] != 999999) {
+                    // 零計算，直接讀取步數
+                    deltaSteps[i] = abs(receivedSteps[i] - steppers[i]->currentPosition());
                     float v_max = (global_hw_max_steps / 10.0) * speedFactor;
                     float t_needed = deltaSteps[i] / v_max;
-                    if (t_needed > maxTime) {
-                        maxTime = t_needed;
-                    }
+                    if (t_needed > maxTime) maxTime = t_needed;
                 }
             }
 
-            // 2. 同步發車與「動態時間斜率」計算
             for (int i = 0; i < 6; i++) {
-                if (receivedAngles[i] != 999.0 && deltaSteps[i] > 0) {
-                    // 算出該軸配合瓶頸的同步巡航速度 (步/秒)
+                if (receivedSteps[i] != 999999 && deltaSteps[i] > 0) {
                     float syncSpeed = deltaSteps[i] / maxTime;
                     long mobaSpeed = (long)(syncSpeed * 10.0 + 0.5);
                     if (mobaSpeed < 10) mobaSpeed = 10;
 
-                    // 用「時間」反推「步數」，徹底消滅煩人的 ramp 陣列！
                     long dynamicRamp = (long)((syncSpeed * global_T_acc) / 2.0);
-                    
-                    // 防呆：如果移動距離太短，加速段最多只能佔總距離的一半 (變成三角形軌跡)
-                    if (dynamicRamp > deltaSteps[i] / 2) {
-                        dynamicRamp = deltaSteps[i] / 2;
-                    }
+                    if (dynamicRamp > deltaSteps[i] / 2) dynamicRamp = deltaSteps[i] / 2;
 
-                    // 覆蓋原本寫死的 ramp，套用我們動態算出來的時間步數！
                     steppers[i]->setSpeedSteps(mobaSpeed);
                     steppers[i]->setRampLen(dynamicRamp); 
                     
-                    long targetSteps = receivedAngles[i] * getStepsPerDeg(i);
-                    steppers[i]->writeSteps(targetSteps);
+                    // 零計算，直接發送目標步數
+                    steppers[i]->writeSteps(receivedSteps[i]);
                 }
             }
-
             normalMoveActive = true; 
             Serial.println("OK");    
             return;
         }
         
-        // 模式 0：手動/點動模式 (Jogging)
-        // 負責：UI 滑桿、Jog 按鈕 (交給硬體 MobaTools 防暴衝)
+        // 模式 0：手動/點動模式
         else if (moveMode == 0) {
             for (int i = 0; i < 6; i++) {
-                if (receivedAngles[i] != 999.0) {
-                    long targetSteps = receivedAngles[i] * getStepsPerDeg(i);
-                    
-                    // 根據 UI 傳來的百分比計算速度
+                if (receivedSteps[i] != 999999) {
                     float currentMaxSpeedSec = (JOINTS[i].jointControlSpd10 * param7) / 10.0;
                     long mobaSpeed = (long)(currentMaxSpeedSec * 10.0);
                     if (mobaSpeed < 1) mobaSpeed = 1; 
 
                     steppers[i]->setSpeedSteps(mobaSpeed);
-                    
-                    // 啟用硬體加減速 (維持手動操作的避震手感)---->可能需要修復同步問題
                     steppers[i]->setRampLen(JOINTS[i].rampSteps);
-                    steppers[i]->writeSteps(targetSteps); 
+                    
+                    // 零計算，直接發送目標步數
+                    steppers[i]->writeSteps(receivedSteps[i]); 
                 }
             }
             normalMoveActive = true;

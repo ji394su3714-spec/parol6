@@ -13,7 +13,7 @@ extern bool normalMoveActive;
 #define NUM_CHARS 128
 extern char receivedChars[NUM_CHARS];
 extern char tempChars[NUM_CHARS];
-extern float receivedAngles[6];
+extern long receivedSteps[6];
 extern boolean newData;
 
 // 宣告共用的輔助函式

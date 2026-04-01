@@ -11,7 +11,7 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "N_PTP",
+        "type": "PTP",
         "speed": 50.0,
         "active": true,
         "note": ""
@@ -113,7 +113,7 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "N_PTP",
+        "type": "PTP",
         "speed": 50.0,
         "active": true,
         "note": ""
@@ -183,6 +183,23 @@
         "delay": 0.0,
         "type": "PTP",
         "speed": 80.0,
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 12",
+        "joints": [
+            -112.45,
+            -12.452173933879157,
+            70.0,
+            -38.61,
+            -41.48,
+            -20.3
+        ],
+        "aux_joints": null,
+        "delay": 0.0,
+        "type": "PTP",
+        "speed": 50.0,
         "active": true,
         "note": ""
     }

@@ -57,7 +57,7 @@ bool normalMoveActive = false;
 
 char receivedChars[NUM_CHARS];
 char tempChars[NUM_CHARS];
-float receivedAngles[6] = {0.0};
+long receivedSteps[6] = {0};
 
 BufPoint ringBuf[BUF_SIZE];
 byte bufHead = 0;
@@ -112,9 +112,7 @@ void updateRingBuffer() {
                 long idealDelta = abs(target - lastBufTarget[i]); 
 
                 if (idealDelta > 0) {
-                    // 刪掉原本那行，改成這行！
-                    unsigned long mobaSpeed = (idealDelta * 10000UL) / (interval / 1000UL);
-                    
+                    unsigned long mobaSpeed = (idealDelta * 10000UL) / (interval / 1000UL);                  
                     if (mobaSpeed > 65535) mobaSpeed = 65535;
                     
                     // 破除最後一刀龜速詛咒的優雅解法：提高保底速度
@@ -124,10 +122,7 @@ void updateRingBuffer() {
                     steppers[i]->setRampLen(0); 
                 } 
                 
-                // 勇敢地把目標寫進去，MobaTools 會在背景自己滑順地跑完
                 steppers[i]->writeSteps(target);
-                
-                // 更新理論座標
                 lastBufTarget[i] = target;
             }
 
@@ -230,7 +225,7 @@ void setup() {
         steppers[i]->setSpeedSteps(JOINTS[i].maxSpeedSteps10);
         steppers[i]->setRampLen(JOINTS[i].rampSteps); 
     }
-    // 🌟 新增：過河拆橋！釋放 SoftwareSerial 佔用的硬體中斷，把 CPU 100% 還給馬達！
+    // 新增：過河拆橋！釋放 SoftwareSerial 佔用的硬體中斷，把 CPU 100% 還給馬達！
     serial_J1.end();
     serial_J3.end();
     serial_J4.end();

@@ -4,6 +4,10 @@ import time
 import threading
 from PyQt6.QtCore import QObject, pyqtSignal
 
+GEAR_RATIOS = [6.4, 20.0, 18.1, 4.0, 4.0, 10.0]
+MICROSTEPS = 8 
+STEPS_PER_DEG = [(200.0 * MICROSTEPS * gr) / 360.0 for gr in GEAR_RATIOS]
+
 class SerialManager(QObject):
     log_signal = pyqtSignal(str)
     connection_state_signal = pyqtSignal(bool) 
@@ -81,17 +85,31 @@ class SerialManager(QObject):
             self.log_signal.emit(f"Send Command Error: {e}")
 
     def send_joints(self, joints, speed_factor=None, move_mode=0):
-        """ 發送指令給 Arduino (支援第 8 參數：運動模式) """
+        """ 發送指令給 Arduino (全面升級為整數步數通訊) """
         if not self.is_connected or not self.ser: return
         self.ok_event.clear()
         self.motion_done_event.clear()
         
         try:
-            data_str = ",".join([f"{angle:.2f}" for angle in joints])
+            steps = []
+            for i in range(6):
+                if joints[i] == 999.0:
+                    steps.append(999999) # 用 999999 代表特殊忽略訊號
+                else:
+                    # 核心：直接在這裡算好步數，並強制轉為整數
+                    steps.append(int(joints[i] * STEPS_PER_DEG[i]))
+                    
+            data_str = ",".join([str(s) for s in steps])
             
             if speed_factor is not None:
-                # 提高到 3 位小數以確保 模式 1的 interval_sec 精度
-                packet = f"<{data_str},{speed_factor:.3f},{move_mode}>\n"
+                if move_mode == 1:
+                    # 在切片模式下，speed_factor 其實是 interval (秒)，直接換算成微秒(整數)
+                    param7 = str(int(speed_factor * 1000000))
+                else:
+                    # 在 PTP 或 Jog 模式下，它是速度倍率 (浮點數)
+                    param7 = f"{speed_factor:.3f}"
+                    
+                packet = f"<{data_str},{param7},{move_mode}>\n"
             else:
                 packet = f"<{data_str},1.000,0>\n"
                 
