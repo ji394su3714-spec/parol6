@@ -9,17 +9,17 @@ STL_FILES = [
 
 URDF_PARAMS = [
     # Joint 1 (Base -> Link1)
-    {'xyz': [0, 0, 0.06], 'rpy': [0 , 0, -3.1416], 'axis': 'z', 'invert': True},
+    {'xyz': [0, 0, 0.0603], 'rpy': [0 , 0, -3.1416], 'axis': 'z', 'invert': True},
     # Joint 2 (Link1 -> Link2)
-    {'xyz': [0, 0.0234, 0.0505], 'rpy': [-1.5708, 0, 1.5708], 'axis': 'z'},
+    {'xyz': [0.0002, 0.0234, 0.0505], 'rpy': [-1.5708, 0, 1.5708], 'axis': 'z'},
     # Joint 3 (Link2 -> Link3)
     {'xyz': [0.0002, -0.18, 0], 'rpy': [-3.1416, 0, 0], 'axis': 'z', 'invert': True},
     # Joint 4 (Link3 -> Link4)
-    {'xyz': [0.071, 0.0435, 0], 'rpy': [3.1416, -1.5708, 3.1416], 'axis': 'z'},
+    {'xyz': [0.0714, 0.0435, 0], 'rpy': [3.1416, -1.5708, 3.1416], 'axis': 'z'},
     # Joint 5 (Link4 -> Link5)
     {'xyz': [0, 0, -0.1053], 'rpy': [0, -1.5708, 3.1416], 'axis': 'z', 'invert': True},
     # Joint 6 (Link5 -> Link6)
-    {'xyz': [-0.0741, 0, 0], 'rpy': [3.1416, 1.5708, 0], 'axis': 'z'}
+    {'xyz': [-0.0745, 0, 0], 'rpy': [3.1416, 1.5708, 0], 'axis': 'z'}
 ]
 
 IK_POS_TOLERANCE = 0.1  # 設定為 0.1 mm 

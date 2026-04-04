@@ -112,7 +112,7 @@ def inverse_kinematics(target_matrix, seed_joints, max_retries=1):
     target_rot = target_matrix[:3, :3]
     
     max_iter = 50       
-    tolerance = 1e-3
+    tolerance = 1e-4
     lambda_val = 0.01   
     lambda_sq_eye = (lambda_val**2) * np.eye(6) # 提前算出常數矩陣
 

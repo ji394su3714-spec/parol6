@@ -2,13 +2,13 @@ import json
 import time
 import numpy as np
 import math
+from scipy.signal import savgol_filter
 from PyQt6.QtCore import QObject, QThread, pyqtSignal, QTimer
 from PyQt6.QtWidgets import QFileDialog
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
 
 import kinematics
-from scipy.signal import savgol_filter
 from motion_profile import SCurveProfile 
 
 # 關節專屬極限 (J1~J6)
@@ -26,8 +26,8 @@ MAX_ROT_ACCEL = 180.0     # TCP 旋轉加速度 (度/秒^2)
 MAX_ROT_JERK = MAX_ROT_ACCEL * 10.0     # TCP 旋轉加加速度 (度/秒^3)
 
 # 晶片總體算力防護網參數
-MAX_TOTAL_PULSE_SLICE = 5000.0   # 切片模式極限 (CPU 負載重，邊跑邊解碼)
-MAX_TOTAL_PULSE_NATIVE = 80000.0  # 原生模式極限 (CPU 負載極輕，專注發射脈衝)
+MAX_TOTAL_PULSE_SLICE = 5000   # 切片模式極限 (CPU 負載重，邊跑邊解碼)
+MAX_TOTAL_PULSE_NATIVE = 65000  # 原生模式極限 (CPU 負載極輕，專注發射脈衝)
 
 # N_PTP 預設起步時間
 N_PTP_T_ACC = 0.2
@@ -37,7 +37,7 @@ GEAR_RATIOS = np.array([6.4, 20.0, 18.1, 4.0, 4.0, 10.0])
 STEPS_PER_DEG = (1600.0 * GEAR_RATIOS) / 360.0
 
 # 對應 C++ JOINTS 陣列裡 mode=2 的專屬硬體極速 (max_spd)
-HW_MAX_STEPS = np.array([50000, 50000, 50000, 50000, 50000, 50000])
+HW_MAX_STEPS = np.array([65000, 65000, 65000, 65000, 65000, 65000])
 
 # 更新與通訊函數
 def update_advanced_settings(lin_spd, lin_acc, rot_spd, rot_acc, slice_pulse, native_pulse, hw_max, t_acc):
@@ -176,7 +176,7 @@ class CartesianExecutor(QThread):
     update_signal = pyqtSignal(list)
     finished_signal = pyqtSignal()
     error_signal = pyqtSignal(str)
-    log_signal = pyqtSignal(str) 
+    log_signal = pyqtSignal(str)
 
     def __init__(self, start_joints, target_joints, tcp_offset_mat, serial_ref=None, speed_factor=1.0, move_type="LIN", aux_joints=None):
         super().__init__()
@@ -236,7 +236,7 @@ class CartesianExecutor(QThread):
                 theta_e = math.atan2(np.dot(pos_end - C, y_axis), np.dot(pos_end - C, x_axis))
                 if theta_e < 0: theta_e += 2 * math.pi
                 
-                dist_mm = r * theta_e * 1000.0 
+                dist_mm = r * theta_e * 1000.0
             else:
                 print("[Warning] Points are collinear. Falling back to LIN.")
                 dist_mm = np.linalg.norm(pos_end - pos_start) * 1000.0
@@ -265,7 +265,7 @@ class CartesianExecutor(QThread):
         base_profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
 
         # 核心進化：Dry-Run 軌跡預掃描 (找出空間隱藏的超速奇異點)
-        sample_steps = max(100, int(dist_main * 1.5)) 
+        sample_steps = max(100, int(dist_main * 1.5))
         progress_samples = np.linspace(0, 1.0, sample_steps)
         delta_progress = 1.0 / (sample_steps - 1)
         
@@ -304,7 +304,7 @@ class CartesianExecutor(QThread):
         else:
             trajectory_joints_smooth = trajectory_joints
 
-        # 用「過濾後的平滑軌跡」來算微積分，速度與加速度瞬間變得極度乾淨！
+        # 用「過濾後的平滑軌跡」來算微積分
         d_joint_dp = np.gradient(trajectory_joints_smooth, delta_progress, axis=0)
         max_d_joint_dp = np.max(np.abs(d_joint_dp), axis=0)
         
@@ -323,7 +323,7 @@ class CartesianExecutor(QThread):
         for i in range(6):
             # --- 速度把關 ---
             peak_joint_v = max_d_joint_dp[i] * peak_prog_v
-            allowed_v = min(MAX_JOINT_SPEEDS[i] * self.speed_factor, 
+            allowed_v = min(MAX_JOINT_SPEEDS[i] * self.speed_factor,
                             (HW_MAX_STEPS[i] * self.speed_factor) / STEPS_PER_DEG[i])
             
             if peak_joint_v > allowed_v:
@@ -347,34 +347,21 @@ class CartesianExecutor(QThread):
             target_speed /= overspeed_ratio
             target_accel /= (overspeed_ratio ** 2)
             target_jerk /= (overspeed_ratio ** 3)
-            # 統一 Log 格式：速度保留比例
             self.log_signal.emit(f"[{self.move_type}] Overload ({peak_pulse_freq:.0f}Hz)！Scale down to {(1.0/overspeed_ratio):.2f}X")
             
         final_profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
 
         # ========================================================
-        # 階段一：軌跡全快取預算 (降採樣插值法，算力耗損狂降 80%!)
+        # 🌟 階段一：軌跡全快取預算
         # ========================================================
         interval = 0.015  
-        total_time = final_profile.T_total
-        
-        # 1. 產生高密度時間軸 (給 Arduino 用的 0.015s 節奏)
-        t_all = np.arange(0, total_time + interval, interval)
-        if len(t_all) == 0 or t_all[-1] < total_time:
-            t_all = np.append(t_all, total_time)
-            
-        # 2. 產生低密度「關鍵影格」時間軸 (給 Python 算 IK 用的，每 0.06s 算一次)
-        keyframe_interval = 0.06
-        t_keyframes = np.arange(0, total_time + keyframe_interval, keyframe_interval)
-        if t_keyframes[-1] < total_time:
-            t_keyframes = np.append(t_keyframes, total_time)
-            
-        ik_keyframes = []
+        t = 0.0
         current_seed = self.start_joints.copy()
         
-        # 只有這裡在做沉重的 IK 運算 (次數只剩原本的 1/4)
-        for t_kf in t_keyframes:
-            progress = final_profile.get_progress(t_kf) 
+        exact_trajectory = []
+
+        while t <= final_profile.T_total:
+            progress = final_profile.get_progress(t)
             
             if is_circ:
                 theta = progress * theta_e
@@ -391,20 +378,20 @@ class CartesianExecutor(QThread):
             
             ik_result, _ = kinematics.inverse_kinematics(T_flange_target, current_seed)
             current_seed = ik_result
-            ik_keyframes.append(ik_result)
             
-        ik_keyframes = np.array(ik_keyframes)
-        
-        # 3. 利用關節空間線性插值，瞬間生成高密度切片！(0.001秒內完成)
-        exact_trajectory = []
-        for i in range(len(t_all)):
-            # 將 6 個關節角度，利用 numpy 高速插值推算出來
-            interp_joints = [np.interp(t_all[i], t_keyframes, ik_keyframes[:, j]) for j in range(6)]
-            exact_trajectory.append(interp_joints)
+            exact_trajectory.append(ik_result)
+            t += interval
+
+        # 🛡️ 救命神藥：對最終要發射的實體軌跡，進行「全域平滑燙平」！
+        # 徹底消除 IK 放寬容忍度帶來的「數值高頻雜訊」，讓馬達吃到的指令如絲綢般滑順
+        exact_trajectory = np.array(exact_trajectory)
+        window_len = 15 if len(exact_trajectory) >= 15 else (len(exact_trajectory) - (1 if len(exact_trajectory)%2==0 else 0))
+        if window_len >= 5:
+            #from scipy.signal import savgol_filter
+            exact_trajectory = savgol_filter(exact_trajectory, window_len, 3, axis=0)
 
         # ========================================================
         # 階段二：無腦極速發射 (Zero-Compute Execution)
-        # 這裡絕對不允許有任何矩陣或 IK 運算，專心對付 Windows 的 USB 延遲！
         # ========================================================
         counter = 0
         gui_skip_frames = 10
@@ -432,7 +419,6 @@ class CartesianExecutor(QThread):
         
         if self.serial_ref and self.serial_ref.is_connected:
             if max_err > 0.01:
-                # 依然保持 0.005 秒的定桿錨點
                 self.serial_ref.send_joints(list(self.target_joints), 0.005, move_mode=1)
                 self.serial_ref.wait_for_ok(timeout=3.0)
                 
@@ -729,7 +715,7 @@ class PathManager(QObject):
                 aux_joints=aux_joints 
             )
             self.worker.error_signal.connect(self._on_worker_error)
-            self.worker.log_signal.connect(self.log_signal.emit)
+            #self.worker.log_signal.connect(self.log_signal.emit)
             
         elif move_type in ["N_PTP"]:
             self.worker = NativePTPExecutor(
@@ -739,7 +725,7 @@ class PathManager(QObject):
                 speed_factor=speed_factor
             )
             self.worker.error_signal.connect(self._on_worker_error)
-            self.worker.log_signal.connect(self.log_signal.emit)
+            #self.worker.log_signal.connect(self.log_signal.emit)
             
         else: # 舊版 PTP (切片版 S-Curve)
             self.worker = PTPExecutor(
@@ -750,6 +736,7 @@ class PathManager(QObject):
             )
             
         self.worker.update_signal.connect(self.joint_update_signal.emit)
+
         self.worker.log_signal.connect(self.log_signal.emit)
         
         delay = target_data.get('delay', 0.0)

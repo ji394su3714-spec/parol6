@@ -1,7 +1,7 @@
+import threading  # 確保有匯入
 import serial
 import serial.tools.list_ports
 import time
-import threading
 from PyQt6.QtCore import QObject, pyqtSignal
 
 GEAR_RATIOS = [6.4, 20.0, 18.1, 4.0, 4.0, 10.0]
@@ -18,6 +18,9 @@ class SerialManager(QObject):
         self.is_connected = False
         self.last_sent_time = 0
         self.send_interval = 0.05 
+        
+        # 🔐 新增：這是防止執行緒打架的終極武器
+        self._tx_lock = threading.Lock() 
         
         self.read_thread = None
         self.running = False
@@ -73,20 +76,31 @@ class SerialManager(QObject):
         self.connection_state_signal.emit(False)
         self.log_signal.emit("Disconnected.")
 
-    # 專門用來發送特殊指令 (例如急停 <STOP>) 的函式
+    # ==========================================
+    # 🔐 加上保護鎖的發送區塊
+    # ==========================================
     def send_command(self, cmd_str):
-        if not self.is_connected or not self.ser: return
-        try:
-            # 自動補上換行符號
-            if not cmd_str.endswith('\n'):
-                cmd_str += '\n'
-            self.ser.write(cmd_str.encode('utf-8'))
-        except Exception as e:
-            self.log_signal.emit(f"Send Command Error: {e}")
+        """ 發送特殊指令 (例如急停 <STOP>, 回原點 <HOMING>) """
+        if not self.is_connected or not self.ser: return False
+        
+        # 使用 with 確保同一時間只有一個執行緒可以發送指令
+        with self._tx_lock:
+            try:
+                # 自動補上換行符號
+                if not cmd_str.endswith('\n'):
+                    cmd_str += '\n'
+                self.ser.write(cmd_str.encode('utf-8'))
+                self.ser.flush() # 強制清空緩衝區，立刻送出
+                return True
+            except Exception as e:
+                self.log_signal.emit(f"Send Command Error: {e}")
+                return False
 
     def send_joints(self, joints, speed_factor=None, move_mode=0):
-        """ 發送指令給 Arduino (全面升級為整數步數通訊) """
-        if not self.is_connected or not self.ser: return
+        """ 發送步數指令給 Arduino """
+        if not self.is_connected or not self.ser: return False
+        
+        # 事件清理可以放在鎖外面，不影響通訊安全
         self.ok_event.clear()
         self.motion_done_event.clear()
         
@@ -94,29 +108,35 @@ class SerialManager(QObject):
             steps = []
             for i in range(6):
                 if joints[i] == 999.0:
-                    steps.append(999999) # 用 999999 代表特殊忽略訊號
+                    steps.append(999999) # 忽略訊號
                 else:
-                    # 核心：直接在這裡算好步數，並強制轉為整數
-                    steps.append(int(joints[i] * STEPS_PER_DEG[i]))
+                    steps.append(int(round(joints[i] * STEPS_PER_DEG[i])))
                     
             data_str = ",".join([str(s) for s in steps])
             
             if speed_factor is not None:
                 if move_mode == 1:
-                    # 在切片模式下，speed_factor 其實是 interval (秒)，直接換算成微秒(整數)
                     param7 = str(int(speed_factor * 1000000))
                 else:
-                    # 在 PTP 或 Jog 模式下，它是速度倍率 (浮點數)
                     param7 = f"{speed_factor:.3f}"
                     
                 packet = f"<{data_str},{param7},{move_mode}>\n"
             else:
                 packet = f"<{data_str},1.000,0>\n"
                 
-            self.ser.write(packet.encode('utf-8'))
+            # 🔐 關鍵保護：將真正寫入 Serial 的行為鎖起來
+            with self._tx_lock:
+                self.ser.write(packet.encode('utf-8'))
+                self.ser.flush()
+            return True
+                
         except Exception as e:
             self.log_signal.emit(f"Send Error: {e}")
+            return False
 
+    # ==========================================
+    # 接收與等待區塊 (維持原樣)
+    # ==========================================
     def _read_loop(self):
         """ 背景讀取 Arduino 回傳的訊息 """
         while self.running and self.ser and self.ser.is_open:
@@ -146,23 +166,17 @@ class SerialManager(QObject):
                     break
 
     def wait_for_motion_complete(self, timeout=10.0):
-        """ 改良版：分段式等待，直到收到 "Done" 或發生異常 """
-        if not self.is_connected:
-            return False
-
+        if not self.is_connected: return False
         start_time = time.time()
         while (time.time() - start_time) < timeout:
             if not self.is_connected or not self.running:
                 self.log_signal.emit("[Warning] Wait aborted (Disconnected or Stopped).")
                 return False
-                
             if self.motion_done_event.wait(0.1):
                 return True 
-                
         self.log_signal.emit("[Warning] Wait Done Timeout!")
         return False
     
     def wait_for_ok(self, timeout=0.5):
-        """等待 Arduino 回傳 OK"""
         if not self.is_connected: return False
         return self.ok_event.wait(timeout)

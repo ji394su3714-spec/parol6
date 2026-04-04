@@ -13,12 +13,12 @@
 
 // 實體變數定義區
 const JointConfig JOINTS[6] = {
-    {54, 55, 38,  2,  LOW,   300, -28,  250, 12000, 50000, 350}, 
-    {60, 61, 56, 12,  HIGH, -600,  50,  500, 17000, 50000, 350}, 
-    {43, 48, 58, 14,  HIGH,  750, -70,  600, 17000, 50000, 350}, 
-    {26, 28, 24, 15,  LOW,   950, -145, 400, 15000, 50000, 350}, 
-    {36, 34, 30, 63,  HIGH,  700, -124, 300, 15000, 50000, 350}, 
-    {59, 57, 40, 64,  LOW,  1200,    2, 400, 20000, 50000, 350}  
+    {54, 55, 38,  2,  LOW,   300, -28,  250, 12000, 65000, 350}, 
+    {60, 61, 56, 12,  HIGH, -600,  51,  500, 17000, 65000, 350}, 
+    {43, 48, 58, 14,  HIGH,  750, -70,  600, 17000, 65000, 350}, 
+    {26, 28, 24, 15,  LOW,   950, -145, 400, 15000, 65000, 350}, 
+    {36, 34, 30, 63,  HIGH,  700, -125, 300, 15000, 65000, 350}, 
+    {59, 57, 40, 64,  LOW,  1200,    2, 400, 20000, 65000, 350}  
 };
 
 const MotorCurrentConfig MOTOR_CURRENTS[6] = {
@@ -50,7 +50,7 @@ MoToStepper stepper_J6(1600, STEPDIR);
 
 MoToStepper* steppers[6] = {&stepper_J1, &stepper_J2, &stepper_J3, &stepper_J4, &stepper_J5, &stepper_J6};
 
-long global_hw_max_steps = 50000;
+long global_hw_max_steps = 65000;
 float global_T_acc = 0.2;
 byte homingState[6] = {0, 0, 0, 0, 0, 0}; 
 bool normalMoveActive = false;
@@ -114,9 +114,7 @@ void updateRingBuffer() {
                 if (idealDelta > 0) {
                     unsigned long mobaSpeed = (idealDelta * 10000UL) / (interval / 1000UL);                  
                     if (mobaSpeed > 65535) mobaSpeed = 65535;
-                    
-                    // 破除最後一刀龜速詛咒的優雅解法：提高保底速度
-                    if (mobaSpeed < 1000) mobaSpeed = 1000; 
+                    if (mobaSpeed < 10) mobaSpeed = 10; 
 
                     steppers[i]->setSpeedSteps(mobaSpeed);
                     steppers[i]->setRampLen(0); 
