@@ -17,12 +17,16 @@ struct MotorCurrentConfig {
     float hold_ratio;
 };
 
-#define R_SENSE_2209 0.11f  
+//#define R_SENSE_2209 0.11f  
 #define R_SENSE_5160 0.075f
 #define R_SENSE_2240 0.075f // 為了滿足函式庫數學運算，必須給 0.075f
-#define Y_CS_PIN 39
-#define E1_CS_PIN 32 // J5 (TMC2240 SPI)
-#define E2_CS_PIN 42 // J6 (TMC2240 SPI)
+
+#define X_CS_PIN  70 // J1
+#define Y_CS_PIN  39 // J2
+#define Z_CS_PIN  74 // J3
+#define E0_CS_PIN 47 // J4
+#define E1_CS_PIN 32 // J5
+#define E2_CS_PIN 42 // J6
 
 // 宣告外部常數陣列
 extern const JointConfig JOINTS[6];

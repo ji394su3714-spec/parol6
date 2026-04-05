@@ -126,3 +126,29 @@ def get_global_style():
         QTextEdit#sys_log QScrollBar::add-line:vertical, QTextEdit#sys_log QScrollBar::sub-line:vertical {{ height: 0px; }}
         QTextEdit#sys_log QScrollBar::add-page:vertical, QTextEdit#sys_log QScrollBar::sub-page:vertical {{ background: none; }}
     """
+
+# Joint Control 區域專用的滑桿樣式
+JOINT_SLIDER_STYLE = """
+    QSlider::groove:horizontal {
+        border: 1px solid #bbb;
+        background: #e0e0e0; /* 軌道底色 */
+        height: 6px;
+        border-radius: 0px; /* 軌道也改為直角 */
+    }
+    QSlider::sub-page:horizontal {
+        background: #e0e0e0; /* 與軌道同色，抹除進度條感 */
+        border: 1px solid #bbb;
+        border-radius: 0px;
+    }
+    QSlider::handle:horizontal {
+        background: #ffffff;
+        border: 1px solid #777;
+        width: 24px; /* 把手寬度 */
+        margin: -10px 0; /* 把手上下凸出軌道，解決被砍頭的問題 */
+        border-radius: 3px; /* 稍微有一點圓角，若要全方正改為 0px */
+    }
+    QSlider::handle:horizontal:hover {
+        background: #f0f0f0;
+        border: 1px solid #333;
+    }
+"""

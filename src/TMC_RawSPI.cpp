@@ -14,26 +14,62 @@ static void writeReg(uint8_t cs, uint8_t addr, uint32_t data) {
 }
 
 void setupTMC2240_RawSPI(uint8_t cs_pin, uint16_t run_mA, float hold_ratio, bool invert_dir) {
-    // 1. 開啟 StealthChop (安靜模式) + 根據參數決定是否反轉方向
-    uint32_t gconf_val = invert_dir ? 0x0000000A : 0x00000002;
+    // ==========================================
+    // 1. GCONF 核心設定 (最關鍵的絲滑優化！)
+    // ==========================================
+    // Bit 1 (0x02) = en_pwm_mode (開啟 StealthChop 靜音模式)
+    // Bit 2 (0x04) = multistep_filt (開啟硬體脈衝濾波，專治 Arduino 軟體發波的微小抖動！)
+    // Bit 3 (0x08) = shaft (方向反轉)
+    uint32_t gconf_val = 0x02 | 0x04;  // 預設 0x06 (靜音 + 濾波)
+    if (invert_dir) gconf_val |= 0x08; // 若反轉則變成 0x0E
     writeReg(cs_pin, 0x00, gconf_val); 
     
-    // 2. 解鎖 3A 量程
+    // ==========================================
+    // 2. 解鎖 3A 量程 (啟用內部高精度取樣電阻)
+    // ==========================================
     writeReg(cs_pin, 0x0A, 0x00000002); 
     
-    // 3. 電流換算 (基於 2121mA RMS 極限)
+    // ==========================================
+    // 3. 智慧電流設定 (IHOLD_IRUN)
+    // ==========================================
     uint8_t irun = (run_mA * 31) / 2121; 
     if (irun > 31) irun = 31;
     if (irun < 1) irun = 1;
     
     uint8_t ihold = (uint8_t)(irun * hold_ratio); 
-    uint8_t iholddelay = 6; 
+    
+    // 將煞車延遲從 1 微微調高到 2 (大約 0.24 秒)。
+    // 這樣可以保留俐落的停機，但消除瞬間斷電的「扣」一聲突兀感。
+    uint8_t iholddelay = 1; // 0: 0.06s, 1: 0.24s, 2: 0.5s, 3: 0.9s
     
     uint32_t ihold_irun_val = ((uint32_t)iholddelay << 16) | ((uint32_t)irun << 8) | (uint32_t)ihold;
     writeReg(cs_pin, 0x10, ihold_irun_val);
     
-    // 4. TOFF=5, MRES=5 (8微步)
+    // ==========================================
+    // 4. CHOPCONF 設定 (256 微步硬體插值)
+    // ==========================================
+    // 0x15410155 解碼：
+    // Bit 28 = 1 (開啟 INTPOL，將我們的 8 微步硬體補幀到 256 微步的平滑度)
+    // Bit 27..24 = 5 (MRES 設定為 8 微步)
+    // Bit 3..0 = 5 (TOFF 啟動時間)
     writeReg(cs_pin, 0x6C, 0x15410155);
+
+    // ==========================================
+    // 5. PWMCONF 設定 (StealthChop 智動調諧)
+    // ==========================================
+    // 0xC40C001E 解碼：
+    // 強制開啟 pwm_autoscale 與 pwm_autograd (Bits 18, 19)。
+    // 讓 TMC2240 自動偵測馬達線圈的電感量，把電流波形燙到最平！
+    writeReg(cs_pin, 0x70, 0xC40C001E);
+
+    // ==========================================
+    // 6. 新增：TPOWERDOWN (待機降流延遲)
+    // ==========================================
+    // 設定馬達在「最後一個脈衝」結束後，要發呆多久才允許降到 ihold。
+    // 算法：延遲時間 = TPOWERDOWN * 0.0218 秒
+    // 我們設定 0x2E (十進位 46)，46 * 0.0218 = 約 1.0 秒。
+    // 這保證了手臂在 15ms 切片執行期間，絕對不可能偷偷降電流！
+    writeReg(cs_pin, 0x11, 0x0000002E);
 }
 
 float readTMC2240Temp(uint8_t cs_pin) {

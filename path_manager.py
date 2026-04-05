@@ -14,19 +14,19 @@ from motion_profile import SCurveProfile
 # 關節專屬極限 (J1~J6)
 MAX_JOINT_SPEEDS = np.array([158.20, 50.63, 55.94, 253.13, 253.13, 101.25])     # 各軸最高轉速 (度/秒)
 MAX_JOINT_ACCELS = np.array([527.34, 168.75, 186.46, 843.75, 843.75, 337.50])   # 各軸最高加速度 (度/秒^2)
-MAX_JOINT_JERKS = MAX_JOINT_ACCELS * 10.0                               # 各軸最高加加速度 (Jerk, 度/秒^3)
+MAX_JOINT_JERKS = MAX_JOINT_ACCELS * 5.0                               # 各軸最高加加速度 (Jerk, 度/秒^3)
 
 # 直角空間極限 (LIN/CIRC 用)
 MAX_LIN_SPEED = 100.0    # TCP 直線極速 (mm/秒) 
-MAX_LIN_ACCEL = 300.0    # TCP 直線加速度 (mm/秒^2)
-MAX_LIN_JERK = MAX_LIN_ACCEL * 10.0    # TCP 直線加加速度 (mm/秒^3)
+MAX_LIN_ACCEL = 200.0    # TCP 直線加速度 (mm/秒^2)
+MAX_LIN_JERK = MAX_LIN_ACCEL * 5.0    # TCP 直線加加速度 (mm/秒^3)
 
 MAX_ROT_SPEED = 90.0     # TCP 旋轉極速 (度/秒)
 MAX_ROT_ACCEL = 180.0     # TCP 旋轉加速度 (度/秒^2)
-MAX_ROT_JERK = MAX_ROT_ACCEL * 10.0     # TCP 旋轉加加速度 (度/秒^3)
+MAX_ROT_JERK = MAX_ROT_ACCEL * 5.0     # TCP 旋轉加加速度 (度/秒^3)
 
 # 晶片總體算力防護網參數
-MAX_TOTAL_PULSE_SLICE = 5000   # 切片模式極限 (CPU 負載重，邊跑邊解碼)
+MAX_TOTAL_PULSE_SLICE = 10000   # 切片模式極限 (CPU 負載重，邊跑邊解碼)
 MAX_TOTAL_PULSE_NATIVE = 65000  # 原生模式極限 (CPU 負載極輕，專注發射脈衝)
 
 # N_PTP 預設起步時間
@@ -82,6 +82,7 @@ class PTPExecutor(QThread):
         self.end_joints = np.array(end_joints)
         self.serial_ref = serial_ref
         self.speed_factor = speed_factor
+        self._is_running = True # 🌟 新增這行：執行狀態旗標
 
     def run(self):
         diffs = np.abs(self.end_joints - self.start_joints)
@@ -140,9 +141,11 @@ class PTPExecutor(QThread):
         interval = 0.015
         t = 0.0
         counter = 0
-        gui_skip_frames = 5
+        gui_skip_frames = 10
  
         while t <= bottleneck_profile.T_total:
+            if not self._is_running: return # 🌟 改成 return，看到紅旗直接下車！
+
             progress = bottleneck_profile.get_progress(t)
             current = self.start_joints + (self.end_joints - self.start_joints) * progress
             
@@ -187,6 +190,7 @@ class CartesianExecutor(QThread):
         self.serial_ref = serial_ref
         self.move_type = move_type
         self.aux_joints = np.array(aux_joints) if aux_joints is not None else None
+        self._is_running = True # 🌟 新增這行：執行狀態旗標
 
     def run(self):
         try:
@@ -361,6 +365,7 @@ class CartesianExecutor(QThread):
         exact_trajectory = []
 
         while t <= final_profile.T_total:
+            if not self._is_running: return # 看到紅旗，立刻安全退出
             progress = final_profile.get_progress(t)
             
             if is_circ:
@@ -382,14 +387,6 @@ class CartesianExecutor(QThread):
             exact_trajectory.append(ik_result)
             t += interval
 
-        # 🛡️ 救命神藥：對最終要發射的實體軌跡，進行「全域平滑燙平」！
-        # 徹底消除 IK 放寬容忍度帶來的「數值高頻雜訊」，讓馬達吃到的指令如絲綢般滑順
-        exact_trajectory = np.array(exact_trajectory)
-        window_len = 15 if len(exact_trajectory) >= 15 else (len(exact_trajectory) - (1 if len(exact_trajectory)%2==0 else 0))
-        if window_len >= 5:
-            #from scipy.signal import savgol_filter
-            exact_trajectory = savgol_filter(exact_trajectory, window_len, 3, axis=0)
-
         # ========================================================
         # 階段二：無腦極速發射 (Zero-Compute Execution)
         # ========================================================
@@ -398,6 +395,8 @@ class CartesianExecutor(QThread):
         self.update_signal.emit(list(self.start_joints))
 
         for ik_joints in exact_trajectory:
+            if not self._is_running: return # 🌟 改成 return，看到紅旗直接下車！
+
             # 更新 3D 畫面
             if counter % gui_skip_frames == 0:
                 self.update_signal.emit(list(ik_joints))
@@ -440,6 +439,7 @@ class NativePTPExecutor(QThread):
         self.target_joints = np.array(target_joints)
         self.serial_ref = serial_ref
         self.speed_factor = speed_factor
+        self._is_running = True # 🌟 新增這行：執行狀態旗標
 
     def run(self):
         if self.serial_ref and self.serial_ref.is_connected:
@@ -484,6 +484,8 @@ class NativePTPExecutor(QThread):
             if steps < 1: steps = 1
             
             for i in range(steps):
+                if not self._is_running: return # 🌟 改成 return，看到紅旗直接下車！
+
                 progress = (i + 1) / steps
                 current_j = self.start_joints + (self.target_joints - self.start_joints) * progress
                 self.update_signal.emit(list(current_j))
@@ -516,6 +518,8 @@ class PathManager(QObject):
         self.is_looping = False
         self.global_speed = 1.0 
         self.current_tcp_offset = np.eye(4)
+        # 🌟 1. 加入這行：防止幽靈計時器作祟的總開關
+        self._is_path_active = False
         
         # 暫存區：用來裝載 CIRC 的中繼點
         self.temp_aux_joints = None 
@@ -678,12 +682,18 @@ class PathManager(QObject):
         self.is_looping = loop
         self.execution_queue = active_points
         self.current_tcp_offset = tcp_offset if tcp_offset is not None else np.eye(4)
+
+        self._is_path_active = True # 🌟 2. 啟動路徑時，打開總開關
         
         self.log_signal.emit(f"([START]) Executing {len(active_points)} points...")
         self.path_index = 0
         self._execute_next(current_joints_start)
 
     def _execute_next(self, current_joints):
+        # 🌟 3. 防護網：如果急停被按下(總開關關閉)，直接拒絕派發下一個點！
+        if getattr(self, '_is_path_active', False) is False:
+            return
+        
         if self.path_index >= len(self.execution_queue):
             if self.is_looping:
                 self.log_signal.emit(">> Looping...")
@@ -759,17 +769,31 @@ class PathManager(QObject):
         self.stop_path()
 
     def stop_path(self):
+        # 1. 關閉總開關，秒殺所有排隊中的幽靈計時器
+        self._is_path_active = False 
+
+        # 2. 舉起紅旗！先讓背景執行緒知道該下車了
+        if self.worker:
+            self.worker._is_running = False 
+
+        # 3. 發送硬體急停
         if self.serial_manager and self.serial_manager.is_connected:
-            self.serial_manager.send_command("STOP")
+            self.serial_manager.send_command("<STOP>")
             
+        # 4. 強制喚醒執行緒 (這步非常重要，保證它不會卡在 sleep)
+        if self.serial_manager:
+            self.serial_manager.ok_event.set()
+            self.serial_manager.motion_done_event.set()
+            
+        # 5. 🌟 PyQt6 終極防護：把 wait(1000) 的時間限制拿掉！
+        # 強迫 GUI 等待執行緒「真正死亡」。
+        # 因為我們上面已經喚醒它了，這個 wait() 在現實中只會花費 0.001 秒，絕對不會卡住 GUI。
         if self.worker and self.worker.isRunning():
-            self.worker.terminate()
-            self.worker.wait()  
-            self.worker = None
-            self.is_looping = False
-            self.log_signal.emit("([STOP]) Execution Halted.")
-        else:
-            self.log_signal.emit("[Info] No path running.")
+            self.worker.wait() # <--- 關鍵修改：不准加任何數字！
             
+        # 等它徹底死亡後，PyQt6 才允許我們安全地回收物件
+        self.worker = None
+        self.is_looping = False
+        self.log_signal.emit("([STOP]) Execution Halted.")
     def set_speed(self, value_0_to_100):
         self.global_speed = max(0.1, value_0_to_100 / 50.0)

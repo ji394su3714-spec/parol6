@@ -4,8 +4,7 @@ from PyQt6.QtWidgets import (QListWidget, QMenu, QPushButton, QFrame, QHBoxLayou
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
 from PyQt6.QtGui import QRegion
 import qtawesome as qta
-
-# 已經幫你刪除沒用到的 from ui import styles
+from ui.styles import JOINT_SLIDER_STYLE
 
 def create_repeat_btn(text, style_class, width, height, delay=200, interval=50):
     """按鈕工廠：快速生成支援連發的按鈕"""
@@ -123,32 +122,8 @@ class JointControlRow(QWidget):
         self.slider.setRange(int(min_val * 100), int(max_val * 100))
         self.slider.setFixedHeight(28)
         self.slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.slider.setStyleSheet(JOINT_SLIDER_STYLE)
 
-# 👇 替換為這段：俐落方正把手 + 無進度條軌道
-        self.slider.setStyleSheet("""
-            QSlider::groove:horizontal {
-                border: 1px solid #bbb;
-                background: #e0e0e0; /* 軌道底色 */
-                height: 6px;
-                border-radius: 0px; /* 軌道也改為直角 */
-            }
-            QSlider::sub-page:horizontal {
-                background: #e0e0e0; /* 與軌道同色，抹除進度條感 */
-                border: 1px solid #bbb;
-                border-radius: 0px;
-            }
-            QSlider::handle:horizontal {
-                background: #ffffff;
-                border: 1px solid #777;
-                width: 24px; /* 把手寬度 */
-                margin: -10px 0; /* 把手上下凸出軌道 (計算後總高度為 18px) */
-                border-radius: 3px; /* 關鍵：強制把手為正方形 */
-            }
-            QSlider::handle:horizontal:hover {
-                background: #f0f0f0;
-                border: 1px solid #333;
-            }
-        """)
         self.btn_plus = create_repeat_btn("▶", "JointBtn", 36, 36)
 
         self._layout.addWidget(self.lbl)

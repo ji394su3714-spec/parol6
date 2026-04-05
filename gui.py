@@ -239,15 +239,9 @@ class RobotGUI(QMainWindow):
             self.combo_ports.setEnabled(True)
 
     def emergency_stop(self):
+        # 把停止的所有邏輯 (包含軟體執行緒與硬體通訊) 都交給 PathManager 處理
         self.path_manager.stop_path()
-        if self.serial_manager.is_connected and hasattr(self.serial_manager, 'ser'):
-            try:
-                self.serial_manager.ser.write(b"<STOP>\n")
-                self.log(">> [EMERGENCY] <STOP> sent to Hardware!")
-            except Exception as e:
-                self.log(f"Error sending STOP: {e}")
-        else:
-            self.log(">> STOP pressed (Software only, Hardware not connected)")
+        self.log(">> STOP button pressed.")
 
     def _setup_run_buttons(self, parent_layout):
         run_container = QWidget()
@@ -439,7 +433,7 @@ class RobotGUI(QMainWindow):
 
         btn_ok = QPushButton("OK")
         btn_ok.setFixedHeight(35)
-        btn_ok.setStyleSheet(styles.BTN_TOOL_STYLE) 
+        btn_ok.setStyleSheet("QPushButton { background-color: #34495e; color: white; border-radius: 4px; font-weight: bold; font-size: 16px; border: none; } QPushButton:hover { background-color: #4e6d8d; }")
         btn_ok.clicked.connect(dialog.accept)
         layout.addWidget(btn_ok)
 

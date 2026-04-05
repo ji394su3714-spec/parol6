@@ -11,7 +11,7 @@
         ],
         "delay": 0.0,
         "type": "PTP",
-        "speed": 100.0,
+        "speed": 50.0,
         "active": true,
         "note": ""
     },
@@ -91,7 +91,7 @@
         ],
         "delay": 0.0,
         "type": "PTP",
-        "speed": 100.0,
+        "speed": 50.0,
         "active": true,
         "note": ""
     },
@@ -155,7 +155,7 @@
         ],
         "delay": 0.0,
         "type": "LIN",
-        "speed": 50.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -171,7 +171,7 @@
         ],
         "delay": 0.0,
         "type": "LIN",
-        "speed": 50.0,
+        "speed": 100.0,
         "active": true,
         "note": ""
     },
@@ -203,7 +203,7 @@
         ],
         "delay": 0.0,
         "type": "PTP",
-        "speed": 100.0,
+        "speed": 80.0,
         "active": true,
         "note": ""
     },

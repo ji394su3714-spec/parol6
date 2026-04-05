@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include <SPI.h>
-#include <SoftwareSerial.h>
+//#include <SoftwareSerial.h>
 #include <TMCStepper.h>
 #include <MobaTools.h>
 
@@ -22,24 +22,24 @@ const JointConfig JOINTS[6] = {
 };
 
 const MotorCurrentConfig MOTOR_CURRENTS[6] = {
-    {1100, 0.25f}, //J1
+    {1100, 0.5f}, //J1
     {1100, 0.75f}, //J2
-    {900,  0.75f}, //J3
-    {900,  0.25f}, //J4
-    {900,  0.25f}, //J5
-    {750,  0.25f}  //J6
+    {1100, 0.75f}, //J3
+    {1000, 0.5f}, //J4
+    {1000, 0.5f}, //J5
+    {850,  0.5f}  //J6
 };
 
 const float GEAR_RATIOS[6] = {6.4, 20.0, 18.1, 4.0, 4.0, 10.0};
 
-SoftwareSerial serial_J1(71, 72);
-SoftwareSerial serial_J3(78, 79);
-SoftwareSerial serial_J4(76, 77);
+//SoftwareSerial serial_J1(71, 72);
+//SoftwareSerial serial_J3(78, 79);
+//SoftwareSerial serial_J4(76, 77);
 
-TMC2209Stepper driver_J1(&serial_J1, R_SENSE_2209, 0);
+//TMC2209Stepper driver_J1(&serial_J1, R_SENSE_2209, 0);
 TMC5160Stepper driver_J2(Y_CS_PIN, R_SENSE_5160);       
-TMC2209Stepper driver_J3(&serial_J3, R_SENSE_2209, 0);
-TMC2209Stepper driver_J4(&serial_J4, R_SENSE_2209, 0);
+//TMC2209Stepper driver_J3(&serial_J3, R_SENSE_2209, 0);
+//TMC2209Stepper driver_J4(&serial_J4, R_SENSE_2209, 0);
 
 MoToStepper stepper_J1(1600, STEPDIR);
 MoToStepper stepper_J2(1600, STEPDIR);
@@ -94,7 +94,7 @@ void updateRingBuffer() {
             isBufPlaying = true;
         }
 
-        // 2. 絕對時鐘推進 (嚴格遵守 Python 給的 0.02s 切片節奏)
+        // 2. 絕對時鐘推進 (嚴格遵守 Python 給的 0.015s 切片節奏)
         if (nowUs - lastPointTimeUs >= currentPointIntervalUs) {
             
             BufPoint pt = ringBuf[bufTail];
@@ -176,32 +176,36 @@ void setup() {
     Serial.println("\n--- System Booting ---");
 
     pinMode(53, OUTPUT);        digitalWrite(53, HIGH);
+    // 初始化所有 SPI CS 腳位，預設為 HIGH
+    pinMode(X_CS_PIN, OUTPUT);  digitalWrite(X_CS_PIN, HIGH);
     pinMode(Y_CS_PIN, OUTPUT);  digitalWrite(Y_CS_PIN, HIGH);
+    pinMode(Z_CS_PIN, OUTPUT);  digitalWrite(Z_CS_PIN, HIGH);
+    pinMode(E0_CS_PIN, OUTPUT); digitalWrite(E0_CS_PIN, HIGH);
     pinMode(E1_CS_PIN, OUTPUT); digitalWrite(E1_CS_PIN, HIGH);
     pinMode(E2_CS_PIN, OUTPUT); digitalWrite(E2_CS_PIN, HIGH);
 
     SPI.begin();
     pinMode(LED_PIN, OUTPUT);
 
-    serial_J1.begin(115200);
-    serial_J3.begin(115200);
-    serial_J4.begin(115200);
+    //serial_J1.begin(115200);
+    //serial_J3.begin(115200);
+    //serial_J4.begin(115200);
 
-    auto setupTMC2209 = [](TMC2209Stepper &drv, uint16_t mA, float hold_ratio) {
-        drv.begin();
-        drv.pdn_disable(true);     
-        drv.I_scale_analog(false); 
-        drv.toff(5);               
-        drv.rms_current(mA, hold_ratio); 
-        drv.microsteps(8); 
-        drv.en_spreadCycle(false); 
-        drv.pwm_autoscale(true);   
-        drv.TCOOLTHRS(0); 
-    };
+    //auto setupTMC2209 = [](TMC2209Stepper &drv, uint16_t mA, float hold_ratio) {
+    //    drv.begin();
+    //    drv.pdn_disable(true);     
+    //    drv.I_scale_analog(false); 
+    //    drv.toff(5);               
+    //    drv.rms_current(mA, hold_ratio); 
+    //    drv.microsteps(8); 
+    //    drv.en_spreadCycle(false); 
+    //    drv.pwm_autoscale(true);   
+    //    drv.TCOOLTHRS(0); 
+    //};
 
-    setupTMC2209(driver_J1, MOTOR_CURRENTS[0].run_mA, MOTOR_CURRENTS[0].hold_ratio);
-    setupTMC2209(driver_J3, MOTOR_CURRENTS[2].run_mA, MOTOR_CURRENTS[2].hold_ratio);
-    setupTMC2209(driver_J4, MOTOR_CURRENTS[3].run_mA, MOTOR_CURRENTS[3].hold_ratio);
+    //setupTMC2209(driver_J1, MOTOR_CURRENTS[0].run_mA, MOTOR_CURRENTS[0].hold_ratio);
+    //setupTMC2209(driver_J3, MOTOR_CURRENTS[2].run_mA, MOTOR_CURRENTS[2].hold_ratio);
+    //setupTMC2209(driver_J4, MOTOR_CURRENTS[3].run_mA, MOTOR_CURRENTS[3].hold_ratio);
 
     driver_J2.begin();
     driver_J2.toff(5);
@@ -210,6 +214,10 @@ void setup() {
     driver_J2.en_pwm_mode(true);
     driver_J2.pwm_autoscale(true);
 
+    // 其餘五軸設定 (TMC2240 原生 SPI 模組)
+    setupTMC2240_RawSPI(X_CS_PIN,  MOTOR_CURRENTS[0].run_mA, MOTOR_CURRENTS[0].hold_ratio);
+    setupTMC2240_RawSPI(Z_CS_PIN,  MOTOR_CURRENTS[2].run_mA, MOTOR_CURRENTS[2].hold_ratio);
+    setupTMC2240_RawSPI(E0_CS_PIN, MOTOR_CURRENTS[3].run_mA, MOTOR_CURRENTS[3].hold_ratio);
     setupTMC2240_RawSPI(E1_CS_PIN, MOTOR_CURRENTS[4].run_mA, MOTOR_CURRENTS[4].hold_ratio);
     setupTMC2240_RawSPI(E2_CS_PIN, MOTOR_CURRENTS[5].run_mA, MOTOR_CURRENTS[5].hold_ratio);
 
@@ -224,9 +232,9 @@ void setup() {
         steppers[i]->setRampLen(JOINTS[i].rampSteps); 
     }
     // 新增：過河拆橋！釋放 SoftwareSerial 佔用的硬體中斷，把 CPU 100% 還給馬達！
-    serial_J1.end();
-    serial_J3.end();
-    serial_J4.end();
+    //serial_J1.end();
+    //serial_J3.end();
+    //serial_J4.end();
 
     Serial.println("<F6 Controller OS Ready>");
 }
@@ -270,21 +278,26 @@ void loop() {
         digitalWrite(LED_PIN, HIGH);  
     }
 
+    // 升級：全方位監控所有驅動器的溫度！
     static unsigned long lastTempReport = 0;
-    if (millis() - lastTempReport >= 15000) {
+    if (millis() - lastTempReport >= 30000) {
         lastTempReport = millis();
         
         if (!isBufPlaying && !isMoving) {
             String statusJ2 = readTMC5160ThermalStatus(Y_CS_PIN);
+            float tempJ1 = readTMC2240Temp(X_CS_PIN);
+            float tempJ3 = readTMC2240Temp(Z_CS_PIN);
+            float tempJ4 = readTMC2240Temp(E0_CS_PIN);
             float tempJ5 = readTMC2240Temp(E1_CS_PIN);
             float tempJ6 = readTMC2240Temp(E2_CS_PIN);
-            Serial.print("[Thermal] J2(5160): ");
-            Serial.print(statusJ2);
-            Serial.print("  |  J5(2240): ");
-            Serial.print(tempJ5, 1);
-            Serial.print(" °C  |  J6(2240): ");
-            Serial.print(tempJ6, 1);
-            Serial.println(" °C");
+            
+            Serial.print("[Thermal] J1:"); Serial.print(tempJ1, 1);
+            Serial.print("C | J2:"); Serial.print(statusJ2);
+            Serial.print("C | J3:"); Serial.print(tempJ3, 1);
+            Serial.print("C | J4:"); Serial.print(tempJ4, 1);
+            Serial.print("C | J5:"); Serial.print(tempJ5, 1);
+            Serial.print("C | J6:"); Serial.print(tempJ6, 1);
+            Serial.println("C");
         }
     }
 }
