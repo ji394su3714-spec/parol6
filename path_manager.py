@@ -75,13 +75,15 @@ class PTPExecutor(QThread):
     update_signal = pyqtSignal(list)
     finished_signal = pyqtSignal()
     log_signal = pyqtSignal(str)  #新增這行：專屬的 Log 大聲公
+    error_signal = pyqtSignal(str) # 🌟 只要補上這一行！
     
-    def __init__(self, start_joints, end_joints, serial_ref=None, speed_factor=1.0):
+    def __init__(self, start_joints, end_joints, serial_ref=None, speed_factor=1.0, accel_factor=1.0):
         super().__init__()
         self.start_joints = np.array(start_joints)
         self.end_joints = np.array(end_joints)
         self.serial_ref = serial_ref
         self.speed_factor = speed_factor
+        self.accel_factor = accel_factor # 🌟 存為類別屬性
         self._is_running = True # 🌟 新增這行：執行狀態旗標
 
     def run(self):
@@ -105,8 +107,8 @@ class PTPExecutor(QThread):
                 soft_limit_v = (HW_MAX_STEPS[i] * self.speed_factor) / STEPS_PER_DEG[i]
                 allowed_v = min(mech_limit_v, soft_limit_v)
                 
-                allowed_a = MAX_JOINT_ACCELS[i] * self.speed_factor
-                allowed_j = MAX_JOINT_JERKS[i] * self.speed_factor
+                allowed_a = MAX_JOINT_ACCELS[i] * self.accel_factor
+                allowed_j = MAX_JOINT_JERKS[i] * self.accel_factor
                 
                 p = SCurveProfile(diffs[i], allowed_v, allowed_a, allowed_j)
                 if p.T_total > max_duration:
@@ -181,12 +183,13 @@ class CartesianExecutor(QThread):
     error_signal = pyqtSignal(str)
     log_signal = pyqtSignal(str)
 
-    def __init__(self, start_joints, target_joints, tcp_offset_mat, serial_ref=None, speed_factor=1.0, move_type="LIN", aux_joints=None):
+    def __init__(self, start_joints, target_joints, tcp_offset_mat, serial_ref=None, speed_factor=1.0, accel_factor=1.0, move_type="LIN", aux_joints=None):
         super().__init__()
         self.start_joints = np.array(start_joints)
         self.target_joints = np.array(target_joints)
         self.tcp_offset_mat = tcp_offset_mat if tcp_offset_mat is not None else np.eye(4)
         self.speed_factor = speed_factor
+        self.accel_factor = accel_factor
         self.serial_ref = serial_ref
         self.move_type = move_type
         self.aux_joints = np.array(aux_joints) if aux_joints is not None else None
@@ -258,13 +261,13 @@ class CartesianExecutor(QThread):
         if time_for_lin >= time_for_rot:
             dist_main = dist_mm
             target_speed = MAX_LIN_SPEED * self.speed_factor
-            target_accel = MAX_LIN_ACCEL * self.speed_factor
-            target_jerk = MAX_LIN_JERK * self.speed_factor
+            target_accel = MAX_LIN_ACCEL * self.accel_factor
+            target_jerk = MAX_LIN_JERK * self.accel_factor
         else:
             dist_main = dist_deg
             target_speed = MAX_ROT_SPEED * self.speed_factor
-            target_accel = MAX_ROT_ACCEL * self.speed_factor
-            target_jerk = MAX_ROT_JERK * self.speed_factor
+            target_accel = MAX_ROT_ACCEL * self.accel_factor
+            target_jerk = MAX_ROT_JERK * self.accel_factor
 
         base_profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
 
@@ -335,10 +338,11 @@ class CartesianExecutor(QThread):
 
             # --- 加速度把關 (連鎖律) ---
             peak_joint_a = max_d2_joint_dp2[i] * (peak_prog_v ** 2) + max_d_joint_dp[i] * peak_prog_a
-            allowed_a = MAX_JOINT_ACCELS[i] * self.speed_factor * 2.0
+            
+            # 🌟 這裡也要改成 accel_factor
+            allowed_a = MAX_JOINT_ACCELS[i] * self.accel_factor * 2.0 
             
             if peak_joint_a > allowed_a:
-                # 加速度拉長時間是開根號關係
                 overspeed_ratio = max(overspeed_ratio, math.sqrt(peak_joint_a / allowed_a))
 
         # 3. 整體算力防護
@@ -433,13 +437,14 @@ class NativePTPExecutor(QThread):
     error_signal = pyqtSignal(str)
     log_signal = pyqtSignal(str)  # 新增這行：專屬的 Log 大聲公
 
-    def __init__(self, start_joints, target_joints, serial_ref=None, speed_factor=1.0):
+    def __init__(self, start_joints, target_joints, serial_ref=None, speed_factor=1.0, accel_factor=1.0):
         super().__init__()
         self.start_joints = np.array(start_joints)
         self.target_joints = np.array(target_joints)
         self.serial_ref = serial_ref
         self.speed_factor = speed_factor
-        self._is_running = True # 🌟 新增這行：執行狀態旗標
+        self.accel_factor = accel_factor # 🌟 備用，等待下一階段與 C++ 對接
+        self._is_running = True
 
     def run(self):
         if self.serial_ref and self.serial_ref.is_connected:
@@ -533,23 +538,24 @@ class PathManager(QObject):
         self.temp_aux_joints = list(joints)
         self.log_signal.emit(">> [CIRC] AUX point saved! Move to END point and press Record.")
 
-    def record_point(self, current_joints, delay=0.0, move_type="PTP", speed=100.0):
+    # 🌟 拔除 delay，加入 accel
+    def record_point(self, current_joints, move_type="PTP", speed=50.0, accel=50.0):
         aux = None
-        # 智慧判定：如果剛剛有設定 AUX，這次的記錄強制轉為 CIRC 圓弧
         if self.temp_aux_joints is not None:
+            aux = [round(j, 4) for j in self.temp_aux_joints]
             move_type = "CIRC"
-            aux = self.temp_aux_joints
-            self.temp_aux_joints = None 
+            self.temp_aux_joints = None
 
         idx = len(self.waypoints) + 1
         name = f"Point {idx}"
         data = {
             "name": name,
-            "joints": list(current_joints),
+            # 🌟 加入這行：將陣列裡面的每一個關節角度都四捨五入到小數點後 4 位
+            "joints": [round(j, 4) for j in current_joints],
             "aux_joints": aux,
-            "delay": float(delay),
             "type": move_type,
             "speed": float(speed), 
+            "accel": float(accel), # 🌟 新增加速度屬性
             "active": True,
             "note": ""
         }
@@ -559,8 +565,22 @@ class PathManager(QObject):
         msg = f"Recorded: {name} [{move_type}]"
         if move_type == "CIRC":
             msg += " (with AUX point)"
-        if delay > 0: msg += f" (Wait {delay}s)"
         self.log_signal.emit(msg)
+
+    # 🌟 新增獨立封包生成方法
+    def record_delay(self, time_sec=2.0):
+        idx = len(self.waypoints) + 1
+        name = f"Wait {time_sec}s"
+        data = {
+            "name": name,
+            "type": "DELAY",
+            "value": float(time_sec), # 延遲時間存在 value 裡
+            "active": True,
+            "note": ""
+        }
+        self.waypoints.append(data)
+        self.list_update_signal.emit()
+        self.log_signal.emit(f"Recorded: {name}")
 
     def delete_point(self, index):
         if 0 <= index < len(self.waypoints):
@@ -588,6 +608,24 @@ class PathManager(QObject):
         filename, _ = QFileDialog.getSaveFileName(self.parent_widget, "Save Path", "", "JSON Files (*.json)")
         if filename:
             try:
+                # ==========================================
+                # 🌟 存檔前的「全自動清洗機」
+                # ==========================================
+                for pt in self.waypoints:
+                    # 1. 確保所有舊點位都有新的 accel 參數
+                    if 'accel' not in pt and pt.get('type') != 'DELAY':
+                        pt['accel'] = 50.0
+
+                    # 2. 強制清洗 joints，限制為 4 位小數 (消滅幽靈精度)
+                    if 'joints' in pt and pt['joints'] is not None:
+                        # 加上 float() 是為了確保 numpy 資料型態能被乾淨轉換
+                        pt['joints'] = [round(float(j), 4) for j in pt['joints']]
+                    
+                    # 3. 如果有 CIRC 的輔助點，一併清洗
+                    if 'aux_joints' in pt and pt['aux_joints'] is not None:
+                        pt['aux_joints'] = [round(float(j), 4) for j in pt['aux_joints']]
+
+                # ==========================================
                 with open(filename, 'w') as f:
                     json.dump(self.waypoints, f, indent=4)
                 self.log_signal.emit(f"Path saved to {filename}")
@@ -611,8 +649,9 @@ class PathManager(QObject):
     # 讓 3D 模擬畫面畫出線條
     def get_trajectory_preview(self, tcp_offset):
         trajectory_points = []
-        active_wps = [pt for pt in self.waypoints if pt.get('active', True)]
-        
+        # 🌟 終極過濾：只有「啟用的」、「不是 Delay 的」、而且「確實包含 joints 屬性」的點，才有資格參與畫線！
+        active_wps = [pt for pt in self.waypoints if pt.get('active', True) and pt.get('type') != 'DELAY' and 'joints' in pt]
+
         if len(active_wps) >= 2:
             for i in range(len(active_wps) - 1):
                 j_start = np.array(active_wps[i]['joints'])
@@ -690,10 +729,11 @@ class PathManager(QObject):
         self._execute_next(current_joints_start)
 
     def _execute_next(self, current_joints):
-        # 🌟 3. 防護網：如果急停被按下(總開關關閉)，直接拒絕派發下一個點！
+        # 1. 總開關防護：如果急停被按下，直接拒絕派發下一個點
         if getattr(self, '_is_path_active', False) is False:
             return
         
+        # 2. 檢查是否跑完清單
         if self.path_index >= len(self.execution_queue):
             if self.is_looping:
                 self.log_signal.emit(">> Looping...")
@@ -702,55 +742,71 @@ class PathManager(QObject):
                 self.log_signal.emit("([END]) Path Completed.")
                 return
 
+        # 3. 取得目前節點的基本資料
         target_data = self.execution_queue[self.path_index]
-        target_joints = target_data['joints']
-        name = target_data.get('name', str(self.path_index))
         move_type = target_data.get('type', "PTP")
+        name = target_data.get('name', str(self.path_index))
+
+        # ==========================================
+        # 🌟 4. 獨立 DELAY 節點攔截網
+        # ==========================================
+        if move_type == "DELAY":
+            delay_time = target_data.get('value', 0.0)
+            self.log_signal.emit(f"[{name}] Waiting for {delay_time}s...")
+            # 消化掉 Delay，時間到直接呼叫下一步，並把現在的關節角度原封不動傳遞下去
+            QTimer.singleShot(int(delay_time * 1000), lambda: self._trigger_next_step(current_joints))
+            return
+
+        # ==========================================
+        # 5. 實體移動節點 (PTP, LIN, CIRC, N_PTP)
+        # ==========================================
+        # 安全抓取移動參數 (因為已經排除了 DELAY，這裡一定有 joints 可以讀取)
+        target_joints = target_data.get('joints', current_joints)
         aux_joints = target_data.get('aux_joints', None) 
         
+        # 🌟 1. 抓取並計算獨立的速度與加速度倍率
         point_speed_pct = target_data.get('speed', 50.0)
+        point_accel_pct = target_data.get('accel', 50.0) # <--- 新增這行
+        
         speed_factor = (point_speed_pct / 100.0) * self.global_speed
         if speed_factor > 1.0: speed_factor = 1.0 
         
-        self.log_signal.emit(f"Moving -> {name} ({move_type}, SPD:{speed_factor*100:.0f}%)...")
+        accel_factor = (point_accel_pct / 100.0) * self.global_speed # <--- 新增這行
+        if accel_factor > 1.0: accel_factor = 1.0
         
+        # 🌟 2. 更新 Log 顯示 ACC 參數
+        self.log_signal.emit(f"Moving -> {name} ({move_type}, SPD:{speed_factor*100:.0f}%, ACC:{accel_factor*100:.0f}%)...")
+        
+        # 🌟 3. 將 accel_factor 傳遞給所有執行器
         if move_type in ["LIN", "CIRC"]:
             self.worker = CartesianExecutor(
-                start_joints=current_joints, 
-                target_joints=target_joints, 
-                tcp_offset_mat=self.current_tcp_offset, 
-                serial_ref=self.serial_manager,  
+                start_joints=current_joints, target_joints=target_joints, 
+                tcp_offset_mat=self.current_tcp_offset, serial_ref=self.serial_manager,  
                 speed_factor=speed_factor,
-                move_type=move_type,
-                aux_joints=aux_joints 
+                accel_factor=accel_factor, # <--- 傳遞加速度
+                move_type=move_type, aux_joints=aux_joints 
             )
-            self.worker.error_signal.connect(self._on_worker_error)
-            #self.worker.log_signal.connect(self.log_signal.emit)
-            
         elif move_type in ["N_PTP"]:
             self.worker = NativePTPExecutor(
-                start_joints=current_joints,
-                target_joints=target_joints,
+                start_joints=current_joints, target_joints=target_joints,
                 serial_ref=self.serial_manager,
-                speed_factor=speed_factor
+                speed_factor=speed_factor,
+                accel_factor=accel_factor  # <--- 先傳遞進去備用
             )
-            self.worker.error_signal.connect(self._on_worker_error)
-            #self.worker.log_signal.connect(self.log_signal.emit)
-            
-        else: # 舊版 PTP (切片版 S-Curve)
+        else: # 舊版 PTP
             self.worker = PTPExecutor(
-                start_joints=current_joints, 
-                end_joints=target_joints, 
+                start_joints=current_joints, end_joints=target_joints, 
                 serial_ref=self.serial_manager,  
                 speed_factor=speed_factor,     
+                accel_factor=accel_factor  # <--- 傳遞加速度
             )
             
+        self.worker.error_signal.connect(self._on_worker_error)
         self.worker.update_signal.connect(self.joint_update_signal.emit)
-
         self.worker.log_signal.connect(self.log_signal.emit)
         
-        delay = target_data.get('delay', 0.0)
-        self.worker.finished_signal.connect(lambda: self._on_point_finished(target_joints, delay))
+        # 🌟 舊版的點位內建 delay 參數強制設為 0.0，完美接軌你的新架構
+        self.worker.finished_signal.connect(lambda: self._on_point_finished(target_joints, 0.0))
         self.worker.start()
 
     def _on_point_finished(self, last_joints, delay):

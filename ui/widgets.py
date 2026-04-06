@@ -318,15 +318,21 @@ class WaypointHeader(QFrame):
         lbl_name = QLabel(" Name")
         layout.addWidget(lbl_name)
         
-        lbl_delay = QLabel("Delay")
-        lbl_delay.setFixedWidth(75) 
-        lbl_delay.setAlignment(Qt.AlignmentFlag.AlignCenter) # 修正：對齊常數
-        layout.addWidget(lbl_delay)
+        #lbl_delay = QLabel("Delay")
+        #lbl_delay.setFixedWidth(75) 
+        #lbl_delay.setAlignment(Qt.AlignmentFlag.AlignCenter) # 修正：對齊常數
+        #layout.addWidget(lbl_delay)
         
         lbl_speed = QLabel("Speed")
         lbl_speed.setFixedWidth(75)
         lbl_speed.setAlignment(Qt.AlignmentFlag.AlignCenter) # 修正：對齊常數
         layout.addWidget(lbl_speed)
+
+        # 🌟 新增這段：加速度標題
+        lbl_accel = QLabel("Acc")
+        lbl_accel.setFixedWidth(75)
+        lbl_accel.setAlignment(Qt.AlignmentFlag.AlignCenter) 
+        layout.addWidget(lbl_accel)
         
         lbl_action = QLabel("")
         lbl_action.setFixedWidth(65)
@@ -380,18 +386,23 @@ class WaypointRow(QWidget):
         dl.setSpacing(2)
         
         # 修正：對齊常數
-        self.edit_delay = InlineEdit("", self, self.save_delay, Qt.AlignmentFlag.AlignRight)
-        dl.addWidget(self.edit_delay)
-        dl.addStretch()
-        layout.addWidget(dw)
-        
-        self.update_delay_display(data.get('delay', 0.0))
+        #self.edit_delay = InlineEdit("", self, self.save_delay, Qt.AlignmentFlag.AlignRight)
+        #dl.addWidget(self.edit_delay)
+        #dl.addStretch()
+        #layout.addWidget(dw)
+        #self.update_delay_display(data.get('delay', 0.0))
 
         # 修正：對齊常數
         self.speed_lbl = DropdownLabel(self, ["10%", "25%", "50%", "80%", "90%", "100%"], self.save_speed, align=Qt.AlignmentFlag.AlignRight)
         self.speed_lbl.setFixedWidth(75) 
         self.update_speed_display()
         layout.addWidget(self.speed_lbl)
+
+        # 🌟 新增 Acc 下拉選單
+        self.accel_lbl = DropdownLabel(self, ["10%", "25%", "50%", "80%", "90%", "100%"], self.save_accel, align=Qt.AlignmentFlag.AlignRight)
+        self.accel_lbl.setFixedWidth(75) 
+        self.update_accel_display()
+        layout.addWidget(self.accel_lbl)
         
         eye_icon = 'fa5s.eye' if is_active else 'fa5s.eye-slash'
         eye_color = '#34495e' if is_active else '#bdc3c7'
@@ -411,6 +422,9 @@ class WaypointRow(QWidget):
         btn_del.setStyleSheet("border: none; background: transparent;")
         btn_del.clicked.connect(lambda: on_delete_cb(index))
         layout.addWidget(btn_del)
+
+        # 🌟 在 __init__ 的最後一行加上：
+        self.update_ui_by_type()
 
     def _handle_name_click(self):
         list_widget = self.parentWidget()
@@ -432,33 +446,53 @@ class WaypointRow(QWidget):
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(10, self.on_update_cb)
 
+    # 🌟 新增：根據 Type 動態隱藏 UI
+    def update_ui_by_type(self):
+        # 🛡️ 安全防護：如果這兩個 UI 元件還沒被建立出來，就直接 Return 跳過
+        if not hasattr(self, 'speed_lbl') or not hasattr(self, 'accel_lbl'):
+            return
+        m_type = self.data.get('type', 'PTP')
+        is_delay = (m_type == 'DELAY')
+        # 如果是 Delay 獨立封包，就不顯示速度跟加速度
+        self.speed_lbl.setVisible(not is_delay)
+        self.accel_lbl.setVisible(not is_delay)
+
     def update_type_display(self):
         move_type = self.data.get('type', 'PTP')
         is_active = self.data.get('active', True)
         color = "black" if is_active else "gray"
         self.type_lbl.setText(f"{move_type}")
         self.type_lbl.setStyleSheet(f"color: {color}; font-weight: normal; background: transparent;")
+        self.update_ui_by_type() # 🌟 切換 Type 時同步更新 UI
 
-    def save_new_name(self, new_name):
-        if new_name.strip():
-            self.data['name'] = new_name.strip()
+    # 🌟 修改：讓使用者可以直接透過修改 Name 來改變 Delay 時間 (例如輸入 5，自動變成 Wait 5.0s)
+    def save_new_name(self, new_text):
+        if self.data.get('type') == 'DELAY':
+            try:
+                # 萃取數字
+                val = float(''.join(c for c in new_text if c.isdigit() or c == '.'))
+                self.data['value'] = val
+                self.data['name'] = f"Wait {val}s"
+            except ValueError:
+                pass
+            self.edit_name.setText(self.data['name'])
         else:
-            self.edit_name.setText(self.data.get('name', f'Point {self.index+1}'))
+            if new_text.strip():
+                self.data['name'] = new_text.strip()
+            else:
+                self.edit_name.setText(self.data.get('name', f'Point {self.index+1}'))
 
-    def save_delay(self, text):
-        clean_text = text.replace('s', '').strip()
-        try:
-            val = 0.0 if not clean_text else float(clean_text)
-            self.data['delay'] = val
-        except ValueError:
-            pass 
-        self.update_delay_display(self.data.get('delay', 0.0))
+    # 🌟 新增：加速度的儲存與顯示
+    def save_accel(self, accel_str):
+        val = float(accel_str.replace('%', ''))
+        self.data['accel'] = val
+        self.update_accel_display()
 
-    def update_delay_display(self, delay_val):
-        if delay_val == 0.0:
-            self.edit_delay.setText("        ")
-        else:
-            self.edit_delay.setText(f"{delay_val}s")
+    def update_accel_display(self):
+        acc = self.data.get('accel', 50.0)
+        self.accel_lbl.setText(f"{int(acc)}%")
+        self.accel_lbl.setStyleSheet("color: black; background: transparent; font-weight: normal;")
+
 
     def save_speed(self, speed_str):
         val = float(speed_str.replace('%', ''))

@@ -24,7 +24,7 @@ const JointConfig JOINTS[6] = {
 const MotorCurrentConfig MOTOR_CURRENTS[6] = {
     {1100, 0.5f}, //J1
     {1100, 0.75f}, //J2
-    {1100, 0.75f}, //J3
+    {1000, 0.75f}, //J3
     {1000, 0.5f}, //J4
     {1000, 0.5f}, //J5
     {850,  0.5f}  //J6

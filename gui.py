@@ -506,6 +506,7 @@ class RobotGUI(QMainWindow):
         actions = [
             ("Record", self.trigger_record),
             ("Set AUX", self.trigger_set_aux), # 新增 Set AUX 按鈕
+            ("Delay", self.trigger_add_delay), # 🌟 新增這行：獨立的 Delay 按鈕
             ("Del ALL", self.confirm_delete_all),
             ("Save", self.path_manager.save_to_file),
             ("Load", self.path_manager.load_from_file)
@@ -620,14 +621,26 @@ class RobotGUI(QMainWindow):
         if index < 0 or index >= len(self.path_manager.waypoints): return
         
         target_data = self.path_manager.waypoints[index]
+
+        # 🌟 新增防護網：如果是 Delay 節點，因為沒有座標，直接跳過預覽！
+        if target_data.get('type') == 'DELAY' or 'joints' not in target_data:
+            #self.log(">> [Info] Delay point has no physical coordinates to preview.")
+            return
+        
         self.log(f"Previewing: {target_data['name']}")
         self.on_manager_update_joints(list(target_data['joints']))
 
     def trigger_record(self):
-        default_delay = 0.0
+    #    default_delay = 0.0
         default_type = "PTP"
-        self.path_manager.record_point(self.current_joints, default_delay, default_type)
+    #    self.path_manager.record_point(self.current_joints, default_delay, default_type)
         # log 移交給 path_manager 去印，避免重複
+        # 🌟 拔除 delay 參數，加入 accel 參數
+        self.path_manager.record_point(self.current_joints, move_type=default_type, speed=50.0, accel=50.0)
+
+    # 🌟 新增這個方法
+    def trigger_add_delay(self):
+        self.path_manager.record_delay(time_sec=2.0) # 預設停頓 2 秒
 
     # 傳遞當前關節給 path_manager 作為 AUX
     def trigger_set_aux(self):
