@@ -1,6 +1,5 @@
 #include <Arduino.h>
 #include <SPI.h>
-//#include <SoftwareSerial.h>
 #include <TMCStepper.h>
 #include <MobaTools.h>
 
@@ -14,7 +13,7 @@
 // 實體變數定義區
 const JointConfig JOINTS[6] = {
     {54, 55, 38,  2,  LOW,   300, -28,  250, 12000, 65000, 350}, 
-    {60, 61, 56, 12,  HIGH, -600,  51,  500, 17000, 65000, 350}, 
+    {60, 61, 56, 12,  HIGH, -600,  50,  500, 17000, 65000, 350}, 
     {43, 48, 58, 14,  HIGH,  750, -70,  600, 17000, 65000, 350}, 
     {26, 28, 24, 15,  LOW,   950, -145, 400, 15000, 65000, 350}, 
     {36, 34, 30, 63,  HIGH,  700, -125, 300, 15000, 65000, 350}, 
@@ -23,7 +22,7 @@ const JointConfig JOINTS[6] = {
 
 const MotorCurrentConfig MOTOR_CURRENTS[6] = {
     {1100, 0.5f}, //J1
-    {1100, 0.75f}, //J2
+    {1150, 0.75f}, //J2
     {1000, 0.75f}, //J3
     {1000, 0.5f}, //J4
     {1000, 0.5f}, //J5
@@ -32,14 +31,7 @@ const MotorCurrentConfig MOTOR_CURRENTS[6] = {
 
 const float GEAR_RATIOS[6] = {6.4, 20.0, 18.1, 4.0, 4.0, 10.0};
 
-//SoftwareSerial serial_J1(71, 72);
-//SoftwareSerial serial_J3(78, 79);
-//SoftwareSerial serial_J4(76, 77);
-
-//TMC2209Stepper driver_J1(&serial_J1, R_SENSE_2209, 0);
 TMC5160Stepper driver_J2(Y_CS_PIN, R_SENSE_5160);       
-//TMC2209Stepper driver_J3(&serial_J3, R_SENSE_2209, 0);
-//TMC2209Stepper driver_J4(&serial_J4, R_SENSE_2209, 0);
 
 MoToStepper stepper_J1(1600, STEPDIR);
 MoToStepper stepper_J2(1600, STEPDIR);
@@ -187,26 +179,6 @@ void setup() {
     SPI.begin();
     pinMode(LED_PIN, OUTPUT);
 
-    //serial_J1.begin(115200);
-    //serial_J3.begin(115200);
-    //serial_J4.begin(115200);
-
-    //auto setupTMC2209 = [](TMC2209Stepper &drv, uint16_t mA, float hold_ratio) {
-    //    drv.begin();
-    //    drv.pdn_disable(true);     
-    //    drv.I_scale_analog(false); 
-    //    drv.toff(5);               
-    //    drv.rms_current(mA, hold_ratio); 
-    //    drv.microsteps(8); 
-    //    drv.en_spreadCycle(false); 
-    //    drv.pwm_autoscale(true);   
-    //    drv.TCOOLTHRS(0); 
-    //};
-
-    //setupTMC2209(driver_J1, MOTOR_CURRENTS[0].run_mA, MOTOR_CURRENTS[0].hold_ratio);
-    //setupTMC2209(driver_J3, MOTOR_CURRENTS[2].run_mA, MOTOR_CURRENTS[2].hold_ratio);
-    //setupTMC2209(driver_J4, MOTOR_CURRENTS[3].run_mA, MOTOR_CURRENTS[3].hold_ratio);
-
     driver_J2.begin();
     driver_J2.toff(5);
     driver_J2.rms_current(MOTOR_CURRENTS[1].run_mA, MOTOR_CURRENTS[1].hold_ratio);
@@ -231,10 +203,6 @@ void setup() {
         steppers[i]->setSpeedSteps(JOINTS[i].maxSpeedSteps10);
         steppers[i]->setRampLen(JOINTS[i].rampSteps); 
     }
-    // 新增：過河拆橋！釋放 SoftwareSerial 佔用的硬體中斷，把 CPU 100% 還給馬達！
-    //serial_J1.end();
-    //serial_J3.end();
-    //serial_J4.end();
 
     Serial.println("<F6 Controller OS Ready>");
 }

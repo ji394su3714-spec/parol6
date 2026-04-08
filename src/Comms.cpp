@@ -152,18 +152,51 @@ void processCommand() {
             return;
         }
         
-        // 模式 0：手動/點動模式
+        // 模式 0：手動/點動模式 (終極平滑多軸同步版)
         else if (moveMode == 0) {
+            float speedFactor = (param7 <= 0.0) ? 1.0 : param7;
+            long deltaSteps[6] = {0};
+            float maxTime = 0.0;
+
+            // 1. 預覽移動量，找出需要最長時間的「瓶頸軸」
             for (int i = 0; i < 6; i++) {
                 if (receivedSteps[i] != 999999) {
-                    float currentMaxSpeedSec = (JOINTS[i].jointControlSpd10 * param7) / 10.0;
-                    long mobaSpeed = (long)(currentMaxSpeedSec * 10.0);
-                    if (mobaSpeed < 1) mobaSpeed = 1; 
+                    // 計算距離目前位置還有多遠
+                    deltaSteps[i] = abs(receivedSteps[i] - steppers[i]->currentPosition());
+                    float v_max = (JOINTS[i].jointControlSpd10 * speedFactor) / 10.0;
+                    if (v_max > 0) {
+                        float t_needed = deltaSteps[i] / v_max;
+                        if (t_needed > maxTime) maxTime = t_needed;
+                    }
+                }
+            }
 
-                    steppers[i]->setSpeedSteps(mobaSpeed);
-                    steppers[i]->setRampLen(JOINTS[i].rampSteps);
+            // 2. 應用同步速度與「等比物理加速度」
+            for (int i = 0; i < 6; i++) {
+                if (receivedSteps[i] != 999999) {
+                    if (deltaSteps[i] > 0 && maxTime > 0) {
+                        // A. 同步最高速度
+                        float syncSpeedSec = deltaSteps[i] / maxTime;
+                        long mobaSpeed = (long)(syncSpeedSec * 10.0);
+                        if (mobaSpeed < 1) mobaSpeed = 1;
+
+                        // B. 同步斜坡 (🌟 核心魔法：保持物理加速度恆定！)
+                        // 根據 s = v^2 / 2a，速度的縮放比例，斜坡步數必須是「平方倍」縮放
+                        float originalMaxSpeedSec = (JOINTS[i].jointControlSpd10 * speedFactor) / 10.0;
+                        float ratio = syncSpeedSec / originalMaxSpeedSec;
+                        
+                        long syncRamp = (long)(JOINTS[i].rampSteps * ratio * ratio);
+                        
+                        // 拔除舊版錯誤的 deltaSteps/2 限制，放心交給 MobaTools 處理短距離三角形！
+                        if (syncRamp < 0) syncRamp = 0;
+
+                        steppers[i]->setSpeedSteps(mobaSpeed);
+                        steppers[i]->setRampLen(syncRamp);
+                    }
                     
-                    // 零計算，直接發送目標步數
+                    // 3. 發送目標步數
+                    // MobaTools 底層緩衝非常優異，只要加速度斜坡正確，
+                    // 即使你連發封包不斷推遲目標點，它也能無縫接軌、不抖不震！
                     steppers[i]->writeSteps(receivedSteps[i]); 
                 }
             }
