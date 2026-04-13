@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 from gui import RobotGUI
 app = QApplication(sys.argv)
-app.setStyle("windows")
+app.setStyle("Fusion")
 app.styleHints().setColorScheme(Qt.ColorScheme.Light)
 
 def main():

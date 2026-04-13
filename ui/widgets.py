@@ -107,10 +107,9 @@ class JointControlRow(QWidget):
         self.spin.setSingleStep(1.0)
         self.spin.setFixedWidth(85)
         self.spin.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
-        self.spin.setAlignment(Qt.AlignmentFlag.AlignCenter)  
+        self.spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # 新增這兩行：強制限制高度，並歸零 Padding
-        self.spin.setFixedHeight(40) # 限制高度
+        self.spin.setFixedHeight(40)
         self.spin.setStyleSheet("QDoubleSpinBox { padding: 0px; margin: 0px; }")
         
         self.btn_minus = create_repeat_btn("◀", "JointBtn", 36, 36)
@@ -307,20 +306,15 @@ class WaypointHeader(QFrame):
         
         lbl_type = QLabel("")
         lbl_type.setFixedWidth(75) 
-        lbl_type.setAlignment(Qt.AlignmentFlag.AlignCenter)  
+        lbl_type.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(lbl_type)
         
         lbl_name = QLabel(" Name")
         layout.addWidget(lbl_name)
-
-        lbl_blend = QLabel("Blend")
-        lbl_blend.setFixedWidth(75)
-        lbl_blend.setAlignment(Qt.AlignmentFlag.AlignCenter) 
-        layout.addWidget(lbl_blend)
         
         lbl_speed = QLabel("Speed")
         lbl_speed.setFixedWidth(75)
-        lbl_speed.setAlignment(Qt.AlignmentFlag.AlignCenter)  
+        lbl_speed.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(lbl_speed)
 
         lbl_accel = QLabel("Acc")
@@ -330,7 +324,7 @@ class WaypointHeader(QFrame):
         
         lbl_action = QLabel("")
         lbl_action.setFixedWidth(65)
-        lbl_action.setAlignment(Qt.AlignmentFlag.AlignCenter)  
+        lbl_action.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(lbl_action)
         
         self.lbl_scrollbar = QLabel("")
@@ -365,7 +359,6 @@ class WaypointRow(QWidget):
         layout.addWidget(self.type_lbl)
         
         name = data.get('name', f'Point {index+1}')
-         
         self.edit_name = InlineEdit(name, self, self.save_new_name, Qt.AlignmentFlag.AlignLeft, click_cb=self._handle_name_click)
         
         if not is_active:
@@ -378,13 +371,7 @@ class WaypointRow(QWidget):
         dl = QHBoxLayout(dw)
         dl.setContentsMargins(0, 0, 0, 0)
         dl.setSpacing(2)
-
-        # 🌟 1. 新增 Blend 下拉選單 (FINE 代表精準到位不融合，其餘為提早轉彎比例)
-        self.blend_lbl = DropdownLabel(self, ["FINE", "10%", "25%", "50%", "75%", "100%"], self.save_blend, align=Qt.AlignmentFlag.AlignRight)
-        self.blend_lbl.setFixedWidth(75)
-        self.update_blend_display()
-        layout.addWidget(self.blend_lbl)
-         
+        
         self.speed_lbl = DropdownLabel(self, ["10%", "25%", "50%", "80%", "90%", "100%"], self.save_speed, align=Qt.AlignmentFlag.AlignRight)
         self.speed_lbl.setFixedWidth(75) 
         self.update_speed_display()
@@ -437,27 +424,14 @@ class WaypointRow(QWidget):
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(10, self.on_update_cb)
 
-    # 🌟 新增：Blend 的儲存與顯示
-    def save_blend(self, blend_str):
-        self.data['blend'] = blend_str
-        self.update_blend_display()
-
-    def update_blend_display(self):
-        # 預設為 FINE (安全到位模式)
-        blend_val = self.data.get('blend', 'FINE')
-        self.blend_lbl.setText(blend_val)
-        self.blend_lbl.setStyleSheet("color: black; background: transparent; font-weight: normal;")
-
-    # 🌟 修改：加入 blend_lbl 的安全防護與動態隱藏
+    # 新增：根據 Type 動態隱藏 UI
     def update_ui_by_type(self):
-        if not hasattr(self, 'speed_lbl') or not hasattr(self, 'accel_lbl') or not hasattr(self, 'blend_lbl'):
+        # 安全防護：如果這兩個 UI 元件還沒被建立出來，就直接 Return 跳過
+        if not hasattr(self, 'speed_lbl') or not hasattr(self, 'accel_lbl'):
             return
-
         m_type = self.data.get('type', 'PTP')
         is_delay = (m_type == 'DELAY')
-        
-        # 如果是 Delay 獨立封包，隱藏這三個參數
-        self.blend_lbl.setVisible(not is_delay)
+        # 如果是 Delay 獨立封包，就不顯示速度跟加速度
         self.speed_lbl.setVisible(not is_delay)
         self.accel_lbl.setVisible(not is_delay)
 
@@ -469,7 +443,7 @@ class WaypointRow(QWidget):
         self.type_lbl.setStyleSheet(f"color: {color}; font-weight: normal; background: transparent;")
         self.update_ui_by_type() # 切換 Type 時同步更新 UI
 
-    # 修改：讓使用者可以直接透過修改 Name 來改變 Delay 時間 (例如輸入 5，自動變成 Wait 5.0s)
+    # 讓使用者可以直接透過修改 Name 來改變 Delay 時間 (例如輸入 5，自動變成 Wait 5.0s)
     def save_new_name(self, new_text):
         if self.data.get('type') == 'DELAY':
             try:

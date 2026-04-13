@@ -180,7 +180,7 @@ void processCommand() {
                         long mobaSpeed = (long)(syncSpeedSec * 10.0);
                         if (mobaSpeed < 1) mobaSpeed = 1;
 
-                        // B. 同步斜坡 (🌟 核心魔法：保持物理加速度恆定！)
+                        // B. 同步斜坡
                         // 根據 s = v^2 / 2a，速度的縮放比例，斜坡步數必須是「平方倍」縮放
                         float originalMaxSpeedSec = (JOINTS[i].jointControlSpd10 * speedFactor) / 10.0;
                         float ratio = syncSpeedSec / originalMaxSpeedSec;

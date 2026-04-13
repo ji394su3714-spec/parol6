@@ -33,7 +33,7 @@
         "speed": 100.0,
         "active": true,
         "note": "",
-        "accel": 50.0
+        "accel": 100.0
     },
     {
         "name": "Point 3",
@@ -51,7 +51,7 @@
         "speed": 100.0,
         "active": true,
         "note": "",
-        "accel": 50.0
+        "accel": 100.0
     },
     {
         "name": "Point 4",
@@ -87,7 +87,7 @@
         "speed": 100.0,
         "active": true,
         "note": "",
-        "accel": 50.0
+        "accel": 100.0
     },
     {
         "name": "Point 6",
@@ -105,7 +105,7 @@
         "speed": 100.0,
         "active": true,
         "note": "",
-        "accel": 50.0
+        "accel": 100.0
     },
     {
         "name": "Point 7",
@@ -141,7 +141,7 @@
         "speed": 100.0,
         "active": true,
         "note": "",
-        "accel": 50.0
+        "accel": 100.0
     },
     {
         "name": "Point 9",
@@ -159,7 +159,7 @@
         "speed": 100.0,
         "active": true,
         "note": "",
-        "accel": 50.0
+        "accel": 100.0
     },
     {
         "name": "Point 10",

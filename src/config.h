@@ -17,9 +17,8 @@ struct MotorCurrentConfig {
     float hold_ratio;
 };
 
-//#define R_SENSE_2209 0.11f  
 #define R_SENSE_5160 0.075f
-#define R_SENSE_2240 0.075f // 為了滿足函式庫數學運算，必須給 0.075f
+//#define R_SENSE_2240 0.075f // 為了滿足函式庫數學運算，必須給 0.075f
 
 #define X_CS_PIN  70 // J1
 #define Y_CS_PIN  39 // J2

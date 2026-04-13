@@ -1,4 +1,3 @@
-import threading # 用於執行緒鎖
 import json
 import time
 import numpy as np
@@ -34,7 +33,7 @@ MAX_TOTAL_PULSE_NATIVE = 65000  # 原生模式極限 (CPU 負載極輕，專注�
 N_PTP_T_ACC = 0.2
 
 # 步數換算：定義減速比，計算所有軸的 (微步數 * 減速比) / 360度
-GEAR_RATIOS = np.array([6.4, 20.0, 18.1, 4.0, 4.0, 10.0])
+GEAR_RATIOS = np.array([6.4, 20.0, 18.095, 4.0, 4.0, 10.0])
 STEPS_PER_DEG = (1600.0 * GEAR_RATIOS) / 360.0
 
 # 對應 C++ JOINTS 陣列裡 mode=2 的專屬硬體極速 (max_spd)
@@ -61,7 +60,7 @@ def update_advanced_settings(lin_spd, lin_acc, rot_spd, rot_acc, slice_pulse, na
     HW_MAX_STEPS = np.array([hw_max]*6, dtype=float)
     N_PTP_T_ACC = t_acc
     
-    print(f">> [Config] Advanced Settings Updated. Native Hz: {native_pulse}, T_acc: {t_acc}s")
+    #print(f">> [Config] Advanced Settings Updated. Native Hz: {native_pulse}, T_acc: {t_acc}s")
 
 # 讓 PathManager 可以發送設定給 MCU
 def send_config_to_mcu(serial_manager):
@@ -77,9 +76,8 @@ class PTPExecutor(QThread):
     finished_signal = pyqtSignal()
     log_signal = pyqtSignal(str)  
     error_signal = pyqtSignal(str) 
-    ready_signal = pyqtSignal()
     
-    def __init__(self, start_joints, end_joints, serial_ref=None, speed_factor=1.0, accel_factor=1.0, blend_str="FINE", next_joints=None):
+    def __init__(self, start_joints, end_joints, serial_ref=None, speed_factor=1.0, accel_factor=1.0):
         super().__init__()
         self.start_joints = np.array(start_joints)
         self.end_joints = np.array(end_joints)
@@ -87,20 +85,11 @@ class PTPExecutor(QThread):
         self.speed_factor = speed_factor
         self.accel_factor = accel_factor 
         self._is_running = True 
-        self.blend_str = blend_str
-        self.next_joints = np.array(next_joints) if next_joints is not None else None
-        self.execute_event = threading.Event() # 新增開火許可證
 
     def run(self):
-        # 防呆：一開始就把接力棒設好，就算提早結束也不會閃退
-        self.actual_end_joints = self.end_joints
-        self.actual_end_velocity = 0.0
-        
         diffs = np.abs(self.end_joints - self.start_joints)
         
         if np.max(diffs) < 0.1:
-            self.ready_signal.emit() # 提早結束也要通知大腦
-            self.execute_event.wait()
             self.finished_signal.emit()
             return
             
@@ -126,8 +115,6 @@ class PTPExecutor(QThread):
                     base_allowed_v, base_allowed_a, base_allowed_j = allowed_v, allowed_a, allowed_j
                     
         if bottleneck_profile is None:
-            self.ready_signal.emit()
-            self.execute_event.wait()
             self.finished_signal.emit()
             return
 
@@ -138,28 +125,20 @@ class PTPExecutor(QThread):
                 
             if peak_pulse_freq > MAX_TOTAL_PULSE_SLICE:
                 overspeed_ratio = peak_pulse_freq / MAX_TOTAL_PULSE_SLICE
+
                 new_v = base_allowed_v / overspeed_ratio
                 new_a = base_allowed_a / (overspeed_ratio ** 2)
                 new_j = base_allowed_j / (overspeed_ratio ** 3)
                 bottleneck_profile = SCurveProfile(diffs[bottleneck_idx], new_v, new_a, new_j)
                 self.log_signal.emit(f"[PTP] Overload ({peak_pulse_freq:.0f}Hz)！Scale down to {(1.0/overspeed_ratio):.2f}X")
-        
-        # 通知大腦算完了，準備發射
-        self.ready_signal.emit()
-        self.execute_event.wait()
-        if not self._is_running: return
 
         interval = 0.015
+        t = 0.0
         counter = 0
         gui_skip_frames = 10
  
-        # 核心修復：精確時間陣列，保證最後一個點剛好等於 T_total (解決扭動與暴衝)
-        t_steps = np.arange(0, bottleneck_profile.T_total, interval).tolist()
-        if not t_steps or t_steps[-1] < bottleneck_profile.T_total:
-            t_steps.append(bottleneck_profile.T_total)
-
-        for t in t_steps:
-            if not self._is_running: return  
+        while t <= bottleneck_profile.T_total:
+            if not self._is_running: return
 
             progress = bottleneck_profile.get_progress(t)
             current = self.start_joints + (self.end_joints - self.start_joints) * progress
@@ -170,38 +149,23 @@ class PTPExecutor(QThread):
             if self.serial_ref and self.serial_ref.is_connected:
                 self.serial_ref.send_joints(list(current), interval, move_mode=1)
                 self.serial_ref.wait_for_ok(timeout=3.0)
-            else:
-                # 模擬器專屬：強迫降速，模擬實體手臂真實的物理移動時間 (15ms)
-                time.sleep(interval)
                 
+            t += interval
             counter += 1
+        
+        current_err = np.abs(np.array(self.end_joints) - current)
+        max_err = np.max(current_err)
 
         self.update_signal.emit(list(self.end_joints))
-        self.finished_signal.emit()
-
-# --- 獨立延遲執行緒 (統一架構用) ---
-class DelayExecutor(QThread):
-    ready_signal = pyqtSignal()
-    update_signal = pyqtSignal(list)
-    finished_signal = pyqtSignal()
-    log_signal = pyqtSignal(str)
-    error_signal = pyqtSignal(str)
-    
-    def __init__(self, delay_time, current_joints):
-        super().__init__()
-        self.delay_time = delay_time
-        self.actual_end_joints = current_joints
-        self.actual_end_velocity = 0.0
-        self.execute_event = threading.Event()
-        self._is_running = True
         
-    def run(self):
-        self.ready_signal.emit() # 秒算完！
-        self.execute_event.wait() # 等待大腦下令開火
-        if not self._is_running: return
-        
-        self.log_signal.emit(f"  -> Waiting {self.delay_time}s...")
-        time.sleep(self.delay_time)
+        if self.serial_ref and self.serial_ref.is_connected:
+            if max_err > 0.01:
+                self.serial_ref.send_joints(list(self.end_joints), 0.005, move_mode=1)
+                self.serial_ref.wait_for_ok(timeout=3.0)
+                
+            if hasattr(self.serial_ref, 'wait_for_motion_complete'):
+                self.serial_ref.wait_for_motion_complete(timeout=10.0)
+                
         self.finished_signal.emit()
 
 # --- 2. 笛卡爾空間執行器 (處理 LIN 與 CIRC，搭載 Dry-Run 預掃描引擎) ---
@@ -210,9 +174,8 @@ class CartesianExecutor(QThread):
     finished_signal = pyqtSignal()
     error_signal = pyqtSignal(str)
     log_signal = pyqtSignal(str)
-    ready_signal = pyqtSignal()
 
-    def __init__(self, start_joints, target_joints, tcp_offset_mat, serial_ref=None, speed_factor=1.0, accel_factor=1.0, move_type="LIN", aux_joints=None, blend_str="FINE", next_joints=None, v_start=0.0): # 加在最後面
+    def __init__(self, start_joints, target_joints, tcp_offset_mat, serial_ref=None, speed_factor=1.0, accel_factor=1.0, move_type="LIN", aux_joints=None): # 加在最後面
         super().__init__()
         self.start_joints = np.array(start_joints)
         self.target_joints = np.array(target_joints)
@@ -223,10 +186,6 @@ class CartesianExecutor(QThread):
         self.move_type = move_type
         self.aux_joints = np.array(aux_joints) if aux_joints is not None else None
         self._is_running = True 
-        self.blend_str = blend_str
-        self.next_joints = np.array(next_joints) if next_joints is not None else None
-        self.v_start = v_start  # 存下初速接力棒
-        self.execute_event = threading.Event() # 新增開火許可證
 
     def run(self):
         try:
@@ -282,54 +241,8 @@ class CartesianExecutor(QThread):
                 dist_mm = np.linalg.norm(pos_end - pos_start) * 1000.0
         else:
             dist_mm = np.linalg.norm(pos_end - pos_start) * 1000.0
-
-        # ==========================================
-        # 新增：幾何引擎 (計算直線與圓角複合長度)
-        # ==========================================
-        self.is_blending = False
-        self.total_dist = dist_mm  # 預設為純直線長度 (mm)
-        
-        if self.blend_str != "FINE" and self.next_joints is not None and not is_circ:
-            T_flange_next = kinematics.forward_kinematics(self.next_joints)
-            pos_next = (T_flange_next @ self.tcp_offset_mat)[:3, 3]
-            self.pos_next = pos_next # 存起來，等一下算夾角要用
-            
-            try:
-                blend_ratio = float(self.blend_str.replace('%', '')) / 100.0
-            except ValueError:
-                blend_ratio = 0.0
-                
-            if blend_ratio > 0:
-                dist_in = np.linalg.norm(pos_end - pos_start) * 1000.0
-                dist_out = np.linalg.norm(pos_next - pos_end) * 1000.0
-                
-                if dist_in > 1.0 and dist_out > 1.0:
-                    self.is_blending = True
-                    r_blend = min(dist_in, dist_out) * blend_ratio
-                    self.r_blend = r_blend # 存起融合半徑 (mm)，等一下算向心力要用
-                    
-                    # 算出 mm 單位的錨點座標 (為了與 pos 單位 meter 匹配，需除以 1000)
-                    r_blend_m = r_blend / 1000.0
-                    self.p_blend_start = pos_end - ((pos_end - pos_start) / (dist_in/1000.0)) * r_blend_m
-                    self.p_blend_end = pos_end + ((pos_next - pos_end) / (dist_out/1000.0)) * r_blend_m
-                    self.dist_straight = dist_in - r_blend
-                    
-                    # 近似貝茲曲線的弧長 (mm)
-                    self.curve_len = 0.0
-                    prev_pt = self.p_blend_start
-                    for i in range(1, 11):
-                        t_b = i / 10.0
-                        pt = ((1-t_b)**2)*self.p_blend_start + 2*(1-t_b)*t_b*pos_end + (t_b**2)*self.p_blend_end
-                        self.curve_len += np.linalg.norm(pt - prev_pt) * 1000.0
-                        prev_pt = pt
-                        
-                    # 覆蓋總長度，欺騙後面的 S-Curve 引擎
-                    self.total_dist = self.dist_straight + self.curve_len
-                    dist_mm = self.total_dist
             
         if dist_mm < 0.1 and dist_deg < 0.1:
-            self.ready_signal.emit() # 提早結束也要通知大腦
-            self.execute_event.wait()
             self.finished_signal.emit()
             return
             
@@ -351,7 +264,7 @@ class CartesianExecutor(QThread):
         base_profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
 
         # 核心進化：Dry-Run 軌跡預掃描 (找出空間隱藏的超速奇異點)
-        sample_steps = max(100, int(dist_main * 1.5))
+        sample_steps = max(15, int(dist_main / 1.0)) 
         progress_samples = np.linspace(0, 1.0, sample_steps)
         delta_progress = 1.0 / (sample_steps - 1)
         
@@ -359,23 +272,11 @@ class CartesianExecutor(QThread):
         current_seed = self.start_joints.copy()
         
         for p in progress_samples:
-            # 修改：動態空間映射 (支援直線、圓弧與貝茲圓角)
             if is_circ:
                 theta = p * theta_e
                 curr_pos = C + r * math.cos(theta) * x_axis + r * math.sin(theta) * y_axis
-            elif not getattr(self, 'is_blending', False):
-                curr_pos = pos_start + (pos_end - pos_start) * p
             else:
-                # 融合模式座標計算
-                s_current = p * self.total_dist
-                if s_current <= self.dist_straight:
-                    prog_straight = s_current / self.dist_straight if self.dist_straight > 0 else 1.0
-                    curr_pos = pos_start + prog_straight * (self.p_blend_start - pos_start)
-                else:
-                    s_curve = s_current - self.dist_straight
-                    t_b = s_curve / self.curve_len if self.curve_len > 0 else 1.0
-                    if t_b > 1.0: t_b = 1.0
-                    curr_pos = ((1-t_b)**2)*self.p_blend_start + 2*(1-t_b)*t_b*pos_end + (t_b**2)*self.p_blend_end
+                curr_pos = pos_start + (pos_end - pos_start) * p
                 
             curr_rot = slerp([p]).as_matrix()[0]
             T_tcp_target = np.eye(4)
@@ -448,75 +349,26 @@ class CartesianExecutor(QThread):
             target_jerk /= (overspeed_ratio ** 3)
             self.log_signal.emit(f"[{self.move_type}] Overload ({peak_pulse_freq:.0f}Hz)！Scale down to {(1.0/overspeed_ratio):.2f}X")
             
-        # ========================================================
-        # 動力學核心：計算完美過彎末速 (Cornering Velocity)
-        # ========================================================
-        self.v_end = 0.0
-        
-        # 只有在符合融合條件時，才允許不煞車過彎
-        if getattr(self, 'is_blending', False) and getattr(self, 'r_blend', 0.0) > 0.0 and getattr(self, 'pos_next', None) is not None:
-            v_in = pos_end - pos_start
-            v_out = self.pos_next - pos_end
-            norm_in = np.linalg.norm(v_in)
-            norm_out = np.linalg.norm(v_out)
-            
-            if norm_in > 1e-6 and norm_out > 1e-6:
-                # 計算兩個向量的夾角 theta
-                cos_theta = np.dot(v_in, v_out) / (norm_in * norm_out)
-                cos_theta = np.clip(cos_theta, -1.0, 1.0)
-                theta = math.acos(cos_theta)
-                
-                # 1. 幾何夾角限速 (Junction Deviation): V_max * sin(theta/2)
-                corner_ratio = math.sin(theta / 2.0)
-                
-                # 2. 物理向心力限速: sqrt(A_max * r_blend)
-                v_phys_limit = math.sqrt(target_accel * self.r_blend)
-                
-                # 綜合三者取最小值：我們設的巡航速限 vs 幾何過彎極限 vs 物理不失步極限
-                self.v_end = min(target_speed, target_speed * corner_ratio, v_phys_limit)
-
-        # 終極防呆：確保接力棒傳來的初速和剛算出的末速，都不會大於這一段降速後的最高極速
-        final_v_start = min(self.v_start, target_speed)
-        final_v_end = min(self.v_end, target_speed)
-
-        # 換上我們親自測試過的新引擎！
-        final_profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk, v_start=final_v_start, v_end=final_v_end)
-        
-        # 將真正的末速存起來，交給 PathManager 的 on_worker_finished 去傳給下一棒！
-        self.actual_end_velocity = final_v_end
+        final_profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
 
         # ========================================================
         # 階段一：軌跡全快取預算
         # ========================================================
         interval = 0.015  
+        t = 0.0
         current_seed = self.start_joints.copy()
+        
         exact_trajectory = []
 
-        # 精確時間陣列：保證 100% 抵達終點
-        t_steps = np.arange(0, final_profile.T_total, interval).tolist()
-        if not t_steps or t_steps[-1] < final_profile.T_total:
-            t_steps.append(final_profile.T_total)
-
-        for t in t_steps:
+        while t <= final_profile.T_total:
             if not self._is_running: return
             progress = final_profile.get_progress(t)
             
-            # 修改：跟上面一樣的動態空間映射
             if is_circ:
                 theta = progress * theta_e
                 curr_pos = C + r * math.cos(theta) * x_axis + r * math.sin(theta) * y_axis
-            elif not getattr(self, 'is_blending', False):
-                curr_pos = pos_start + (pos_end - pos_start) * progress
             else:
-                s_current = progress * self.total_dist
-                if s_current <= self.dist_straight:
-                    prog_straight = s_current / self.dist_straight if self.dist_straight > 0 else 1.0
-                    curr_pos = pos_start + prog_straight * (self.p_blend_start - pos_start)
-                else:
-                    s_curve = s_current - self.dist_straight
-                    t_b = s_curve / self.curve_len if self.curve_len > 0 else 1.0
-                    if t_b > 1.0: t_b = 1.0
-                    curr_pos = ((1-t_b)**2)*self.p_blend_start + 2*(1-t_b)*t_b*pos_end + (t_b**2)*self.p_blend_end
+                curr_pos = pos_start + (pos_end - pos_start) * progress
                 
             curr_rot = slerp([progress]).as_matrix()[0]
             
@@ -532,33 +384,14 @@ class CartesianExecutor(QThread):
             t += interval
 
         # ========================================================
-        # 神奇交界點：先算出終點存起來，然後通知大腦卡住！
-        # ========================================================
-        self.exact_trajectory = exact_trajectory
-
-        # 提早把真正的終點算出來
-        if getattr(self, 'is_blending', False):
-            self.actual_end_joints = exact_trajectory[-1]
-        else:
-            self.actual_end_joints = self.target_joints
-            
-        # 將真正的末速存起來，交給 PathManager 去傳給下一棒
-        self.actual_end_velocity = final_v_end
-
-        self.ready_signal.emit() # 通知大腦算完了！
-        self.execute_event.wait() # 卡住，等待大腦下令開火！
-
-        if not self._is_running: return
-
-        # ========================================================
         # 階段二：無腦極速發射 (Zero-Compute Execution)
         # ========================================================
         counter = 0
         gui_skip_frames = 10
         self.update_signal.emit(list(self.start_joints))
 
-        for ik_joints in self.exact_trajectory:
-            if not self._is_running: return  
+        for ik_joints in exact_trajectory:
+            if not self._is_running: return #
 
             # 更新 3D 畫面
             if counter % gui_skip_frames == 0:
@@ -568,19 +401,24 @@ class CartesianExecutor(QThread):
             if self.serial_ref and self.serial_ref.is_connected:
                 self.serial_ref.send_joints(list(ik_joints), interval, move_mode=1)
                 self.serial_ref.wait_for_ok(timeout=3.0)
-            else:
-                # 模擬器專屬：強迫降速，模擬實體手臂真實的物理移動時間
-                time.sleep(interval)
                 
             counter += 1
-        
+
         # ========================================================
         # 結尾：精準錨定與動畫收尾
         # ========================================================
-        self.update_signal.emit(list(self.actual_end_joints))
+        current_err = np.abs(np.array(self.target_joints) - exact_trajectory[-1])
+        max_err = np.max(current_err)
+
+        self.update_signal.emit(list(self.target_joints))
         
-        if hasattr(self.serial_ref, 'wait_for_motion_complete'):
-            self.serial_ref.wait_for_motion_complete(timeout=10.0)
+        if self.serial_ref and self.serial_ref.is_connected:
+            if max_err > 0.01:
+                self.serial_ref.send_joints(list(self.target_joints), 0.005, move_mode=1)
+                self.serial_ref.wait_for_ok(timeout=3.0)
+                
+            if hasattr(self.serial_ref, 'wait_for_motion_complete'):
+                self.serial_ref.wait_for_motion_complete(timeout=10.0)
 
         self.finished_signal.emit()
 
@@ -590,9 +428,8 @@ class NativePTPExecutor(QThread):
     finished_signal = pyqtSignal()
     error_signal = pyqtSignal(str)
     log_signal = pyqtSignal(str)
-    ready_signal = pyqtSignal()
 
-    def __init__(self, start_joints, target_joints, serial_ref=None, speed_factor=1.0, accel_factor=1.0, blend_str="FINE", next_joints=None):
+    def __init__(self, start_joints, target_joints, serial_ref=None, speed_factor=1.0, accel_factor=1.0):
         super().__init__()
         self.start_joints = np.array(start_joints)
         self.target_joints = np.array(target_joints)
@@ -600,8 +437,6 @@ class NativePTPExecutor(QThread):
         self.speed_factor = speed_factor
         self.accel_factor = accel_factor # 備用，等待下一階段與 C++ 對接
         self._is_running = True
-        self.blend_str = blend_str
-        self.next_joints = np.array(next_joints) if next_joints is not None else None
 
     def run(self):
         if self.serial_ref and self.serial_ref.is_connected:
@@ -624,10 +459,6 @@ class NativePTPExecutor(QThread):
                     overspeed_ratio = total_freq / MAX_TOTAL_PULSE_NATIVE
                     self.speed_factor /= overspeed_ratio
                     self.log_signal.emit(f"[PTP Native] Overload ({total_freq:.0f}Hz)！Scale down to {(1.0/overspeed_ratio):.2f}X")
-
-            self.ready_signal.emit()
-            self.execute_event.wait()
-            if not self._is_running: return
 
             # 1. 發射指令，讓 C++ 去爆發！
             self.serial_ref.send_joints(list(self.target_joints), self.speed_factor, move_mode=2)
@@ -683,7 +514,6 @@ class PathManager(QObject):
         self.is_looping = False
         self.global_speed = 1.0 
         self.current_tcp_offset = np.eye(4)
-        # 1. 加入這行：防止幽靈計時器作祟的總開關
         self._is_path_active = False
         
         # 暫存區：用來裝載 CIRC 的中繼點
@@ -712,9 +542,8 @@ class PathManager(QObject):
             "joints": [round(j, 4) for j in current_joints],
             "aux_joints": aux,
             "type": move_type,
-            "blend": "FINE",   # 新增這行：預設為最安全的精準到位模式
             "speed": float(speed), 
-            "accel": float(accel), 
+            "accel": float(accel),
             "active": True,
             "note": ""
         }
@@ -769,18 +598,14 @@ class PathManager(QObject):
             try:
                 # 存檔前的「全自動清洗機」
                 for pt in self.waypoints:
-                    # 1. 確保所有舊點位都有新的 accel 參數
+
                     if 'accel' not in pt and pt.get('type') != 'DELAY':
                         pt['accel'] = 50.0
-                    # 補齊舊版的 blend
-                    if 'blend' not in pt:
-                        pt['blend'] = "FINE"
-                    # 2. 強制清洗 joints，限制為 4 位小數
+
+                    # 強制清洗 joints，限制為 4 位小數
                     if 'joints' in pt and pt['joints'] is not None:
-                        # 加上 float() 是為了確保 numpy 資料型態能被乾淨轉換
                         pt['joints'] = [round(float(j), 4) for j in pt['joints']]
-                    
-                    # 3. 如果有 CIRC 的輔助點，一併清洗
+
                     if 'aux_joints' in pt and pt['aux_joints'] is not None:
                         pt['aux_joints'] = [round(float(j), 4) for j in pt['aux_joints']]
 
@@ -804,256 +629,191 @@ class PathManager(QObject):
             except Exception as e:
                 self.log_signal.emit(f"[Error] Load failed: {e}")
 
+    # 讓 3D 模擬畫面畫出線條
     def get_trajectory_preview(self, tcp_offset):
         trajectory_points = []
         active_wps = [pt for pt in self.waypoints if pt.get('active', True) and pt.get('type') != 'DELAY' and 'joints' in pt]
-        
-        if len(active_wps) < 2:
-            return trajectory_points
 
-        from kinematics import forward_kinematics
-
-        # 預先收集座標
-        cartesian_points = []
-        joint_points = []
-        for wp in active_wps:
-            j_arr = np.array(wp['joints'])
-            joint_points.append(j_arr)
-            T = forward_kinematics(j_arr)
-            cartesian_points.append((T @ tcp_offset)[:3, 3])
-            
-        # ==========================================
-        # 1. 計算每個點的「融合半徑 (Blend Radius)」
-        # ==========================================
-        blend_radii = [0.0] * len(active_wps)
-        for i in range(1, len(active_wps) - 1):
-            blend_str = active_wps[i].get('blend', 'FINE')
-            if blend_str == "FINE" or not blend_str.endswith('%'):
-                continue
-            
-            try:
-                blend_ratio = float(blend_str.replace('%', '')) / 100.0
-            except ValueError:
-                blend_ratio = 0.0
+        if len(active_wps) >= 2:
+            for i in range(len(active_wps) - 1):
+                j_start = np.array(active_wps[i]['joints'])
+                j_end = np.array(active_wps[i+1]['joints'])
+                m_type = active_wps[i+1].get('type', 'LIN') 
+                aux_joints = active_wps[i+1].get('aux_joints', None)
                 
-            if blend_ratio > 0:
-                blend_ratio = min(blend_ratio, 1.0)
-                v_in = cartesian_points[i-1] - cartesian_points[i]
-                v_out = cartesian_points[i+1] - cartesian_points[i]
-                blend_radii[i] = min(np.linalg.norm(v_in), np.linalg.norm(v_out)) * blend_ratio
-
-        # ==========================================
-        # 2. 參數化精確繪製 (保證 100% 無縫連接)
-        # ==========================================
-        for i in range(len(active_wps) - 1):
-            p_start = cartesian_points[i]
-            p_end = cartesian_points[i+1]
-            j_start = joint_points[i]
-            j_end = joint_points[i+1]
-            move_type = active_wps[i+1].get('type', 'PTP')
-            
-            r_start = blend_radii[i]
-            r_end = blend_radii[i+1]
-            
-            dist_main = np.linalg.norm(p_end - p_start)
-            if dist_main < 1e-3:
-                continue
-                
-            # 核心魔法：直接算出線段「精確起筆與收筆」的比例 (t)
-            t_start = r_start / dist_main
-            t_end = 1.0 - (r_end / dist_main)
-            
-            if t_start > t_end:
-                t_center = 0.5 * (t_start + t_end)
-                t_start = t_end = t_center
-                
-            # --- A. 繪製主線段 ---
-            num_steps = 30
-            segment_pts = []
-            for step in range(num_steps + 1):
-                # t 值被嚴格限制在我們精算的範圍內
-                t = t_start + (step / float(num_steps)) * (t_end - t_start)
-                if move_type == "PTP":
-                    j_interp = j_start + t * (j_end - j_start)
-                    pt = (forward_kinematics(j_interp) @ tcp_offset)[:3, 3]
-                else: 
-                    pt = p_start + t * (p_end - p_start)
-                segment_pts.append(pt)
-                trajectory_points.append(pt.tolist())
-                
-            # --- B. 繪製終點的融合圓角 (強制錨定法) ---
-            if r_end > 0 and i + 2 < len(active_wps):
-                # 1. 錨定起點：絕對使用這條線段的「最後一滴墨水」作為圓角的起點
-                blend_start_pt = segment_pts[-1]
-                
-                # 2. 錨定終點：偷看下一條線的「第一滴墨水」作為圓角的終點
-                p_next_next = cartesian_points[i+2]
-                j_next_next = joint_points[i+2]
-                next_move_type = active_wps[i+2].get('type', 'PTP')
-                dist_next = np.linalg.norm(p_next_next - p_end)
-                
-                if dist_next > 1e-3:
-                    t_start_next = r_end / dist_next
-                    if next_move_type == "PTP":
-                        j_interp_next = j_end + t_start_next * (j_next_next - j_end)
-                        blend_end_pt = (forward_kinematics(j_interp_next) @ tcp_offset)[:3, 3]
-                    else:
-                        blend_end_pt = p_end + t_start_next * (p_next_next - p_end)
+                steps = 20
+                if m_type in ['PTP', 'N_PTP', 'NATIVE_PTP']:
+                    for t in np.linspace(0, 1, steps):
+                        interp = j_start + t * (j_end - j_start)
+                        T_tcp = kinematics.forward_kinematics(interp) @ tcp_offset
+                        trajectory_points.append(T_tcp[:3, 3])
                         
-                    # 3. 畫出完美的貝茲曲線，強制連結上述兩個錨點！
-                    num_blend_steps = 15
-                    for step in range(1, num_blend_steps + 1):
-                        t_b = step / float(num_blend_steps)
-                        p_t = ((1 - t_b) ** 2) * blend_start_pt + (2 * (1 - t_b) * t_b) * p_end + (t_b ** 2) * blend_end_pt
-                        trajectory_points.append(p_t.tolist())
-
+                elif m_type == 'CIRC' and aux_joints is not None:
+                    T_s = kinematics.forward_kinematics(j_start) @ tcp_offset
+                    T_a = kinematics.forward_kinematics(aux_joints) @ tcp_offset
+                    T_e = kinematics.forward_kinematics(j_end) @ tcp_offset
+                    ps, pa, pe = T_s[:3, 3], T_a[:3, 3], T_e[:3, 3]
+                    
+                    u = pa - ps
+                    w = pe - ps
+                    cross_uw = np.cross(u, w)
+                    cross_norm = np.linalg.norm(cross_uw)
+                    
+                    if cross_norm > 1e-6:
+                        u2, w2 = np.dot(u, u), np.dot(w, w)
+                        C = ps + np.cross((u2 * w - w2 * u), cross_uw) / (2.0 * cross_norm**2)
+                        r = np.linalg.norm(ps - C)
+                        
+                        n = cross_uw / cross_norm
+                        x_axis = (ps - C) / r
+                        y_axis = np.cross(n, x_axis)
+                        
+                        theta_e = math.atan2(np.dot(pe - C, y_axis), np.dot(pe - C, x_axis))
+                        if theta_e < 0: theta_e += 2 * math.pi
+                        
+                        for t in np.linspace(0, 1, steps):
+                            theta = t * theta_e
+                            pt = C + r * math.cos(theta) * x_axis + r * math.sin(theta) * y_axis
+                            trajectory_points.append(pt)
+                    else:
+                        for t in np.linspace(0, 1, steps):
+                            trajectory_points.append(ps + t * (pe - ps))
+                            
+                else: # LIN
+                    T_s = kinematics.forward_kinematics(j_start) @ tcp_offset
+                    T_e = kinematics.forward_kinematics(j_end) @ tcp_offset
+                    xs, xe = T_s[:3, 3], T_e[:3, 3]
+                    for t in np.linspace(0, 1, steps):
+                        trajectory_points.append(xs + t * (xe - xs))
+                        
         return trajectory_points
 
-    # --- 路徑執行邏輯 (工業級滑動預讀引擎) ---
+    # --- 路徑執行邏輯 ---
     def run_path(self, current_joints_start, loop=False, tcp_offset=None):
         active_points = [pt for pt in self.waypoints if pt.get('active', True)]
-        if not active_points: return
         
+        if not active_points:
+            self.log_signal.emit("[Error] No active waypoints.")
+            return
+            
+        if self.worker and self.worker.isRunning():
+            self.log_signal.emit("[Info] Already running.")
+            return
+
         self.is_looping = loop
         self.execution_queue = active_points
         self.current_tcp_offset = tcp_offset if tcp_offset is not None else np.eye(4)
-        self._is_path_active = True 
-        
-        self.current_v_start = 0.0 
-        self.path_index = 0
-        
-        self.is_hardware_busy = False # 實體手臂狀態燈
-        self.active_worker = None     # 正在「發射中」的工人
-        self.preloaded_worker = None  # 正在「背景偷算」的工人
-        
-        self.log_signal.emit(f"([START]) 滑動預讀引擎啟動 (Sliding Window Look-ahead)...")
-        self._preload_next(current_joints_start)
 
-    def _preload_next(self, current_joints):
-        """指派下一個工人去背景偷算"""
-        if not self._is_path_active: return
+        self._is_path_active = True
+        
+        self.log_signal.emit(f"([START]) Executing {len(active_points)} points...")
+        self.path_index = 0
+        self._execute_next(current_joints_start)
+
+    def _execute_next(self, current_joints):
+        if getattr(self, '_is_path_active', False) is False:
+            return
         
         if self.path_index >= len(self.execution_queue):
-            if self.is_looping and not self.is_hardware_busy:
+            if self.is_looping:
                 self.log_signal.emit(">> Looping...")
                 self.path_index = 0
-                self._preload_next(current_joints)
-            return
+            else:
+                self.log_signal.emit("([END]) Path Completed.")
+                return
 
         target_data = self.execution_queue[self.path_index]
         move_type = target_data.get('type', "PTP")
         name = target_data.get('name', str(self.path_index))
-        
-        speed_factor = min((target_data.get('speed', 50.0) / 100.0) * self.global_speed, 1.0)
-        accel_factor = min((target_data.get('accel', 50.0) / 100.0) * self.global_speed, 1.0)
-        
-        blend_str = target_data.get('blend', 'FINE')
-        next_target_joints = None
-        if blend_str != "FINE" and self.path_index + 1 < len(self.execution_queue):
-            next_data = self.execution_queue[self.path_index + 1]
-            if next_data.get('type') == 'DELAY': blend_str = "FINE"
-            else: next_target_joints = next_data.get('joints', None)
 
-        self.log_signal.emit(f"  [Pre-loading] -> {name} ({move_type}, SPD:{speed_factor*100:.0f}%, BLEND:{blend_str})...")
-        
-        # 建立對應的 Worker (保有原汁原味的串列通訊)
         if move_type == "DELAY":
-            worker = DelayExecutor(target_data.get('value', 0.0), current_joints)
-        elif move_type in ["LIN", "CIRC"]:
-            worker = CartesianExecutor(
-                start_joints=current_joints, target_joints=target_data.get('joints', current_joints), 
-                tcp_offset_mat=self.current_tcp_offset, serial_ref=self.serial_manager, 
-                speed_factor=speed_factor, accel_factor=accel_factor, move_type=move_type, 
-                aux_joints=target_data.get('aux_joints', None), blend_str=blend_str, 
-                next_joints=next_target_joints, v_start=self.current_v_start
+            delay_time = target_data.get('value', 0.0)
+            self.log_signal.emit(f"[{name}] Waiting for {delay_time}s...")
+            # 消化掉 Delay，時間到直接呼叫下一步，並把現在的關節角度原封不動傳遞下去
+            QTimer.singleShot(int(delay_time * 1000), lambda: self._trigger_next_step(current_joints))
+            return
+
+        target_joints = target_data.get('joints', current_joints)
+        aux_joints = target_data.get('aux_joints', None) 
+        
+        point_speed_pct = target_data.get('speed', 50.0)
+        point_accel_pct = target_data.get('accel', 50.0)
+        
+        speed_factor = (point_speed_pct / 100.0) * self.global_speed
+        if speed_factor > 1.0: speed_factor = 1.0 
+        accel_factor = (point_accel_pct / 100.0) * self.global_speed
+        if accel_factor > 1.0: accel_factor = 1.0
+        
+        self.log_signal.emit(f"Moving -> {name} ({move_type}, SPD:{speed_factor*100:.0f}%, ACC:{accel_factor*100:.0f}%)...")
+        
+        if move_type in ["LIN", "CIRC"]:
+            self.worker = CartesianExecutor(
+                start_joints=current_joints, target_joints=target_joints, 
+                tcp_offset_mat=self.current_tcp_offset, serial_ref=self.serial_manager,  
+                speed_factor=speed_factor,
+                accel_factor=accel_factor,
+                move_type=move_type, aux_joints=aux_joints 
             )
-        elif move_type == "N_PTP":
-            worker = NativePTPExecutor(start_joints=current_joints, target_joints=target_data.get('joints', current_joints), serial_ref=self.serial_manager, speed_factor=speed_factor, accel_factor=accel_factor)
-        else:
-            worker = PTPExecutor(start_joints=current_joints, end_joints=target_data.get('joints', current_joints), serial_ref=self.serial_manager, speed_factor=speed_factor, accel_factor=accel_factor)
+        elif move_type in ["N_PTP"]:
+            self.worker = NativePTPExecutor(
+                start_joints=current_joints, target_joints=target_joints,
+                serial_ref=self.serial_manager,
+                speed_factor=speed_factor,
+                accel_factor=accel_factor
+            )
+        else: 
+            self.worker = PTPExecutor(
+                start_joints=current_joints, end_joints=target_joints, 
+                serial_ref=self.serial_manager,  
+                speed_factor=speed_factor,     
+                accel_factor=accel_factor
+            )
             
-        self.preloaded_worker = worker
-        
-        worker.error_signal.connect(self._on_worker_error)
-        worker.update_signal.connect(self.joint_update_signal.emit)
-        worker.log_signal.connect(self.log_signal.emit)
-        
-        # 核心：連接雙重緩衝訊號
-        worker.ready_signal.connect(self._on_worker_ready)
-        worker.finished_signal.connect(self._on_worker_finished)
-        
+        self.worker.error_signal.connect(self._on_worker_error)
+        self.worker.update_signal.connect(self.joint_update_signal.emit)
+        self.worker.log_signal.connect(self.log_signal.emit)
+        self.worker.finished_signal.connect(lambda: self._on_point_finished(target_joints, 0.0))
+        self.worker.start()
+
+    def _on_point_finished(self, last_joints, delay):
+        if delay > 0:
+            self.log_signal.emit(f"Waiting {delay}s...")
+            QTimer.singleShot(int(delay * 1000), lambda: self._trigger_next_step(last_joints))
+        else:
+            QTimer.singleShot(10, lambda: self._trigger_next_step(last_joints))
+
+    def _trigger_next_step(self, last_joints):
         self.path_index += 1
-        worker.start() # 啟動！但他算完會自己卡住
-
-    def _on_worker_ready(self):
-        """當工人算完 IK 與微積分時觸發"""
-        if not self.is_hardware_busy and self.preloaded_worker:
-            self._fire_worker()
-
-    def _fire_worker(self):
-        """下令開火，開始實體發射"""
-        self.is_hardware_busy = True
-        worker = self.preloaded_worker
-        self.active_worker = worker
-        self.preloaded_worker = None
+        self._execute_next(last_joints)
         
-        # 核心修復：在準備偷算「下一段」之前，提早把這一段算好的末速拿出來當接力棒！
-        self.current_v_start = getattr(worker, 'actual_end_velocity', 0.0)
-        
-        worker.execute_event.set() # 解除封印，實體開始跑！
-        
-        # 馬上派下一個工人去背景偷算！(此時他就會拿到正確的 current_v_start 了)
-        self._preload_next(getattr(worker, 'actual_end_joints', []))
-
-    def _on_worker_finished(self):
-        """實體手臂跑完一段時觸發"""
-        self.is_hardware_busy = False
-        # 移除原本在這裡拿接力棒的錯誤邏輯
-        next_start = getattr(self.active_worker, 'actual_end_joints', [])
-        
-        # 跑完的瞬間，下一個工人如果已經偷算好，直接 0 毫秒無縫開火！
-        if self.preloaded_worker:
-            if not self.preloaded_worker.execute_event.is_set():
-                if hasattr(self.preloaded_worker, 'actual_end_joints'):
-                    self._fire_worker()
-                else:
-                    self.log_signal.emit("  [Wait] 背景運算中，等待就緒...")
-                    
-        elif self.path_index >= len(self.execution_queue):
-            if self.is_looping:
-                self.log_signal.emit(">> Looping...")
-                self.path_index = 0
-                self._preload_next(next_start)
-            else:
-                self.log_signal.emit("([END]) Path Completed.")
-                self._is_path_active = False
-
     def _on_worker_error(self, msg):
         self.log_signal.emit(f"[STOP] {msg}")
         self.stop_path()
 
     def stop_path(self):
+        # 1. 關閉總開關，秒殺所有排隊中的幽靈計時器
         self._is_path_active = False 
-        
-        # 溫柔且安全地殺死兩個執行緒
-        if getattr(self, 'active_worker', None):
-            self.active_worker._is_running = False
-            if hasattr(self.active_worker, 'execute_event'): self.active_worker.execute_event.set() 
-            self.active_worker.wait()
-            self.active_worker = None
-            
-        if getattr(self, 'preloaded_worker', None):
-            self.preloaded_worker._is_running = False
-            if hasattr(self.preloaded_worker, 'execute_event'): self.preloaded_worker.execute_event.set()
-            self.preloaded_worker.wait()
-            self.preloaded_worker = None
-            
-        self.is_hardware_busy = False
+
+        # 2. 舉起紅旗！先讓背景執行緒知道該下車了
+        if self.worker:
+            self.worker._is_running = False 
+
+        # 3. 發送硬體急停
         if self.serial_manager and self.serial_manager.is_connected:
             self.serial_manager.send_command("<STOP>")
+            
+        # 4. 強制喚醒執行緒 (這步非常重要，保證它不會卡在 sleep)
+        if self.serial_manager:
             self.serial_manager.ok_event.set()
             self.serial_manager.motion_done_event.set()
             
+        # 5. PyQt6 終極防護：把 wait(1000) 的時間限制拿掉！
+        # 強迫 GUI 等待執行緒「真正死亡」。
+        # 因為我們上面已經喚醒它了，這個 wait() 在現實中只會花費 0.001 秒，絕對不會卡住 GUI。
+        if self.worker and self.worker.isRunning():
+            self.worker.wait() 
+            
+        self.worker = None
         self.is_looping = False
         self.log_signal.emit("([STOP]) Execution Halted.")
 

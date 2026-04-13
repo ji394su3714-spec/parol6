@@ -22,14 +22,14 @@ const JointConfig JOINTS[6] = {
 
 const MotorCurrentConfig MOTOR_CURRENTS[6] = {
     {1100, 0.5f}, //J1
-    {1150, 0.75f}, //J2
+    {1100, 0.75f}, //J2
     {1000, 0.75f}, //J3
     {1000, 0.5f}, //J4
     {1000, 0.5f}, //J5
     {850,  0.5f}  //J6
 };
 
-const float GEAR_RATIOS[6] = {6.4, 20.0, 18.1, 4.0, 4.0, 10.0};
+const float GEAR_RATIOS[6] = {6.4, 20.0, 18.095, 4.0, 4.0, 10.0};
 
 TMC5160Stepper driver_J2(Y_CS_PIN, R_SENSE_5160);       
 
@@ -186,7 +186,7 @@ void setup() {
     driver_J2.en_pwm_mode(true);
     driver_J2.pwm_autoscale(true);
 
-    // 其餘五軸設定 (TMC2240 原生 SPI 模組)
+    // TMC2240 原生 SPI 模組
     setupTMC2240_RawSPI(X_CS_PIN,  MOTOR_CURRENTS[0].run_mA, MOTOR_CURRENTS[0].hold_ratio);
     setupTMC2240_RawSPI(Z_CS_PIN,  MOTOR_CURRENTS[2].run_mA, MOTOR_CURRENTS[2].hold_ratio);
     setupTMC2240_RawSPI(E0_CS_PIN, MOTOR_CURRENTS[3].run_mA, MOTOR_CURRENTS[3].hold_ratio);
@@ -246,7 +246,7 @@ void loop() {
         digitalWrite(LED_PIN, HIGH);  
     }
 
-    // 升級：全方位監控所有驅動器的溫度！
+    // 監控所有驅動器的溫度狀態，每 30 秒報告一次（前提是目前沒有在執行路徑）
     static unsigned long lastTempReport = 0;
     if (millis() - lastTempReport >= 30000) {
         lastTempReport = millis();
