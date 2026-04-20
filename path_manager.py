@@ -629,7 +629,6 @@ class PathManager(QObject):
             except Exception as e:
                 self.log_signal.emit(f"[Error] Load failed: {e}")
 
-    # 讓 3D 模擬畫面畫出線條
     def get_trajectory_preview(self, tcp_offset):
         trajectory_points = []
         active_wps = [pt for pt in self.waypoints if pt.get('active', True) and pt.get('type') != 'DELAY' and 'joints' in pt]
