@@ -119,7 +119,7 @@ def get_global_style():
         /* ==========================================
            6. 系統日誌視窗 (System Log)
            ========================================== */
-        QTextEdit#sys_log {{ background-color: #1e1e1e; color: #00ff00; font-family: Consolas, Monospace; font-size: 22px; padding: 10px; border: none; border-radius: 4px; }}
+        QTextEdit#sys_log {{ background-color: #1e1e1e; color: #00ff00; font-family: Consolas, Monospace; font-size: 22px; padding: 10px; border: none; border-radius: 0px; }}
         QTextEdit#sys_log QScrollBar:vertical {{ border: none; background: #2b2b2b; width: 12px; margin: 0px; }}
         QTextEdit#sys_log QScrollBar::handle:vertical {{ background: #555; min-height: 20px; border-radius: 6px; }}
         QTextEdit#sys_log QScrollBar::handle:vertical:hover {{ background: #777; }}        

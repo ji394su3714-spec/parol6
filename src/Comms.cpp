@@ -76,7 +76,7 @@ void processCommand() {
                 else if (i == 5 && j4_req) { homingState[i] = 10; homingTriggered = true; } 
                 else {
                     homingState[i] = 1; 
-                    steppers[i]->setRampLen(0); 
+                    steppers[i]->setRampLen(20); 
                     long homingSpd = abs(JOINTS[i].homingSpeed) * 10;
                     steppers[i]->setSpeedSteps(homingSpd);
                     steppers[i]->rotate((JOINTS[i].homingSpeed > 0) ? 1 : -1); 

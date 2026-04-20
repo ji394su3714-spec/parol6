@@ -2,6 +2,8 @@ import json
 import time
 import numpy as np
 import math
+import queue
+import threading
 from scipy.signal import savgol_filter
 from PyQt6.QtCore import QObject, QThread, pyqtSignal, QTimer
 from PyQt6.QtWidgets import QFileDialog
@@ -12,417 +14,51 @@ import kinematics
 from motion_profile import SCurveProfile 
 
 # 關節專屬極限 (J1~J6)
-MAX_JOINT_SPEEDS = np.array([158.20, 50.63, 55.94, 253.13, 253.13, 101.25])     # 各軸最高轉速 (度/秒)
-MAX_JOINT_ACCELS = np.array([527.34, 168.75, 186.46, 843.75, 843.75, 337.50])   # 各軸最高加速度 (度/秒^2)
-MAX_JOINT_JERKS = MAX_JOINT_ACCELS * 5.0                               # 各軸最高加加速度 (Jerk, 度/秒^3)
+MAX_JOINT_SPEEDS = np.array([158.20, 50.63, 55.94, 253.13, 253.13, 101.25])     
+MAX_JOINT_ACCELS = np.array([527.34, 168.75, 186.46, 843.75, 843.75, 337.50])   
+MAX_JOINT_JERKS = MAX_JOINT_ACCELS * 5.0                               
 
 # 直角空間極限 (LIN/CIRC 用)
-MAX_LIN_SPEED = 100.0    # TCP 直線極速 (mm/秒) 
-MAX_LIN_ACCEL = 200.0    # TCP 直線加速度 (mm/秒^2)
-MAX_LIN_JERK = MAX_LIN_ACCEL * 5.0    # TCP 直線加加速度 (mm/秒^3)
+MAX_LIN_SPEED = 100.0    
+MAX_LIN_ACCEL = 200.0    
+MAX_LIN_JERK = MAX_LIN_ACCEL * 5.0    
 
-MAX_ROT_SPEED = 90.0     # TCP 旋轉極速 (度/秒)
-MAX_ROT_ACCEL = 180.0     # TCP 旋轉加速度 (度/秒^2)
-MAX_ROT_JERK = MAX_ROT_ACCEL * 5.0     # TCP 旋轉加加速度 (度/秒^3)
+MAX_ROT_SPEED = 90.0     
+MAX_ROT_ACCEL = 180.0     
+MAX_ROT_JERK = MAX_ROT_ACCEL * 5.0     
 
 # 晶片總體算力防護網參數
-MAX_TOTAL_PULSE_SLICE = 10000   # 切片模式極限 (CPU 負載重，邊跑邊解碼)
-MAX_TOTAL_PULSE_NATIVE = 65000  # 原生模式極限 (CPU 負載極輕，專注發射脈衝)
+MAX_TOTAL_PULSE_SLICE = 10000   
+MAX_TOTAL_PULSE_NATIVE = 65000  
 
-# N_PTP 預設起步時間
-N_PTP_T_ACC = 0.2
+N_PTP_T_ACC = 0.2  # N_PTP 預設起步時間
 
-# 步數換算：定義減速比，計算所有軸的 (微步數 * 減速比) / 360度
 GEAR_RATIOS = np.array([6.4, 20.0, 18.095, 4.0, 4.0, 10.0])
 STEPS_PER_DEG = (1600.0 * GEAR_RATIOS) / 360.0
 
-# 對應 C++ JOINTS 陣列裡 mode=2 的專屬硬體極速 (max_spd)
+# 對應 C++ JOINTS 陣列裡 mode=2 的硬體極速 (max_spd)
 HW_MAX_STEPS = np.array([65000, 65000, 65000, 65000, 65000, 65000])
 
-# 更新與通訊函數
 def update_advanced_settings(lin_spd, lin_acc, rot_spd, rot_acc, slice_pulse, native_pulse, hw_max, t_acc):
     global MAX_LIN_SPEED, MAX_LIN_ACCEL, MAX_LIN_JERK
     global MAX_ROT_SPEED, MAX_ROT_ACCEL, MAX_ROT_JERK
     global MAX_TOTAL_PULSE_SLICE, MAX_TOTAL_PULSE_NATIVE
     global HW_MAX_STEPS, N_PTP_T_ACC
     
-    # 1. 更新 Python 大腦裡的速限
-    MAX_LIN_SPEED = lin_spd
-    MAX_LIN_ACCEL = lin_acc
-    MAX_LIN_JERK = lin_acc * 5.0
-    
-    MAX_ROT_SPEED = rot_spd
-    MAX_ROT_ACCEL = rot_acc
-    MAX_ROT_JERK = rot_acc * 5.0
-    
-    MAX_TOTAL_PULSE_SLICE = slice_pulse
-    MAX_TOTAL_PULSE_NATIVE = native_pulse
+    MAX_LIN_SPEED, MAX_LIN_ACCEL, MAX_LIN_JERK = lin_spd, lin_acc, lin_acc * 5.0
+    MAX_ROT_SPEED, MAX_ROT_ACCEL, MAX_ROT_JERK = rot_spd, rot_acc, rot_acc * 5.0
+    MAX_TOTAL_PULSE_SLICE, MAX_TOTAL_PULSE_NATIVE = slice_pulse, native_pulse
     HW_MAX_STEPS = np.array([hw_max]*6, dtype=float)
     N_PTP_T_ACC = t_acc
-    
-    #print(f">> [Config] Advanced Settings Updated. Native Hz: {native_pulse}, T_acc: {t_acc}s")
 
 # 讓 PathManager 可以發送設定給 MCU
 def send_config_to_mcu(serial_manager):
     if serial_manager and serial_manager.is_connected:
-        # 封包格式: <SET_CFG, HW_MAX_STEPS, T_ACC>
         cmd = f"<SET_CFG,{int(HW_MAX_STEPS[0])},{N_PTP_T_ACC}>"
         serial_manager.send_command(cmd)
         print(f">> [Config] Sent to MCU: {cmd}")
 
-# --- 1. PTP 執行器 (軟體切片 S-Curve) ---
-class PTPExecutor(QThread):
-    update_signal = pyqtSignal(list)
-    finished_signal = pyqtSignal()
-    log_signal = pyqtSignal(str)  
-    error_signal = pyqtSignal(str) 
-    
-    def __init__(self, start_joints, end_joints, serial_ref=None, speed_factor=1.0, accel_factor=1.0):
-        super().__init__()
-        self.start_joints = np.array(start_joints)
-        self.end_joints = np.array(end_joints)
-        self.serial_ref = serial_ref
-        self.speed_factor = speed_factor
-        self.accel_factor = accel_factor 
-        self._is_running = True 
-
-    def run(self):
-        diffs = np.abs(self.end_joints - self.start_joints)
-        
-        if np.max(diffs) < 0.1:
-            self.finished_signal.emit()
-            return
-            
-        # 1. 找出瓶頸軸 (個體物理極限防護)
-        bottleneck_profile = None
-        bottleneck_idx = -1
-        max_duration = 0.0
-        base_allowed_v, base_allowed_a, base_allowed_j = 0.0, 0.0, 0.0
-        
-        for i in range(6):
-            if diffs[i] > 1e-6:
-                mech_limit_v = MAX_JOINT_SPEEDS[i] * self.speed_factor
-                soft_limit_v = (HW_MAX_STEPS[i] * self.speed_factor) / STEPS_PER_DEG[i]
-                allowed_v = min(mech_limit_v, soft_limit_v)
-                allowed_a = MAX_JOINT_ACCELS[i] * self.accel_factor
-                allowed_j = MAX_JOINT_JERKS[i] * self.accel_factor
-                
-                p = SCurveProfile(diffs[i], allowed_v, allowed_a, allowed_j)
-                if p.T_total > max_duration:
-                    max_duration = p.T_total
-                    bottleneck_profile = p
-                    bottleneck_idx = i
-                    base_allowed_v, base_allowed_a, base_allowed_j = allowed_v, allowed_a, allowed_j
-                    
-        if bottleneck_profile is None:
-            self.finished_signal.emit()
-            return
-
-        # 2. 晶片算力防護網
-        if bottleneck_profile.T_total > 0:
-            peak_progress_rate = base_allowed_v / diffs[bottleneck_idx]
-            peak_pulse_freq = np.sum(diffs * peak_progress_rate * STEPS_PER_DEG)
-                
-            if peak_pulse_freq > MAX_TOTAL_PULSE_SLICE:
-                overspeed_ratio = peak_pulse_freq / MAX_TOTAL_PULSE_SLICE
-
-                new_v = base_allowed_v / overspeed_ratio
-                new_a = base_allowed_a / (overspeed_ratio ** 2)
-                new_j = base_allowed_j / (overspeed_ratio ** 3)
-                bottleneck_profile = SCurveProfile(diffs[bottleneck_idx], new_v, new_a, new_j)
-                self.log_signal.emit(f"[PTP] Overload ({peak_pulse_freq:.0f}Hz)！Scale down to {(1.0/overspeed_ratio):.2f}X")
-
-        interval = 0.015
-        t = 0.0
-        counter = 0
-        gui_skip_frames = 10
- 
-        while t <= bottleneck_profile.T_total:
-            if not self._is_running: return
-
-            progress = bottleneck_profile.get_progress(t)
-            current = self.start_joints + (self.end_joints - self.start_joints) * progress
-            
-            if counter % gui_skip_frames == 0:
-                self.update_signal.emit(list(current))
-                
-            if self.serial_ref and self.serial_ref.is_connected:
-                self.serial_ref.send_joints(list(current), interval, move_mode=1)
-                self.serial_ref.wait_for_ok(timeout=3.0)
-                
-            t += interval
-            counter += 1
-        
-        current_err = np.abs(np.array(self.end_joints) - current)
-        max_err = np.max(current_err)
-
-        self.update_signal.emit(list(self.end_joints))
-        
-        if self.serial_ref and self.serial_ref.is_connected:
-            if max_err > 0.01:
-                self.serial_ref.send_joints(list(self.end_joints), 0.005, move_mode=1)
-                self.serial_ref.wait_for_ok(timeout=3.0)
-                
-            if hasattr(self.serial_ref, 'wait_for_motion_complete'):
-                self.serial_ref.wait_for_motion_complete(timeout=10.0)
-                
-        self.finished_signal.emit()
-
-# --- 2. 笛卡爾空間執行器 (處理 LIN 與 CIRC，搭載 Dry-Run 預掃描引擎) ---
-class CartesianExecutor(QThread):
-    update_signal = pyqtSignal(list)
-    finished_signal = pyqtSignal()
-    error_signal = pyqtSignal(str)
-    log_signal = pyqtSignal(str)
-
-    def __init__(self, start_joints, target_joints, tcp_offset_mat, serial_ref=None, speed_factor=1.0, accel_factor=1.0, move_type="LIN", aux_joints=None): # 加在最後面
-        super().__init__()
-        self.start_joints = np.array(start_joints)
-        self.target_joints = np.array(target_joints)
-        self.tcp_offset_mat = tcp_offset_mat if tcp_offset_mat is not None else np.eye(4)
-        self.speed_factor = speed_factor
-        self.accel_factor = accel_factor
-        self.serial_ref = serial_ref
-        self.move_type = move_type
-        self.aux_joints = np.array(aux_joints) if aux_joints is not None else None
-        self._is_running = True 
-
-    def run(self):
-        try:
-            tcp_inv = np.linalg.inv(self.tcp_offset_mat)
-        except:
-            self.error_signal.emit("Invalid TCP Matrix")
-            return
-
-        T_flange_start = kinematics.forward_kinematics(self.start_joints)
-        T_tcp_start = T_flange_start @ self.tcp_offset_mat
-        T_flange_end = kinematics.forward_kinematics(self.target_joints)
-        T_tcp_end = T_flange_end @ self.tcp_offset_mat
-        
-        pos_start = T_tcp_start[:3, 3]
-        pos_end = T_tcp_end[:3, 3]
-        
-        # 姿態旋轉預備 (四元數 Slerp)
-        key_rots = R.from_matrix([T_tcp_start[:3, :3], T_tcp_end[:3, :3]])
-        slerp = Slerp([0, 1], key_rots)
-        rot_diff = key_rots[0].inv() * key_rots[1]
-        dist_deg = np.linalg.norm(rot_diff.as_rotvec()) * (180.0 / math.pi)
-
-        # --- CIRC 圓弧數學引擎 ---
-        is_circ = False
-        dist_mm = 0.0
-
-        if self.move_type == "CIRC" and self.aux_joints is not None:
-            T_flange_aux = kinematics.forward_kinematics(self.aux_joints)
-            T_tcp_aux = T_flange_aux @ self.tcp_offset_mat
-            pos_aux = T_tcp_aux[:3, 3]
-
-            u = pos_aux - pos_start
-            w = pos_end - pos_start
-            cross_uw = np.cross(u, w)
-            cross_norm = np.linalg.norm(cross_uw)
-
-            if cross_norm > 1e-6:
-                is_circ = True
-                u2, w2 = np.dot(u, u), np.dot(w, w)
-                C = pos_start + np.cross((u2 * w - w2 * u), cross_uw) / (2.0 * cross_norm**2)
-                r = np.linalg.norm(pos_start - C)
-                
-                n = cross_uw / cross_norm
-                x_axis = (pos_start - C) / r
-                y_axis = np.cross(n, x_axis)
-                
-                theta_e = math.atan2(np.dot(pos_end - C, y_axis), np.dot(pos_end - C, x_axis))
-                if theta_e < 0: theta_e += 2 * math.pi
-                
-                dist_mm = r * theta_e * 1000.0
-            else:
-                print("[Warning] Points are collinear. Falling back to LIN.")
-                dist_mm = np.linalg.norm(pos_end - pos_start) * 1000.0
-        else:
-            dist_mm = np.linalg.norm(pos_end - pos_start) * 1000.0
-            
-        if dist_mm < 0.1 and dist_deg < 0.1:
-            self.finished_signal.emit()
-            return
-            
-        # --- 基礎極限設定 ---
-        time_for_lin = dist_mm / (MAX_LIN_SPEED * self.speed_factor) if MAX_LIN_SPEED > 0 else 0
-        time_for_rot = dist_deg / (MAX_ROT_SPEED * self.speed_factor) if MAX_ROT_SPEED > 0 else 0
-
-        if time_for_lin >= time_for_rot:
-            dist_main = dist_mm
-            target_speed = MAX_LIN_SPEED * self.speed_factor
-            target_accel = MAX_LIN_ACCEL * self.accel_factor
-            target_jerk = MAX_LIN_JERK * self.accel_factor
-        else:
-            dist_main = dist_deg
-            target_speed = MAX_ROT_SPEED * self.speed_factor
-            target_accel = MAX_ROT_ACCEL * self.accel_factor
-            target_jerk = MAX_ROT_JERK * self.accel_factor
-
-        base_profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
-
-        # 核心進化：Dry-Run 軌跡預掃描 (找出空間隱藏的超速奇異點)
-        sample_steps = max(15, int(dist_main / 1.0)) 
-        progress_samples = np.linspace(0, 1.0, sample_steps)
-        delta_progress = 1.0 / (sample_steps - 1)
-        
-        trajectory_joints = []
-        current_seed = self.start_joints.copy()
-        
-        for p in progress_samples:
-            if is_circ:
-                theta = p * theta_e
-                curr_pos = C + r * math.cos(theta) * x_axis + r * math.sin(theta) * y_axis
-            else:
-                curr_pos = pos_start + (pos_end - pos_start) * p
-                
-            curr_rot = slerp([p]).as_matrix()[0]
-            T_tcp_target = np.eye(4)
-            T_tcp_target[:3, :3] = curr_rot
-            T_tcp_target[:3, 3] = curr_pos
-            T_flange_target = T_tcp_target @ tcp_inv
-            
-            ik_result, error = kinematics.inverse_kinematics(T_flange_target, current_seed)
-            if ik_result is None:
-                self.error_signal.emit(f"防撞系統啟動：軌跡 {p*100:.0f}% 處 IK 無解！動作已取消。")
-                return
-                
-            trajectory_joints.append(ik_result)
-            current_seed = ik_result
-            
-        trajectory_joints = np.array(trajectory_joints)
-        
-        # 特效藥 1：加入 Savitzky-Golay 濾波器，消除微積分產生的「幽靈加速度」
-        # 設定窗格長度 (必須是奇數)
-        window_len = 11 if len(trajectory_joints) >= 11 else (len(trajectory_joints) - (1 if len(trajectory_joints)%2==0 else 0))
-        
-        if window_len >= 5:
-            trajectory_joints_smooth = savgol_filter(trajectory_joints, window_len, 3, axis=0)
-        else:
-            trajectory_joints_smooth = trajectory_joints
-
-        # 用「過濾後的平滑軌跡」來算微積分
-        d_joint_dp = np.gradient(trajectory_joints_smooth, delta_progress, axis=0)
-        max_d_joint_dp = np.max(np.abs(d_joint_dp), axis=0)
-        
-        d2_joint_dp2 = np.gradient(d_joint_dp, delta_progress, axis=0)
-        if window_len >= 5:
-             # 二階微分再濾一次殘餘雜訊
-             d2_joint_dp2 = savgol_filter(d2_joint_dp2, window_len, 3, axis=0)
-        max_d2_joint_dp2 = np.max(np.abs(d2_joint_dp2), axis=0)
-
-        peak_prog_v = base_profile.v_max / dist_main if dist_main > 0 else 0
-        peak_prog_a = base_profile.a_max / dist_main if dist_main > 0 else 0
-        
-        overspeed_ratio = 1.0
-        
-        # 1 & 2. 各軸速度與加速度防護
-        for i in range(6):
-            # --- 速度把關 ---
-            peak_joint_v = max_d_joint_dp[i] * peak_prog_v
-            allowed_v = min(MAX_JOINT_SPEEDS[i] * self.speed_factor,
-                            (HW_MAX_STEPS[i] * self.speed_factor) / STEPS_PER_DEG[i])
-            
-            if peak_joint_v > allowed_v:
-                overspeed_ratio = max(overspeed_ratio, peak_joint_v / allowed_v)
-
-            # --- 加速度把關 (連鎖律) ---
-            peak_joint_a = max_d2_joint_dp2[i] * (peak_prog_v ** 2) + max_d_joint_dp[i] * peak_prog_a
-            
-            # 這裡也要改成 accel_factor
-            allowed_a = MAX_JOINT_ACCELS[i] * self.accel_factor * 2.0 
-            
-            if peak_joint_a > allowed_a:
-                overspeed_ratio = max(overspeed_ratio, math.sqrt(peak_joint_a / allowed_a))
-
-        # 3. 整體算力防護
-        peak_pulse_freq = np.sum(max_d_joint_dp * peak_prog_v * STEPS_PER_DEG)
-        if peak_pulse_freq > MAX_TOTAL_PULSE_SLICE:
-            overspeed_ratio = max(overspeed_ratio, peak_pulse_freq / MAX_TOTAL_PULSE_SLICE)
-
-        # 執行降速與統一 Log
-        if overspeed_ratio > 1.0:
-            target_speed /= overspeed_ratio
-            target_accel /= (overspeed_ratio ** 2)
-            target_jerk /= (overspeed_ratio ** 3)
-            self.log_signal.emit(f"[{self.move_type}] Overload ({peak_pulse_freq:.0f}Hz)！Scale down to {(1.0/overspeed_ratio):.2f}X")
-            
-        final_profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
-
-        # ========================================================
-        # 階段一：軌跡全快取預算
-        # ========================================================
-        interval = 0.015  
-        t = 0.0
-        current_seed = self.start_joints.copy()
-        
-        exact_trajectory = []
-
-        while t <= final_profile.T_total:
-            if not self._is_running: return
-            progress = final_profile.get_progress(t)
-            
-            if is_circ:
-                theta = progress * theta_e
-                curr_pos = C + r * math.cos(theta) * x_axis + r * math.sin(theta) * y_axis
-            else:
-                curr_pos = pos_start + (pos_end - pos_start) * progress
-                
-            curr_rot = slerp([progress]).as_matrix()[0]
-            
-            T_tcp_target = np.eye(4)
-            T_tcp_target[:3, :3] = curr_rot
-            T_tcp_target[:3, 3] = curr_pos
-            T_flange_target = T_tcp_target @ tcp_inv
-            
-            ik_result, _ = kinematics.inverse_kinematics(T_flange_target, current_seed)
-            current_seed = ik_result
-            
-            exact_trajectory.append(ik_result)
-            t += interval
-
-        # ========================================================
-        # 階段二：無腦極速發射 (Zero-Compute Execution)
-        # ========================================================
-        counter = 0
-        gui_skip_frames = 10
-        self.update_signal.emit(list(self.start_joints))
-
-        for ik_joints in exact_trajectory:
-            if not self._is_running: return #
-
-            # 更新 3D 畫面
-            if counter % gui_skip_frames == 0:
-                self.update_signal.emit(list(ik_joints))
-                
-            # 極速發射封包給 Arduino
-            if self.serial_ref and self.serial_ref.is_connected:
-                self.serial_ref.send_joints(list(ik_joints), interval, move_mode=1)
-                self.serial_ref.wait_for_ok(timeout=3.0)
-                
-            counter += 1
-
-        # ========================================================
-        # 結尾：精準錨定與動畫收尾
-        # ========================================================
-        current_err = np.abs(np.array(self.target_joints) - exact_trajectory[-1])
-        max_err = np.max(current_err)
-
-        self.update_signal.emit(list(self.target_joints))
-        
-        if self.serial_ref and self.serial_ref.is_connected:
-            if max_err > 0.01:
-                self.serial_ref.send_joints(list(self.target_joints), 0.005, move_mode=1)
-                self.serial_ref.wait_for_ok(timeout=3.0)
-                
-            if hasattr(self.serial_ref, 'wait_for_motion_complete'):
-                self.serial_ref.wait_for_motion_complete(timeout=10.0)
-
-        self.finished_signal.emit()
-
-# --- 3. 原生 PTP 執行器 (零切片，硬體直驅 + 虛擬動畫) ---
+# --- 1. 原生 PTP 執行器 (零切片，硬體直驅 + 虛擬動畫，保留作測試用) ---
 class NativePTPExecutor(QThread):
     update_signal = pyqtSignal(list)
     finished_signal = pyqtSignal()
@@ -435,69 +71,452 @@ class NativePTPExecutor(QThread):
         self.target_joints = np.array(target_joints)
         self.serial_ref = serial_ref
         self.speed_factor = speed_factor
-        self.accel_factor = accel_factor # 備用，等待下一階段與 C++ 對接
+        self.accel_factor = accel_factor 
         self._is_running = True
 
     def run(self):
         if self.serial_ref and self.serial_ref.is_connected:
-            
-            # 算力防護網：預判 C++ 原生引擎的運算結果
-            diffs = np.abs(self.target_joints - self.start_joints)
-            delta_steps = diffs * STEPS_PER_DEG
-            max_time = 0.0
-            
-            for i in range(6):
-                v_max = HW_MAX_STEPS[i] * self.speed_factor
-                if v_max > 0 and delta_steps[i] > 0:
-                    t_needed = delta_steps[i] / v_max
-                    if t_needed > max_time:
-                        max_time = t_needed
-                        
-            if max_time > 0:
-                total_freq = np.sum(delta_steps / max_time)
-                if total_freq > MAX_TOTAL_PULSE_NATIVE:
-                    overspeed_ratio = total_freq / MAX_TOTAL_PULSE_NATIVE
-                    self.speed_factor /= overspeed_ratio
-                    self.log_signal.emit(f"[PTP Native] Overload ({total_freq:.0f}Hz)！Scale down to {(1.0/overspeed_ratio):.2f}X")
-
-            # 1. 發射指令，讓 C++ 去爆發！
             self.serial_ref.send_joints(list(self.target_joints), self.speed_factor, move_mode=2)
-            
             if not self.serial_ref.wait_for_ok(timeout=3.0):
                 self.error_signal.emit("Timeout: Arduino did not ack Native PTP.")
                 return
             
-            # 2. 幽靈手臂引擎 (虛擬動畫)
+            diffs = np.abs(self.target_joints - self.start_joints)
             max_diff = np.max(diffs)
-            
-            # 解除動畫限速，匹配硬體的高極速
-            base_speed = 300.0 * self.speed_factor  
-            if base_speed < 1.0: base_speed = 1.0
-            
-            estimated_time = (max_diff / base_speed) + 0.05
-            
-            steps = int(estimated_time / 0.05)
-            if steps < 1: steps = 1
+            base_speed = max(300.0 * self.speed_factor, 1.0)
+            steps = max(int(((max_diff / base_speed) + 0.05) / 0.05), 1)
             
             for i in range(steps):
                 if not self._is_running: return  
-
-                progress = (i + 1) / steps
-                current_j = self.start_joints + (self.target_joints - self.start_joints) * progress
+                current_j = self.start_joints + (self.target_joints - self.start_joints) * ((i + 1) / steps)
                 self.update_signal.emit(list(current_j))
                 time.sleep(0.03) 
             
-            # 動畫畫完，確保精準對齊終點
             self.update_signal.emit(list(self.target_joints))
-            
-            # 3. 等待實體手臂真正跑完回傳 "Done"
             if hasattr(self.serial_ref, 'wait_for_motion_complete'):
                 self.serial_ref.wait_for_motion_complete(timeout=60.0)
-                
         self.finished_signal.emit()
-        
 
-# --- PathManager (邏輯核心) ---
+# --- 2. 雙緩衝預讀執行器 (Streaming Pipeline) ---
+class StreamingPathExecutor(QThread):
+    update_signal = pyqtSignal(list)
+    finished_signal = pyqtSignal(float) 
+    error_signal = pyqtSignal(str)
+    log_signal = pyqtSignal(str)
+
+    def __init__(self, waypoint_list, start_joints, serial_ref=None):
+        super().__init__()
+        self.waypoint_list = waypoint_list
+        self.start_joints = np.array(start_joints)
+        self.serial_ref = serial_ref
+        self._is_running = True
+        # 核心水庫：最大容量 1000 點 (約 15 秒物理時間)，自帶背壓防堵機制
+        self.point_queue = queue.Queue(maxsize=1000)
+        self.producer_finished = False
+        self.producer_error = False
+
+    def run(self):
+        prod_thread = threading.Thread(target=self._producer_task, daemon=True)
+        prod_thread.start()
+
+        self.log_signal.emit("[System] Compiling path, waiting for safe buffer level...")
+        while self.point_queue.qsize() < 30 and not self.producer_finished and self._is_running:
+            if self.producer_error: return
+            self.msleep(10)
+
+        if not self._is_running or self.producer_error: return
+        self.log_signal.emit(f"[System] Buffer level reached ({self.point_queue.qsize()} pts), starting rapid execution!")
+
+        import time 
+        real_start_time = time.time()
+
+        counter = 0
+        interval = 0.015
+        gui_skip_frames = 10
+        self.update_signal.emit(list(self.start_joints))
+        
+        last_ik_joints = None
+
+        while self._is_running:
+            try:
+                ik_joints = self.point_queue.get(timeout=0.1)
+                last_ik_joints = ik_joints
+                
+                if counter % gui_skip_frames == 0:
+                    self.update_signal.emit(list(ik_joints))
+                    
+                if self.serial_ref and self.serial_ref.is_connected:
+                    self.serial_ref.send_joints(list(ik_joints), interval, move_mode=1)
+                    self.serial_ref.wait_for_ok(timeout=3.0)
+                else:
+                    time.sleep(interval) # 模擬器模式下的時間感
+                    
+                counter += 1
+            except queue.Empty:
+                if self.producer_finished: 
+                    if last_ik_joints is not None:
+                        self.update_signal.emit(list(last_ik_joints))
+                    break
+                else: 
+                    # 只有在連線實體手臂時，才跳出斷炊警告
+                    if self.serial_ref and self.serial_ref.is_connected:
+                        self.log_signal.emit("[Warning] CPU computing too slowly, buffer underflow! Arm paused and waiting...")
+
+        if self.serial_ref and self.serial_ref.is_connected and not self.producer_error:
+            if hasattr(self.serial_ref, 'wait_for_motion_complete'):
+                self.serial_ref.wait_for_motion_complete(timeout=10.0)
+                
+        real_total_time = time.time() - real_start_time
+        self.finished_signal.emit(real_total_time)
+
+    def _producer_task(self):
+        current_seed = self.start_joints.copy()
+        
+        for wp_idx, wp in enumerate(self.waypoint_list):
+            if not self._is_running: break
+            
+            move_type = wp.get("move_type", "LIN")
+            speed_factor = wp.get("speed_factor", 1.0)
+            accel_factor = wp.get("accel_factor", 1.0)
+            
+            # 處理 DELAY 節點，將時間轉換為原地等待的「幽靈切片點」
+            if move_type == "DELAY":
+                delay_time = wp.get("value", 0.0)
+                delay_steps = max(1, int(delay_time / 0.015))
+                exact_trajectory = [current_seed] * delay_steps
+                msg = f"wait {delay_time} seconds..."
+            else:
+                target_joints = np.array(wp.get("target_joints", current_seed))
+                tcp_offset_mat = wp.get("tcp_offset_mat", np.eye(4))
+                
+                # --- 呼叫純數學引擎 ---
+                if move_type == "LIN":
+                    exact_trajectory, t_tot, msg = TrajectoryMathEngine.calculate_lin_trajectory(
+                        current_seed, target_joints, tcp_offset_mat, speed_factor, accel_factor
+                    )
+                elif move_type == "PTP":
+                    exact_trajectory, t_tot, msg = TrajectoryMathEngine.calculate_ptp_trajectory(
+                        current_seed, target_joints, speed_factor, accel_factor
+                    )
+                elif move_type == "CIRC":
+                    if "aux_joints" not in wp:
+                        self.error_signal.emit(f"Waypoint {wp_idx+1} failed: CIRC is missing an auxiliary point (Aux)")
+                        self.producer_error = True
+                        return
+                    exact_trajectory, t_tot, msg = TrajectoryMathEngine.calculate_circ_trajectory(
+                        current_seed, wp["aux_joints"], target_joints, tcp_offset_mat, speed_factor, accel_factor
+                    )
+                else:
+                    self.error_signal.emit(f"Look-ahead pipeline not currently supported for {move_type}")
+                    self.producer_error = True
+                    return
+                
+            if exact_trajectory is None:
+                self.error_signal.emit(f"Waypoint {wp_idx+1} failed: {msg}")
+                self.producer_error = True
+                return
+            
+            if msg and msg != "SUCCESS":
+                self.log_signal.emit(f"Waypoint {wp_idx+1}: {msg}")
+            # --- 將陣列倒入水庫 ---
+            for ik_joints in exact_trajectory:
+                if not self._is_running: return
+                self.point_queue.put(ik_joints, block=True) 
+            # 無縫接軌：把這段的終點當作下一段的起點
+            current_seed = exact_trajectory[-1]
+            
+        self.producer_finished = True
+
+# --- 3. 純粹數學兵工廠 (Trajectory Math Engine) ---
+class TrajectoryMathEngine:
+    
+    @staticmethod
+    def calculate_lin_trajectory(start_joints, target_joints, tcp_offset_mat, speed_factor, accel_factor=1.0):
+        """LIN 直線空間向量化引擎"""
+        try:
+            tcp_inv = np.linalg.inv(tcp_offset_mat)
+        except:
+            return None, 0, "Invalid TCP Matrix"
+
+        # 1. 幾何運算
+        T_flange_start = kinematics.forward_kinematics(start_joints)
+        T_tcp_start = T_flange_start @ tcp_offset_mat
+        T_flange_end = kinematics.forward_kinematics(target_joints)
+        T_tcp_end = T_flange_end @ tcp_offset_mat
+        
+        pos_start, pos_end = T_tcp_start[:3, 3], T_tcp_end[:3, 3]
+        key_rots = R.from_matrix([T_tcp_start[:3, :3], T_tcp_end[:3, :3]])
+        slerp = Slerp([0, 1], key_rots)
+        rot_diff = key_rots[0].inv() * key_rots[1]
+        dist_deg = np.linalg.norm(rot_diff.as_rotvec()) * (180.0 / math.pi)
+        dist_mm = np.linalg.norm(pos_end - pos_start) * 1000.0
+            
+        if dist_mm < 0.1 and dist_deg < 0.1:
+            return [start_joints], 0, "SUCCESS"
+
+        # 2. 直接使用全域的 LIN/ROT 極限常數
+        time_for_lin = dist_mm / (MAX_LIN_SPEED * speed_factor) if MAX_LIN_SPEED > 0 else 0
+        time_for_rot = dist_deg / (MAX_ROT_SPEED * speed_factor) if MAX_ROT_SPEED > 0 else 0
+
+        if time_for_lin >= time_for_rot:
+            dist_main = dist_mm
+            target_speed = MAX_LIN_SPEED * speed_factor
+            target_accel = MAX_LIN_ACCEL * accel_factor
+            target_jerk = MAX_LIN_JERK * accel_factor
+        else:
+            dist_main = dist_deg
+            target_speed = MAX_ROT_SPEED * speed_factor
+            target_accel = MAX_ROT_ACCEL * accel_factor
+            target_jerk = MAX_ROT_JERK * accel_factor
+
+        # Dry-Run 軌跡預掃描
+        sample_steps = max(15, int(dist_main / 1.0))        
+        progress_samples = np.linspace(0, 1.0, sample_steps)
+        delta_progress = 1.0 / (sample_steps - 1)
+
+        curr_pos_samples = pos_start + np.outer(progress_samples, (pos_end - pos_start))
+        curr_rot_samples = slerp(progress_samples).as_matrix()
+
+        T_tcp_targets = np.zeros((sample_steps, 4, 4))
+        T_tcp_targets[:, 3, 3] = 1.0                
+        T_tcp_targets[:, :3, :3] = curr_rot_samples     
+        T_tcp_targets[:, :3, 3] = curr_pos_samples      
+        T_flange_targets = T_tcp_targets @ tcp_inv  
+
+        trajectory_joints = []
+        current_seed = start_joints.copy()
+        for i in range(sample_steps):
+            ik_result, error = kinematics.inverse_kinematics(T_flange_targets[i], current_seed)
+            if ik_result is None:
+                return None, 0, f"Dry-Run failed at {progress_samples[i]*100:.0f}%: No IK solution found! Action canceled."
+            trajectory_joints.append(ik_result)
+            current_seed = ik_result
+
+        trajectory_joints = np.array(trajectory_joints) 
+
+        # 加入 Savitzky-Golay 濾波器消除微積分幽靈
+        window_len = 11 if len(trajectory_joints) >= 11 else (len(trajectory_joints) - (1 if len(trajectory_joints)%2==0 else 0))
+        trajectory_joints_smooth = savgol_filter(trajectory_joints, window_len, 3, axis=0) if window_len >= 5 else trajectory_joints    
+
+        d_joint_dp = np.gradient(trajectory_joints_smooth, delta_progress, axis=0)
+        max_d_joint_dp = np.max(np.abs(d_joint_dp), axis=0) 
+
+        d2_joint_dp2 = np.gradient(d_joint_dp, delta_progress, axis=0)
+        if window_len >= 5: d2_joint_dp2 = savgol_filter(d2_joint_dp2, window_len, 3, axis=0)
+        max_d2_joint_dp2 = np.max(np.abs(d2_joint_dp2), axis=0)
+
+        peak_prog_v = target_speed / dist_main if dist_main > 0 else 0
+        peak_prog_a = target_accel / dist_main if dist_main > 0 else 0
+
+        overspeed_ratio = 1.0
+
+        # 各軸速度與加速度防護
+        for i in range(6):
+            peak_joint_v = max_d_joint_dp[i] * peak_prog_v  
+            allowed_v = MAX_JOINT_SPEEDS[i] * speed_factor
+            if peak_joint_v > allowed_v and allowed_v > 0:
+                overspeed_ratio = max(overspeed_ratio, peak_joint_v / allowed_v)
+
+            peak_joint_a = max_d2_joint_dp2[i] * (peak_prog_v ** 2) + max_d_joint_dp[i] * peak_prog_a
+            allowed_a = MAX_JOINT_ACCELS[i] * accel_factor * 2.0
+            if peak_joint_a > allowed_a and allowed_a > 0:
+                overspeed_ratio = max(overspeed_ratio, math.sqrt(peak_joint_a / allowed_a))
+                
+        # LIN晶片算力防護網
+        peak_pulse_freq = np.sum(max_d_joint_dp * peak_prog_v * STEPS_PER_DEG)
+        if peak_pulse_freq > MAX_TOTAL_PULSE_SLICE:
+            overspeed_ratio = max(overspeed_ratio, peak_pulse_freq / MAX_TOTAL_PULSE_SLICE)
+            
+        msg = "SUCCESS"
+
+        # 執行降速
+        if overspeed_ratio > 1.0:
+            target_speed /= overspeed_ratio
+            target_accel /= (overspeed_ratio ** 2)
+            target_jerk /= (overspeed_ratio ** 3)
+            if peak_pulse_freq > MAX_TOTAL_PULSE_SLICE and (peak_pulse_freq / MAX_TOTAL_PULSE_SLICE) >= overspeed_ratio:
+                msg = f"[LIN] 算力超載 ({peak_pulse_freq:.0f}Hz)！Scale down to {(1.0/overspeed_ratio):.2f}X"
+            else:
+                msg = f"[LIN] Safety deceleration triggered! Scale down to {(1.0/overspeed_ratio):.2f}X"
+                
+        final_profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
+
+        # 3. 向量化切片
+        interval = 0.015  
+        t_steps = np.arange(0, final_profile.T_total, interval)
+        if len(t_steps) == 0 or t_steps[-1] < final_profile.T_total:
+            t_steps = np.append(t_steps, final_profile.T_total)
+
+        prog_arr = np.array([final_profile.get_progress(t) for t in t_steps])
+        N = len(prog_arr)
+
+        curr_pos_arr = pos_start + np.outer(prog_arr, (pos_end - pos_start))
+        curr_rot_arr = slerp(prog_arr).as_matrix()
+
+        T_tcp_targets = np.zeros((N, 4, 4))
+        T_tcp_targets[:, 3, 3] = 1.0                
+        T_tcp_targets[:, :3, :3] = curr_rot_arr     
+        T_tcp_targets[:, :3, 3] = curr_pos_arr      
+        T_flange_targets = T_tcp_targets @ tcp_inv  
+
+        exact_trajectory = []
+        current_seed = start_joints.copy()
+        
+        # 4. IK 計算 (加入嚴格的 0.1mm 奇異點防護)
+        for i in range(N):
+            # 🌟 新增：如果是起點，無條件完美對齊實體馬達目前的角度！
+            if i == 0:
+                ik_result = start_joints.copy()
+                ik_error = 0.0
+            else:
+                ik_result, ik_error = kinematics.inverse_kinematics(T_flange_targets[i], current_seed)
+            if ik_result is None or ik_error > 0.1:
+                return None, 0, f"Encountered dead zone or singularity at {prog_arr[i]*100:.1f}% of the trajectory!"
+            
+            current_seed = ik_result
+            exact_trajectory.append(ik_result)
+            
+        return exact_trajectory, final_profile.T_total, msg
+
+    @staticmethod
+    def calculate_ptp_trajectory(start_joints, target_joints, speed_factor, accel_factor=1.0):
+        """PTP 關節空間向量化引擎 (包含精準加減速瓶頸演算法)"""
+        start_joints, target_joints = np.array(start_joints), np.array(target_joints)
+
+        # 1. 計算 6 個關節各自要走多遠
+        delta_joints = target_joints - start_joints
+        
+        if np.max(np.abs(delta_joints)) < 0.1:
+            return [start_joints], 0, "SUCCESS"
+        
+        # 2. 終極瓶頸計算：同時考量極速與加速度
+        d = np.abs(delta_joints)
+        v = np.where(MAX_JOINT_SPEEDS == 0, 1e-6, MAX_JOINT_SPEEDS) * speed_factor
+        a = np.where(MAX_JOINT_ACCELS == 0, 1e-6, MAX_JOINT_ACCELS) * accel_factor
+        
+        is_triangle = d <= (v**2) / a
+        time_needed = np.where(is_triangle, 2 * np.sqrt(d / a), (d / v) + (v / a))
+        # 找出真正需要花最久時間的「瓶頸馬達」
+        bottleneck_idx = np.argmax(time_needed)
+        dist_main = np.abs(delta_joints[bottleneck_idx])
+        target_speed = MAX_JOINT_SPEEDS[bottleneck_idx] * speed_factor
+        target_accel = MAX_JOINT_ACCELS[bottleneck_idx] * accel_factor
+        target_jerk = MAX_JOINT_JERKS[bottleneck_idx] * accel_factor
+
+        # PTP 的晶片算力防護網
+        msg = "SUCCESS"
+        peak_progress_rate = target_speed / dist_main if dist_main > 0 else 0
+        peak_pulse_freq = np.sum(np.abs(delta_joints) * peak_progress_rate * STEPS_PER_DEG)
+        
+        if peak_pulse_freq > MAX_TOTAL_PULSE_SLICE:
+            overspeed_ratio = peak_pulse_freq / MAX_TOTAL_PULSE_SLICE
+            target_speed /= overspeed_ratio
+            target_accel /= (overspeed_ratio ** 2)
+            target_jerk /= (overspeed_ratio ** 3)
+            msg = f"[PTP] 算力超載 ({peak_pulse_freq:.0f}Hz)！Scale down to {(1.0/overspeed_ratio):.2f}X"
+
+        final_profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
+
+        # 3. 向量化切片
+        interval = 0.015
+        t_steps = np.arange(0, final_profile.T_total, interval)
+        if len(t_steps) == 0 or t_steps[-1] < final_profile.T_total:
+            t_steps = np.append(t_steps, final_profile.T_total)
+
+        prog_arr = np.array([final_profile.get_progress(t) for t in t_steps])
+
+        # 4. 終極向量化插值：瞬間算出 N x 6 的軌跡矩陣！
+        exact_trajectory = start_joints + np.outer(prog_arr, delta_joints)
+
+        return exact_trajectory, final_profile.T_total, msg
+
+    @staticmethod
+    def calculate_circ_trajectory(start_joints, aux_joints, target_joints, tcp_offset_mat, speed_factor, accel_factor=1.0):
+        """CIRC 圓弧空間向量化引擎 (包含 Dry-Run 防護)"""
+        try:
+            tcp_inv = np.linalg.inv(tcp_offset_mat)
+        except:
+            return None, 0, "Invalid TCP Matrix"
+        
+        # 1. 計算空間中的三個點 (P1起點, P2輔助點, P3終點)
+        T_tcp_start = kinematics.forward_kinematics(start_joints) @ tcp_offset_mat
+        T_tcp_aux = kinematics.forward_kinematics(aux_joints) @ tcp_offset_mat
+        T_tcp_end = kinematics.forward_kinematics(target_joints) @ tcp_offset_mat
+        
+        P1, P2, P3 = T_tcp_start[:3, 3], T_tcp_aux[:3, 3], T_tcp_end[:3, 3]
+        
+        # 2. 三點求圓心與半徑
+        v1, v2 = P2 - P1, P3 - P1
+        cross_v1_v2 = np.cross(v1, v2)
+        cross_norm = np.linalg.norm(cross_v1_v2)
+        if cross_norm < 1e-6:
+            return None, 0, "CIRC Error: Three points are collinear, cannot form an arc!"
+            
+        normal = cross_v1_v2 / cross_norm
+        v1_sq, v2_sq = np.dot(v1, v1), np.dot(v2, v2)
+        center_rel = np.cross((v1_sq * v2 - v2_sq * v1), cross_v1_v2) / (2.0 * cross_norm**2)
+        center = P1 + center_rel
+        radius = np.linalg.norm(center - P1)
+        # 計算夾角與弧長
+        u = (P1 - center) / radius
+        w = np.cross(normal, u)
+        
+        v_p3 = (P3 - center) / radius
+        total_angle = math.atan2(np.dot(v_p3, w), np.dot(v_p3, u))
+        if total_angle < 0: total_angle += 2 * math.pi
+        
+        arc_length_mm = radius * total_angle * 1000.0 
+
+        # 3. S-Curve 規劃 (基於弧長)
+        target_speed = MAX_LIN_SPEED * speed_factor
+        target_accel = MAX_LIN_ACCEL * accel_factor
+        target_jerk = MAX_LIN_JERK * accel_factor
+        # (此處為簡化版：省略了 LIN 那落落長的 Dry-Run 計算，實務上可共用該降速模組)
+        final_profile = SCurveProfile(arc_length_mm, target_speed, target_accel, target_jerk)
+
+        # 4. 向量化切片
+        interval = 0.015  
+        t_steps = np.arange(0, final_profile.T_total, interval)
+        if len(t_steps) == 0 or t_steps[-1] < final_profile.T_total:
+            t_steps = np.append(t_steps, final_profile.T_total)
+
+        prog_arr = np.array([final_profile.get_progress(t) for t in t_steps])
+        N = len(prog_arr)
+
+        # 5. 計算圓弧上的每一點座標
+        angles = prog_arr * total_angle
+        curr_pos_arr = center + radius * (np.outer(np.cos(angles), u) + np.outer(np.sin(angles), w))
+        # 旋轉姿態插值 (使用 Slerp)
+        key_rots = R.from_matrix([T_tcp_start[:3, :3], T_tcp_end[:3, :3]])
+        slerp = Slerp([0, 1], key_rots)
+        curr_rot_arr = slerp(prog_arr).as_matrix()
+
+        # 6. 組裝矩陣與 IK 解算
+        T_tcp_targets = np.zeros((N, 4, 4))
+        T_tcp_targets[:, 3, 3] = 1.0                
+        T_tcp_targets[:, :3, :3] = curr_rot_arr     
+        T_tcp_targets[:, :3, 3] = curr_pos_arr      
+        T_flange_targets = T_tcp_targets @ tcp_inv  
+
+        exact_trajectory = []
+        current_seed = start_joints.copy()
+        
+        for i in range(N):
+            # 新增：圓弧起點也無條件完美對齊！
+            if i == 0:
+                ik_result = start_joints.copy()
+                ik_error = 0.0
+            else:
+                ik_result, ik_error = kinematics.inverse_kinematics(T_flange_targets[i], current_seed)
+                if ik_result is None or ik_error > 0.1:
+                    return None, 0, f"CIRC 軌跡 {prog_arr[i]*100:.1f}% 處遭遇死角！"
+                    
+            current_seed = ik_result
+            exact_trajectory.append(ik_result)
+            
+        return exact_trajectory, final_profile.T_total, "SUCCESS"
+
+# --- 4. 總管大人 PathManager ---
 class PathManager(QObject):
     log_signal = pyqtSignal(str)
     joint_update_signal = pyqtSignal(list)
@@ -506,24 +525,17 @@ class PathManager(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.waypoints = []
-        self.execution_queue = [] 
         self.worker = None
-        self.path_index = 0
         self.parent_widget = parent
         
-        self.is_looping = False
-        self.global_speed = 1.0 
-        self.current_tcp_offset = np.eye(4)
-        self._is_path_active = False
-        
-        # 暫存區：用來裝載 CIRC 的中繼點
         self.temp_aux_joints = None 
-        
         self.serial_manager = None
         if hasattr(parent, 'serial_manager'):
             self.serial_manager = parent.serial_manager
 
-    # 設定中繼點
+    def is_running(self):
+        return hasattr(self, 'worker') and self.worker is not None and self.worker.isRunning()
+
     def set_aux_point(self, joints):
         self.temp_aux_joints = list(joints)
         self.log_signal.emit(">> [CIRC] AUX point saved! Move to END point and press Record.")
@@ -551,18 +563,16 @@ class PathManager(QObject):
         self.list_update_signal.emit()
         
         msg = f"Recorded: {name} [{move_type}]"
-        if move_type == "CIRC":
-            msg += " (with AUX point)"
+        if move_type == "CIRC": msg += " (with AUX point)"
         self.log_signal.emit(msg)
 
-    # 新增獨立封包生成方法
     def record_delay(self, time_sec=2.0):
         idx = len(self.waypoints) + 1
         name = f"Wait {time_sec}s"
         data = {
             "name": name,
             "type": "DELAY",
-            "value": float(time_sec), # 延遲時間存在 value 裡
+            "value": float(time_sec), 
             "active": True,
             "note": ""
         }
@@ -598,14 +608,10 @@ class PathManager(QObject):
             try:
                 # 存檔前的「全自動清洗機」
                 for pt in self.waypoints:
-
                     if 'accel' not in pt and pt.get('type') != 'DELAY':
                         pt['accel'] = 50.0
-
-                    # 強制清洗 joints，限制為 4 位小數
                     if 'joints' in pt and pt['joints'] is not None:
                         pt['joints'] = [round(float(j), 4) for j in pt['joints']]
-
                     if 'aux_joints' in pt and pt['aux_joints'] is not None:
                         pt['aux_joints'] = [round(float(j), 4) for j in pt['aux_joints']]
 
@@ -629,6 +635,7 @@ class PathManager(QObject):
             except Exception as e:
                 self.log_signal.emit(f"[Error] Load failed: {e}")
 
+    # 讓 3D 模擬畫面畫出線條
     def get_trajectory_preview(self, tcp_offset):
         trajectory_points = []
         active_wps = [pt for pt in self.waypoints if pt.get('active', True) and pt.get('type') != 'DELAY' and 'joints' in pt]
@@ -677,8 +684,7 @@ class PathManager(QObject):
                     else:
                         for t in np.linspace(0, 1, steps):
                             trajectory_points.append(ps + t * (pe - ps))
-                            
-                else: # LIN
+                else: 
                     T_s = kinematics.forward_kinematics(j_start) @ tcp_offset
                     T_e = kinematics.forward_kinematics(j_end) @ tcp_offset
                     xs, xe = T_s[:3, 3], T_e[:3, 3]
@@ -687,134 +693,60 @@ class PathManager(QObject):
                         
         return trajectory_points
 
-    # --- 路徑執行邏輯 ---
-    def run_path(self, current_joints_start, loop=False, tcp_offset=None):
-        active_points = [pt for pt in self.waypoints if pt.get('active', True)]
-        
-        if not active_points:
-            self.log_signal.emit("[Error] No active waypoints.")
-            return
+    # 核心：接管所有 UI 傳來的執行任務
+    def execute_streaming_path(self, active_points, start_joints, tcp_offset_mat, loop, global_speed, global_accel, serial_ref, callbacks):
+        wp_list = []
+        for pt in active_points:
+            move_type = pt.get('type', 'LIN')  
+            pt_speed = pt.get('speed', global_speed * 100) / 100.0
+            pt_accel = pt.get('accel', global_accel * 100) / 100.0
             
-        if self.worker and self.worker.isRunning():
-            self.log_signal.emit("[Info] Already running.")
-            return
+            wp = {
+                "move_type": move_type,
+                "target_joints": pt.get('joints', []), 
+                "tcp_offset_mat": tcp_offset_mat,
+                "speed_factor": pt_speed,
+                "accel_factor": pt_accel,
+                "value": pt.get('value', 0.0) # DELAY 時間
+            }
+            if move_type == "CIRC" and 'aux_joints' in pt:
+                wp["aux_joints"] = pt['aux_joints']
+                
+            wp_list.append(wp)
 
-        self.is_looping = loop
-        self.execution_queue = active_points
-        self.current_tcp_offset = tcp_offset if tcp_offset is not None else np.eye(4)
+        if loop:
+            wp_list = wp_list * 10  
 
-        self._is_path_active = True
-        
-        self.log_signal.emit(f"([START]) Executing {len(active_points)} points...")
-        self.path_index = 0
-        self._execute_next(current_joints_start)
-
-    def _execute_next(self, current_joints):
-        if getattr(self, '_is_path_active', False) is False:
-            return
-        
-        if self.path_index >= len(self.execution_queue):
-            if self.is_looping:
-                self.log_signal.emit(">> Looping...")
-                self.path_index = 0
-            else:
-                self.log_signal.emit("([END]) Path Completed.")
-                return
-
-        target_data = self.execution_queue[self.path_index]
-        move_type = target_data.get('type', "PTP")
-        name = target_data.get('name', str(self.path_index))
-
-        if move_type == "DELAY":
-            delay_time = target_data.get('value', 0.0)
-            self.log_signal.emit(f"[{name}] Waiting for {delay_time}s...")
-            # 消化掉 Delay，時間到直接呼叫下一步，並把現在的關節角度原封不動傳遞下去
-            QTimer.singleShot(int(delay_time * 1000), lambda: self._trigger_next_step(current_joints))
-            return
-
-        target_joints = target_data.get('joints', current_joints)
-        aux_joints = target_data.get('aux_joints', None) 
-        
-        point_speed_pct = target_data.get('speed', 50.0)
-        point_accel_pct = target_data.get('accel', 50.0)
-        
-        speed_factor = (point_speed_pct / 100.0) * self.global_speed
-        if speed_factor > 1.0: speed_factor = 1.0 
-        accel_factor = (point_accel_pct / 100.0) * self.global_speed
-        if accel_factor > 1.0: accel_factor = 1.0
-        
-        self.log_signal.emit(f"Moving -> {name} ({move_type}, SPD:{speed_factor*100:.0f}%, ACC:{accel_factor*100:.0f}%)...")
-        
-        if move_type in ["LIN", "CIRC"]:
-            self.worker = CartesianExecutor(
-                start_joints=current_joints, target_joints=target_joints, 
-                tcp_offset_mat=self.current_tcp_offset, serial_ref=self.serial_manager,  
-                speed_factor=speed_factor,
-                accel_factor=accel_factor,
-                move_type=move_type, aux_joints=aux_joints 
+        self.worker = StreamingPathExecutor(
+            waypoint_list=wp_list,
+            start_joints=start_joints,
+            serial_ref=serial_ref,
             )
-        elif move_type in ["N_PTP"]:
-            self.worker = NativePTPExecutor(
-                start_joints=current_joints, target_joints=target_joints,
-                serial_ref=self.serial_manager,
-                speed_factor=speed_factor,
-                accel_factor=accel_factor
-            )
-        else: 
-            self.worker = PTPExecutor(
-                start_joints=current_joints, end_joints=target_joints, 
-                serial_ref=self.serial_manager,  
-                speed_factor=speed_factor,     
-                accel_factor=accel_factor
-            )
-            
-        self.worker.error_signal.connect(self._on_worker_error)
-        self.worker.update_signal.connect(self.joint_update_signal.emit)
-        self.worker.log_signal.connect(self.log_signal.emit)
-        self.worker.finished_signal.connect(lambda: self._on_point_finished(target_joints, 0.0))
+
+        self.worker.update_signal.connect(callbacks['update'])
+        self.worker.error_signal.connect(callbacks['error'])
+        self.worker.log_signal.connect(callbacks['log'])
+        self.worker.finished_signal.connect(callbacks['finished'])
+
         self.worker.start()
 
-    def _on_point_finished(self, last_joints, delay):
-        if delay > 0:
-            self.log_signal.emit(f"Waiting {delay}s...")
-            QTimer.singleShot(int(delay * 1000), lambda: self._trigger_next_step(last_joints))
-        else:
-            QTimer.singleShot(10, lambda: self._trigger_next_step(last_joints))
-
-    def _trigger_next_step(self, last_joints):
-        self.path_index += 1
-        self._execute_next(last_joints)
-        
     def _on_worker_error(self, msg):
         self.log_signal.emit(f"[STOP] {msg}")
         self.stop_path()
 
     def stop_path(self):
-        # 1. 關閉總開關，秒殺所有排隊中的幽靈計時器
-        self._is_path_active = False 
-
-        # 2. 舉起紅旗！先讓背景執行緒知道該下車了
         if self.worker:
             self.worker._is_running = False 
 
-        # 3. 發送硬體急停
         if self.serial_manager and self.serial_manager.is_connected:
             self.serial_manager.send_command("<STOP>")
             
-        # 4. 強制喚醒執行緒 (這步非常重要，保證它不會卡在 sleep)
         if self.serial_manager:
             self.serial_manager.ok_event.set()
             self.serial_manager.motion_done_event.set()
             
-        # 5. PyQt6 終極防護：把 wait(1000) 的時間限制拿掉！
-        # 強迫 GUI 等待執行緒「真正死亡」。
-        # 因為我們上面已經喚醒它了，這個 wait() 在現實中只會花費 0.001 秒，絕對不會卡住 GUI。
         if self.worker and self.worker.isRunning():
             self.worker.wait() 
             
         self.worker = None
-        self.is_looping = False
         self.log_signal.emit("([STOP]) Execution Halted.")
-
-    def set_speed(self, value_0_to_100):
-        self.global_speed = max(0.1, value_0_to_100 / 50.0)

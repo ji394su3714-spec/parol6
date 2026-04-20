@@ -54,7 +54,7 @@ void updateHomingLogic() {
                     }
                 }
                 if (readyToSecondTap) {
-                    steppers[i]->setRampLen(0);
+                    steppers[i]->setRampLen(10);
                     steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 5); 
                     int dir = (JOINTS[i].homingSpeed > 0) ? 1 : -1;
                     steppers[i]->rotate(dir); 
@@ -131,7 +131,7 @@ void updateHomingLogic() {
                                 else if (k == 5 && j4_waiting) homingState[k] = 10; 
                                 else {
                                     homingState[k] = 1;  
-                                    steppers[k]->setRampLen(0);
+                                    steppers[k]->setRampLen(10);
                                     steppers[k]->setSpeedSteps(abs(JOINTS[k].homingSpeed) * 10);
                                     steppers[k]->rotate((JOINTS[k].homingSpeed > 0) ? 1 : -1);
                                     //Serial.print(">>> Homing Start: J"); Serial.println(k + 1);
@@ -142,7 +142,7 @@ void updateHomingLogic() {
                 }
                 if (i == 3 && homingState[5] == 10) {
                     homingState[5] = 1;
-                    steppers[5]->setRampLen(0);
+                    steppers[5]->setRampLen(10);
                     steppers[5]->setSpeedSteps(abs(JOINTS[5].homingSpeed) * 10);
                     steppers[5]->rotate((JOINTS[5].homingSpeed > 0) ? 1 : -1);
                     //Serial.println(">>> Homing Start: J6 ");
@@ -155,7 +155,7 @@ void updateHomingLogic() {
                 homingState[i] = 5; 
                 if (homingState[4] == 10) {
                     homingState[4] = 1;
-                    steppers[4]->setRampLen(0);
+                    steppers[4]->setRampLen(10);
                     steppers[4]->setSpeedSteps(abs(JOINTS[4].homingSpeed) * 15);
                     steppers[4]->rotate((JOINTS[4].homingSpeed > 0) ? 1 : -1);
                     //Serial.println(">>> Homing Start: J5 ");

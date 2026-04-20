@@ -3,9 +3,9 @@ import sys
 import datetime
 import numpy as np
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox, 
-                             QDoubleSpinBox, QFrame, QDialog,QListWidgetItem, QMessageBox, QComboBox, QMenu)
+                             QDoubleSpinBox, QFrame, QDialog,QListWidgetItem, QMessageBox, QComboBox, QMenu, QLineEdit)
 from PyQt6.QtGui import QAction
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 import qtawesome as qta
 
 from ui import styles
@@ -17,9 +17,54 @@ from serial_manager import SerialManager
 from simulation_standalone import RobotSimulation
 from path_manager import PathManager
 from ui.advanced_dialog import AdvancedSettingsDialog
+from terminal_controller import TerminalController
 import path_manager
 import config
 import kinematics
+
+class TerminalInput(QLineEdit):
+    # 自訂訊號：當按下 Enter 且有內容時發射
+    command_issued = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.history = []        
+        self.history_index = -1  
+        
+        # --- VS Code 終端機風格 QSS (無縫接合版) ---
+        self.setStyleSheet("""
+            QLineEdit {
+                background-color: #1e1e1e;color: #00ff00; font-family: Consolas, Monospace; font-size: 22px;
+                border: 1px solid #3c3c3c; border-top: 1px solid #555555;border-radius: 0px; padding: 6px 8px;
+            }
+        """)
+        #self.setPlaceholderText("> 輸入指令並按 Enter (例如: CLEAR, HOME, PTP X100 Y50)...")
+        self.returnPressed.connect(self._on_enter_pressed)
+
+    def _on_enter_pressed(self):
+        cmd = self.text().strip()
+        if cmd:
+            if not self.history or self.history[-1] != cmd:
+                self.history.append(cmd)
+            self.command_issued.emit(cmd)
+            
+        self.clear()
+        self.history_index = len(self.history)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Up:
+            if self.history and self.history_index > 0:
+                self.history_index -= 1
+                self.setText(self.history[self.history_index])
+        elif event.key() == Qt.Key.Key_Down:
+            if self.history and self.history_index < len(self.history) - 1:
+                self.history_index += 1
+                self.setText(self.history[self.history_index])
+            else:
+                self.history_index = len(self.history)
+                self.clear()
+        else:
+            super().keyPressEvent(event)
 
 class RobotGUI(QMainWindow):
     def __init__(self):
@@ -30,6 +75,7 @@ class RobotGUI(QMainWindow):
         # 核心模組
         self.sim = RobotSimulation(self)
         self.tcp_manager = TCPManager()
+        self.terminal_controller = TerminalController(self)
         
         # Serial Manager
         self.serial_manager = SerialManager()
@@ -262,7 +308,6 @@ class RobotGUI(QMainWindow):
         
         self.run_menu = QMenu(self)
         self.run_menu.setObjectName("run_menu") 
-        #self.run_menu.setStyleSheet(styles.MENU_STYLE)
         action_run_once = QAction(qta.icon('fa5s.play', color='white'), "Run Path", self)
         action_run_loop = QAction(qta.icon('fa5s.sync', color='white'), "Loop Run", self)
         action_run_once.triggered.connect(lambda: self.trigger_run_path(loop=False))
@@ -323,6 +368,10 @@ class RobotGUI(QMainWindow):
         # 【防護罩】：如果現在正在執行自動路徑動畫，絕對不允許發送手動指令！
         if getattr(self, 'is_animating', False):
             return 
+        
+        #【防護罩 2】：如果大腦正在編譯路徑或已經在跑路徑，絕對封殺這個幽靈訊號！
+        if self.path_manager.is_running():
+            return
             
         self.serial_manager.send_joints(self.current_joints)
 
@@ -561,17 +610,25 @@ class RobotGUI(QMainWindow):
         
         view_layout.addWidget(container)
         view_group.setLayout(view_layout)
-        right_panel.addWidget(view_group, 2)
+        right_panel.addWidget(view_group, 7)
         
         log_group = QGroupBox("System Log")
         log_layout = QVBoxLayout() 
         log_layout.setContentsMargins(10, 15, 10, 10)
         
+        # 關鍵：把元件之間的間距歸零，讓輸入框跟 Log 貼齊！
+        log_layout.setSpacing(0) 
+        
         self.log_widget = LogWidget()
         log_layout.addWidget(self.log_widget)
         
+        # 加入終端機輸入框
+        self.terminal_input = TerminalInput()
+        self.terminal_input.command_issued.connect(self.terminal_controller.handle_terminal_command)
+        log_layout.addWidget(self.terminal_input)
+        
         log_group.setLayout(log_layout)
-        right_panel.addWidget(log_group, 1)
+        right_panel.addWidget(log_group, 4)
         right_widget = QWidget()
         right_widget.setLayout(right_panel)
         self.content_layout.addWidget(right_widget)
@@ -641,12 +698,6 @@ class RobotGUI(QMainWindow):
     # 傳遞當前關節給 path_manager 作為 AUX
     def trigger_set_aux(self):
         self.path_manager.set_aux_point(self.current_joints)
-    def on_speed_change(self, text):
-        try:
-            val = int(text.replace("%", ""))
-            self.path_manager.set_speed(val)
-        except ValueError:
-            pass
 
     def confirm_delete_all(self):
         reply = QMessageBox.question(self, 'Delete All', "Delete ALL waypoints?",
@@ -731,27 +782,47 @@ class RobotGUI(QMainWindow):
         traj_points = self.path_manager.get_trajectory_preview(T_total_offset)
         self.sim.draw_trajectory(traj_points)
 
-        # --- 觸發路徑執行函式 ---
+    # --- 觸發路徑執行函式 (大掃除淨化版) ---
     def trigger_run_path(self, loop=False):
-        """觸發執行記錄的路徑"""
-        if self.path_manager.worker and self.path_manager.worker.isRunning():
-            self.log("[Warning] Path is already running!")
+        """觸發執行記錄的路徑：UI 層只負責收集資料，將邏輯委派給 PathManager"""
+        
+        # 1. 檢查是否已經在執行
+        if self.path_manager.is_running():
+            self.log("[Warning] 系統正在執行其他路徑！請先 STOP。")
             return
             
+        # 2. 收集畫面上的有效點位
         active_points = [pt for pt in self.path_manager.waypoints if pt.get('active', True)]
         if not active_points:
-            self.log("[Warning] No active waypoints to run!")
+            self.log("[Warning] 清單中沒有啟用的路徑點！")
             return
             
-        self.log(f"Starting path execution... (Loop: {loop})")
+        self.log(f">> 開始執行連續路徑... (共 {len(active_points)} 個中繼點, Loop: {loop})")
 
-        # 抓取目前的使用者 TCP 與硬體修正量
+        # 3. 收集環境參數
         user_offset = self.tcp_manager.get_active_matrix()
         T_total_offset = self.T_hw_fix @ user_offset
 
-        if hasattr(self.path_manager, 'run_path'):
-            self.path_manager.run_path(self.current_joints, loop=loop, tcp_offset=T_total_offset)
-        elif hasattr(self.path_manager, 'execute_path'):
-            self.path_manager.execute_path(self.current_joints, loop=loop, tcp_offset=T_total_offset)
-        else:
-            self.log("[Error] Cannot find the run method in path_manager!")
+        # 取得畫面上的全域速度與加速度
+        speed_str = self.jog_speed_combo.currentText().replace("%", "")
+        global_speed = float(speed_str) / 100.0
+        
+        accel_str = self.jog_accel_combo.currentText().replace("%", "") if hasattr(self, 'jog_accel_combo') else "100"
+        global_accel = float(accel_str) / 100.0
+
+        # 4. 委派給 PathManager 處理 (UI 層下班！)
+        self.path_manager.execute_streaming_path(
+            active_points=active_points,
+            start_joints=self.current_joints,
+            tcp_offset_mat=T_total_offset,
+            loop=loop,
+            global_speed=global_speed,
+            global_accel=global_accel,
+            serial_ref=self.serial_manager,
+            callbacks={
+                'update': self.on_manager_update_joints,
+                'error': lambda msg: self.log(f"[執行器錯誤] {msg}"),
+                'log': self.log,
+                'finished': lambda t: self.log(f"([END]) 連續路徑執行完成。總耗時: {t:.2f} 秒") 
+            }
+        )
