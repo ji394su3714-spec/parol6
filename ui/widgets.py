@@ -311,6 +311,11 @@ class WaypointHeader(QFrame):
         
         lbl_name = QLabel(" Name")
         layout.addWidget(lbl_name)
+
+        lbl_blend = QLabel("Blend")
+        lbl_blend.setFixedWidth(75)
+        lbl_blend.setAlignment(Qt.AlignmentFlag.AlignCenter) 
+        layout.addWidget(lbl_blend)
         
         lbl_speed = QLabel("Speed")
         lbl_speed.setFixedWidth(75)
@@ -371,6 +376,12 @@ class WaypointRow(QWidget):
         dl = QHBoxLayout(dw)
         dl.setContentsMargins(0, 0, 0, 0)
         dl.setSpacing(2)
+
+        # 🌟 1. 新增 Blend 下拉選單 (FINE 代表精準到位不融合，其餘為提早轉彎比例)
+        self.blend_lbl = DropdownLabel(self, ["FINE", "10%", "25%", "50%", "75%", "100%"], self.save_blend, align=Qt.AlignmentFlag.AlignRight)
+        self.blend_lbl.setFixedWidth(75)
+        self.update_blend_display()
+        layout.addWidget(self.blend_lbl)
         
         self.speed_lbl = DropdownLabel(self, ["10%", "25%", "50%", "80%", "90%", "100%"], self.save_speed, align=Qt.AlignmentFlag.AlignRight)
         self.speed_lbl.setFixedWidth(75) 
@@ -424,16 +435,28 @@ class WaypointRow(QWidget):
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(10, self.on_update_cb)
 
+    # 🌟 新增：Blend 的儲存與顯示
+    def save_blend(self, blend_str):
+        self.data['blend'] = blend_str
+        self.update_blend_display()
+
+    def update_blend_display(self):
+        # 預設為 FINE (安全到位模式)
+        blend_val = self.data.get('blend', 'FINE')
+        self.blend_lbl.setText(blend_val)
+        self.blend_lbl.setStyleSheet("color: black; background: transparent; font-weight: normal;")
+
     # 新增：根據 Type 動態隱藏 UI
     def update_ui_by_type(self):
         # 安全防護：如果這兩個 UI 元件還沒被建立出來，就直接 Return 跳過
-        if not hasattr(self, 'speed_lbl') or not hasattr(self, 'accel_lbl'):
+        if not hasattr(self, 'speed_lbl') or not hasattr(self, 'accel_lbl') or not hasattr(self, 'blend_lbl'):
             return
         m_type = self.data.get('type', 'PTP')
         is_delay = (m_type == 'DELAY')
         # 如果是 Delay 獨立封包，就不顯示速度跟加速度
         self.speed_lbl.setVisible(not is_delay)
         self.accel_lbl.setVisible(not is_delay)
+        self.blend_lbl.setVisible(not is_delay)
 
     def update_type_display(self):
         move_type = self.data.get('type', 'PTP')

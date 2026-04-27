@@ -30,10 +30,10 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 50.0,
+        "speed": 100.0,
         "active": true,
         "note": "",
-        "accel": 50.0
+        "accel": 100.0
     },
     {
         "name": "Point 3",
@@ -48,10 +48,10 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 50.0,
+        "speed": 100.0,
         "active": true,
         "note": "",
-        "accel": 50.0
+        "accel": 100.0
     },
     {
         "name": "Point 4",
@@ -69,7 +69,7 @@
         "speed": 50.0,
         "active": true,
         "note": "",
-        "accel": 50.0
+        "accel": 100.0
     },
     {
         "name": "Point 5",
@@ -84,10 +84,10 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 50.0,
+        "speed": 100.0,
         "active": true,
         "note": "",
-        "accel": 50.0
+        "accel": 100.0
     },
     {
         "name": "Point 6",
@@ -102,10 +102,10 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 50.0,
+        "speed": 100.0,
         "active": true,
         "note": "",
-        "accel": 50.0
+        "accel": 100.0
     },
     {
         "name": "Point 7",
@@ -120,10 +120,10 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "PTP",
-        "speed": 50.0,
+        "speed": 100.0,
         "active": true,
         "note": "",
-        "accel": 50.0
+        "accel": 25.0
     },
     {
         "name": "Point 8",
@@ -141,7 +141,7 @@
         "speed": 50.0,
         "active": true,
         "note": "",
-        "accel": 50.0
+        "accel": 25.0
     },
     {
         "name": "Point 9",
@@ -156,10 +156,10 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 50.0,
+        "speed": 100.0,
         "active": true,
         "note": "",
-        "accel": 50.0
+        "accel": 100.0
     },
     {
         "name": "Point 10",
@@ -174,10 +174,10 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "LIN",
-        "speed": 50.0,
+        "speed": 100.0,
         "active": true,
         "note": "",
-        "accel": 50.0
+        "accel": 100.0
     },
     {
         "name": "Point 11",
@@ -192,10 +192,10 @@
         "aux_joints": null,
         "delay": 0.0,
         "type": "PTP",
-        "speed": 50.0,
+        "speed": 100.0,
         "active": true,
         "note": "",
-        "accel": 50.0
+        "accel": 25.0
     },
     {
         "name": "Point 12",

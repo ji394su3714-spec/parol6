@@ -31,7 +31,7 @@ class TerminalInput(QLineEdit):
         self.history = []        
         self.history_index = -1  
         
-        # --- VS Code 終端機風格 QSS (無縫接合版) ---
+        # --- VS Code 終端機風格 QSS ---
         self.setStyleSheet("""
             QLineEdit {
                 background-color: #1e1e1e;color: #00ff00; font-family: Consolas, Monospace; font-size: 22px;
@@ -287,7 +287,7 @@ class RobotGUI(QMainWindow):
     def emergency_stop(self):
         # 把停止的所有邏輯 (包含軟體執行緒與硬體通訊) 都交給 PathManager 處理
         self.path_manager.stop_path()
-        self.log(">> STOP button pressed.")
+        #self.log(">> STOP button pressed.")
 
     def _setup_run_buttons(self, parent_layout):
         run_container = QWidget()
@@ -368,10 +368,6 @@ class RobotGUI(QMainWindow):
         # 【防護罩】：如果現在正在執行自動路徑動畫，絕對不允許發送手動指令！
         if getattr(self, 'is_animating', False):
             return 
-        
-        #【防護罩 2】：如果大腦正在編譯路徑或已經在跑路徑，絕對封殺這個幽靈訊號！
-        if self.path_manager.is_running():
-            return
             
         self.serial_manager.send_joints(self.current_joints)
 
@@ -615,8 +611,6 @@ class RobotGUI(QMainWindow):
         log_group = QGroupBox("System Log")
         log_layout = QVBoxLayout() 
         log_layout.setContentsMargins(10, 15, 10, 10)
-        
-        # 關鍵：把元件之間的間距歸零，讓輸入框跟 Log 貼齊！
         log_layout.setSpacing(0) 
         
         self.log_widget = LogWidget()

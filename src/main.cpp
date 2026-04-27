@@ -11,19 +11,25 @@
 #include "Comms.h"
 
 // 實體變數定義區
+/*
+    byte stepPin; byte dirPin; byte enPin; byte limitPin; bool limitActiveState;
+    float homingSpeed; float homingPos; long bounceSteps; 
+    long jointControlSpd10; long maxSpeedSteps10; 
+    int rampSteps;     
+*/
 const JointConfig JOINTS[6] = {
     {54, 55, 38,  2,  LOW,   300, -28,  250, 12000, 65000, 350}, 
-    {60, 61, 56, 12,  HIGH, -600,  50,  500, 17000, 65000, 350}, 
-    {43, 48, 58, 14,  HIGH,  750, -70,  600, 17000, 65000, 350}, 
-    {26, 28, 24, 15,  LOW,   950, -145, 400, 15000, 65000, 350}, 
-    {36, 34, 30, 63,  HIGH,  700, -125, 300, 15000, 65000, 350}, 
+    {60, 61, 56, 12,  HIGH, -600,  50,  500, 17000, 65000, 500}, 
+    {43, 48, 58, 14,  HIGH,  750, -70,  600, 17000, 65000, 500}, 
+    {26, 28, 24, 49,  LOW,   950, -144, 400, 15000, 65000, 250}, 
+    {36, 34, 30, 63,  HIGH,  700, -125, 300, 15000, 65000, 250}, 
     {59, 57, 40, 64,  LOW,  1200,    2, 400, 20000, 65000, 350}  
 };
 
 const MotorCurrentConfig MOTOR_CURRENTS[6] = {
-    {1100, 0.5f}, //J1
-    {1100, 0.75f}, //J2
-    {1000, 0.75f}, //J3
+    {1200, 0.5f}, //J1
+    {1200, 0.75f}, //J2
+    {1200, 0.75f}, //J3
     {1000, 0.5f}, //J4
     {1000, 0.5f}, //J5
     {850,  0.5f}  //J6
@@ -69,11 +75,14 @@ void updateRingBuffer() {
     if (bufCount > 0) {
         unsigned long nowUs = micros(); 
         
-        // 1. 起步蓄水池：簡單防抖，蓄滿 4 個封包就出發
+        // 1. 起步蓄水池：硬體級的完美冷卻防抖
+        // 蓄滿 90 個封包 (約 1.35 秒的路徑) 才出發，讓 Python 有絕對的餘裕算數學和印 Log！
         if (!isBufPlaying) {
             if (firstPacketWaitUs == 0) firstPacketWaitUs = nowUs;
-            if (bufCount < 4 && (nowUs - firstPacketWaitUs < 100000)) {
-                return; // 繼續憋氣
+            
+            // 如果水庫裡的水不到 90 滴，且等待時間還沒超過 600 毫秒，就繼續憋氣
+            if (bufCount < 90 && (nowUs - firstPacketWaitUs < 600000)) {
+                return; // 繼續憋氣，專心接 Python 丟過來的封包
             }
 
             firstPacketWaitUs = 0;

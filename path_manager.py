@@ -16,19 +16,19 @@ from motion_profile import SCurveProfile
 # 關節專屬極限 (J1~J6)
 MAX_JOINT_SPEEDS = np.array([158.20, 50.63, 55.94, 253.13, 253.13, 101.25])     
 MAX_JOINT_ACCELS = np.array([527.34, 168.75, 186.46, 843.75, 843.75, 337.50])   
-MAX_JOINT_JERKS = MAX_JOINT_ACCELS * 5.0                               
+MAX_JOINT_JERKS = MAX_JOINT_ACCELS *5.0                               
 
 # 直角空間極限 (LIN/CIRC 用)
-MAX_LIN_SPEED = 100.0    
-MAX_LIN_ACCEL = 200.0    
+MAX_LIN_SPEED = 150.0    
+MAX_LIN_ACCEL = 300.0    
 MAX_LIN_JERK = MAX_LIN_ACCEL * 5.0    
 
-MAX_ROT_SPEED = 90.0     
-MAX_ROT_ACCEL = 180.0     
+MAX_ROT_SPEED = 100.0     
+MAX_ROT_ACCEL = 200.0     
 MAX_ROT_JERK = MAX_ROT_ACCEL * 5.0     
 
 # 晶片總體算力防護網參數
-MAX_TOTAL_PULSE_SLICE = 10000   
+MAX_TOTAL_PULSE_SLICE = 15000   
 MAX_TOTAL_PULSE_NATIVE = 65000  
 
 N_PTP_T_ACC = 0.2  # N_PTP 預設起步時間
@@ -125,7 +125,7 @@ class StreamingPathExecutor(QThread):
             self.msleep(10)
 
         if not self._is_running or self.producer_error: return
-        self.log_signal.emit(f"[System] Buffer level reached ({self.point_queue.qsize()} pts), starting rapid execution!")
+        #self.log_signal.emit(f"[System] Buffer level reached ({self.point_queue.qsize()} pts), starting rapid execution!")
 
         import time 
         real_start_time = time.time()
@@ -318,7 +318,7 @@ class TrajectoryMathEngine:
                 overspeed_ratio = max(overspeed_ratio, peak_joint_v / allowed_v)
 
             peak_joint_a = max_d2_joint_dp2[i] * (peak_prog_v ** 2) + max_d_joint_dp[i] * peak_prog_a
-            allowed_a = MAX_JOINT_ACCELS[i] * accel_factor * 2.0
+            allowed_a = MAX_JOINT_ACCELS[i] * accel_factor * 1.0
             if peak_joint_a > allowed_a and allowed_a > 0:
                 overspeed_ratio = max(overspeed_ratio, math.sqrt(peak_joint_a / allowed_a))
                 
@@ -364,15 +364,9 @@ class TrajectoryMathEngine:
         
         # 4. IK 計算 (加入嚴格的 0.1mm 奇異點防護)
         for i in range(N):
-            # 🌟 新增：如果是起點，無條件完美對齊實體馬達目前的角度！
-            if i == 0:
-                ik_result = start_joints.copy()
-                ik_error = 0.0
-            else:
-                ik_result, ik_error = kinematics.inverse_kinematics(T_flange_targets[i], current_seed)
+            ik_result, ik_error = kinematics.inverse_kinematics(T_flange_targets[i], current_seed)
             if ik_result is None or ik_error > 0.1:
-                return None, 0, f"Encountered dead zone or singularity at {prog_arr[i]*100:.1f}% of the trajectory!"
-            
+                return None, 0, f"軌跡 {prog_arr[i]*100:.1f}% 處遭遇死角或奇異點！"
             current_seed = ik_result
             exact_trajectory.append(ik_result)
             
@@ -502,15 +496,9 @@ class TrajectoryMathEngine:
         current_seed = start_joints.copy()
         
         for i in range(N):
-            # 新增：圓弧起點也無條件完美對齊！
-            if i == 0:
-                ik_result = start_joints.copy()
-                ik_error = 0.0
-            else:
-                ik_result, ik_error = kinematics.inverse_kinematics(T_flange_targets[i], current_seed)
-                if ik_result is None or ik_error > 0.1:
-                    return None, 0, f"CIRC 軌跡 {prog_arr[i]*100:.1f}% 處遭遇死角！"
-                    
+            ik_result, ik_error = kinematics.inverse_kinematics(T_flange_targets[i], current_seed)
+            if ik_result is None or ik_error > 0.1:
+                return None, 0, f"CIRC 軌跡 {prog_arr[i]*100:.1f}% 處遭遇死角！"
             current_seed = ik_result
             exact_trajectory.append(ik_result)
             
@@ -591,6 +579,28 @@ class PathManager(QObject):
         self.waypoints.clear()
         self.list_update_signal.emit()
         self.log_signal.emit("All waypoints deleted.")
+
+    def update_target_joints(self, index, joints):
+        """後期編輯：更新指定點位的目標座標"""
+        if 0 <= index < len(self.waypoints):
+            # 強制更新座標，並保留小數點後四位
+            self.waypoints[index]['joints'] = [round(j, 4) for j in joints]
+            
+            # 如果原本不小心對 DELAY 點按了更新，自動把它轉回實體點位
+            if self.waypoints[index].get('type') == 'DELAY':
+                self.waypoints[index]['type'] = 'PTP'
+                
+            self.list_update_signal.emit()
+            self.log_signal.emit(f"Updated: {self.waypoints[index]['name']} (Target Pos)")
+
+    def update_aux_joints(self, index, joints):
+        """後期編輯：更新/新增指定點位的 AUX 輔助點，並自動轉為 CIRC"""
+        if 0 <= index < len(self.waypoints):
+            self.waypoints[index]['type'] = 'CIRC'
+            self.waypoints[index]['aux_joints'] = [round(j, 4) for j in joints]
+            
+            self.list_update_signal.emit()
+            self.log_signal.emit(f"Updated: {self.waypoints[index]['name']} (AUX Pos Added)")
 
     def toggle_point_active(self, index):
         if 0 <= index < len(self.waypoints):

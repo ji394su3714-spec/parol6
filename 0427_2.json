@@ -1,0 +1,213 @@
+[
+    {
+        "name": "Point 1",
+        "joints": [
+            -0.0005,
+            13.7201,
+            42.6819,
+            0.001,
+            33.598,
+            0.0015
+        ],
+        "aux_joints": null,
+        "type": "PTP",
+        "speed": 80.0,
+        "accel": 10.0,
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 2",
+        "joints": [
+            -0.0006,
+            -0.7533,
+            59.4073,
+            0.0011,
+            31.346,
+            0.0016
+        ],
+        "aux_joints": [
+            -8.1147,
+            7.315,
+            50.687,
+            0.0012,
+            31.9982,
+            8.1158
+        ],
+        "type": "CIRC",
+        "speed": 25.0,
+        "accel": 25.0,
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 3",
+        "joints": [
+            -0.0005,
+            13.7201,
+            42.6819,
+            0.001,
+            33.598,
+            0.0015
+        ],
+        "aux_joints": null,
+        "type": "PTP",
+        "speed": 50.0,
+        "accel": 50.0,
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 4",
+        "joints": [
+            -0.0001,
+            38.134,
+            44.5702,
+            0.0069,
+            7.2958,
+            0.0071
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 100.0,
+        "accel": 100.0,
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 5",
+        "joints": [
+            -0.0001,
+            32.734,
+            61.7986,
+            -0.012,
+            -4.5326,
+            180.0
+        ],
+        "aux_joints": null,
+        "type": "PTP",
+        "speed": 100.0,
+        "accel": 100.0,
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 6",
+        "joints": [
+            -0.0001,
+            36.9434,
+            61.0347,
+            -0.007,
+            -7.9781,
+            180.005
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 50.0,
+        "accel": 50.0,
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 7",
+        "joints": [
+            0.0021,
+            36.8378,
+            45.7395,
+            -0.007,
+            37.4228,
+            180.0036
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 50.0,
+        "accel": 25.0,
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 8",
+        "joints": [
+            0.0025,
+            -2.4056,
+            20.8137,
+            -0.0047,
+            101.592,
+            180.0092
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 50.0,
+        "accel": 50.0,
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 9",
+        "joints": [
+            0.0021,
+            36.8378,
+            45.7395,
+            -0.007,
+            37.4228,
+            180.0036
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 50.0,
+        "accel": 50.0,
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 10",
+        "joints": [
+            0.0025,
+            -2.4056,
+            20.8137,
+            -0.0047,
+            101.592,
+            180.0092
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 100.0,
+        "accel": 100.0,
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 11",
+        "joints": [
+            0.0021,
+            36.8378,
+            45.7395,
+            -0.007,
+            37.4228,
+            180.0036
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 100.0,
+        "accel": 100.0,
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 12",
+        "joints": [
+            0.0021,
+            -9.04,
+            70.0,
+            -95.0,
+            89.39,
+            180.0036
+        ],
+        "aux_joints": null,
+        "type": "PTP",
+        "speed": 100.0,
+        "accel": 10.0,
+        "active": true,
+        "note": ""
+    }
+]

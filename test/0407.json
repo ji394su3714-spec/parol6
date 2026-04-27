@@ -12,7 +12,7 @@
         "aux_joints": null,
         "type": "PTP",
         "speed": 25.0,
-        "accel": 25.0,
+        "accel": 50.0,
         "active": true,
         "note": ""
     },
@@ -28,7 +28,7 @@
         ],
         "aux_joints": null,
         "type": "LIN",
-        "speed": 80.0,
+        "speed": 100.0,
         "accel": 80.0,
         "active": true,
         "note": ""
@@ -63,7 +63,7 @@
         "aux_joints": null,
         "type": "PTP",
         "speed": 25.0,
-        "accel": 10.0,
+        "accel": 25.0,
         "active": true,
         "note": ""
     },
@@ -96,18 +96,25 @@
         ],
         "aux_joints": null,
         "type": "LIN",
-        "speed": 80.0,
+        "speed": 100.0,
         "accel": 80.0,
         "active": true,
         "note": ""
     },
     {
         "name": "Point 7",
-        "joints": [-117.08, -3.37, 70.0, -41.6875, 11.08, -16.7095],
+        "joints": [
+            -117.08,
+            -3.37,
+            70.0,
+            -41.6875,
+            11.08,
+            -16.7095
+        ],
         "aux_joints": null,
         "type": "PTP",
         "speed": 50.0,
-        "accel": 10.0,
+        "accel": 25.0,
         "active": true,
         "note": ""
     }

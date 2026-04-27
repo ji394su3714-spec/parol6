@@ -117,7 +117,7 @@ void updateHomingLogic() {
         else if (homingState[i] == 3) {
             if (!steppers[i]->moving()) {
                 steppers[i]->setZero(0); 
-                steppers[i]->writeSteps(0); 
+                //steppers[i]->writeSteps(0); 
                 homingState[i] = 0;
                 Serial.print(">>> Axis "); Serial.print(i + 1); Serial.println(" Homing Done <<<");
 
