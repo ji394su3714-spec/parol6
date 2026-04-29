@@ -1,0 +1,128 @@
+[
+    {
+        "name": "Point 1",
+        "joints": [
+            26.5195,
+            11.6206,
+            27.7927,
+            38.1668,
+            -46.2658,
+            28.5172
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 100.0,
+        "accel": 100.0,
+        "blend": "FINE",
+        "active": false,
+        "note": ""
+    },
+    {
+        "name": "Point 2",
+        "joints": [
+            -0.0005,
+            29.3863,
+            45.3703,
+            -0.0007,
+            -74.7546,
+            -0.0007
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 100.0,
+        "accel": 100.0,
+        "blend": "FINE",
+        "active": false,
+        "note": ""
+    },
+    {
+        "name": "Point 3",
+        "joints": [
+            -26.5334,
+            11.5696,
+            27.8561,
+            -38.1769,
+            -46.2817,
+            -28.5193
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 100.0,
+        "accel": 100.0,
+        "blend": "FINE",
+        "active": false,
+        "note": ""
+    },
+    {
+        "name": "Point 4",
+        "joints": [
+            -0.0009,
+            -1.393,
+            9.63,
+            -0.0054,
+            -8.235,
+            -0.0052
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 100.0,
+        "accel": 100.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 5",
+        "joints": [
+            26.5195,
+            11.6206,
+            27.7927,
+            38.1668,
+            -46.2658,
+            28.5172
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 100.0,
+        "accel": 100.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 6",
+        "joints": [
+            -0.0005,
+            29.3863,
+            45.3703,
+            -0.0007,
+            -74.7546,
+            -0.0007
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 100.0,
+        "accel": 100.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 7",
+        "joints": [
+            -0.0009,
+            -1.393,
+            9.63,
+            -0.0054,
+            -8.235,
+            -0.0052
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 100.0,
+        "accel": 100.0,
+        "blend": "FINE",
+        "active": false,
+        "note": ""
+    }
+]

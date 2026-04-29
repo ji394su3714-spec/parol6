@@ -27,7 +27,7 @@ const JointConfig JOINTS[6] = {
 };
 
 const MotorCurrentConfig MOTOR_CURRENTS[6] = {
-    {1200, 0.5f}, //J1
+    {1300, 0.5f}, //J1
     {1200, 0.75f}, //J2
     {1200, 0.75f}, //J3
     {1000, 0.5f}, //J4
@@ -76,13 +76,13 @@ void updateRingBuffer() {
         unsigned long nowUs = micros(); 
         
         // 1. 起步蓄水池：硬體級的完美冷卻防抖
-        // 蓄滿 90 個封包 (約 1.35 秒的路徑) 才出發，讓 Python 有絕對的餘裕算數學和印 Log！
+        // 蓄滿 100 個封包 (約 1.5 秒的路徑) 才出發，讓 Python 有絕對的餘裕算數學和印 Log！
         if (!isBufPlaying) {
             if (firstPacketWaitUs == 0) firstPacketWaitUs = nowUs;
             
-            // 如果水庫裡的水不到 90 滴，且等待時間還沒超過 600 毫秒，就繼續憋氣
-            if (bufCount < 90 && (nowUs - firstPacketWaitUs < 600000)) {
-                return; // 繼續憋氣，專心接 Python 丟過來的封包
+            // 如果水庫裡的水不到 100 滴，且等待時間還沒超過 2 秒，就繼續憋氣
+            if (bufCount < 100 && (nowUs - firstPacketWaitUs < 2000000)) {
+                return;
             }
 
             firstPacketWaitUs = 0;

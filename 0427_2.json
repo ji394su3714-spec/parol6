@@ -14,7 +14,8 @@
         "speed": 80.0,
         "accel": 10.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "10%"
     },
     {
         "name": "Point 2",
@@ -38,7 +39,8 @@
         "speed": 25.0,
         "accel": 25.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "25%"
     },
     {
         "name": "Point 3",
@@ -51,11 +53,12 @@
             0.0015
         ],
         "aux_joints": null,
-        "type": "PTP",
+        "type": "LIN",
         "speed": 50.0,
         "accel": 50.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "FINE"
     },
     {
         "name": "Point 4",
@@ -72,7 +75,8 @@
         "speed": 100.0,
         "accel": 100.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "25%"
     },
     {
         "name": "Point 5",
@@ -89,7 +93,8 @@
         "speed": 100.0,
         "accel": 100.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "25%"
     },
     {
         "name": "Point 6",
@@ -106,7 +111,8 @@
         "speed": 50.0,
         "accel": 50.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "10%"
     },
     {
         "name": "Point 7",
@@ -123,7 +129,8 @@
         "speed": 50.0,
         "accel": 25.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "FINE"
     },
     {
         "name": "Point 8",
@@ -140,7 +147,8 @@
         "speed": 50.0,
         "accel": 50.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "10%"
     },
     {
         "name": "Point 9",
@@ -157,7 +165,8 @@
         "speed": 50.0,
         "accel": 50.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "10%"
     },
     {
         "name": "Point 10",
@@ -174,7 +183,8 @@
         "speed": 100.0,
         "accel": 100.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "10%"
     },
     {
         "name": "Point 11",
@@ -191,7 +201,8 @@
         "speed": 100.0,
         "accel": 100.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "10%"
     },
     {
         "name": "Point 12",
@@ -208,6 +219,7 @@
         "speed": 100.0,
         "accel": 10.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "FINE"
     }
 ]

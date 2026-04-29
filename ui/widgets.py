@@ -248,7 +248,6 @@ class InlineEdit(QLineEdit):
 
 # 極簡下拉選單標籤
 class DropdownLabel(QLabel):
-    # 修正 1：乖乖把 parent_row 傳給底層的 QLabel，讓它有明確的歸屬
     def __init__(self, parent_row, options, save_cb, align=Qt.AlignmentFlag.AlignCenter):
         super().__init__(parent_row) 
         self.parent_row = parent_row
@@ -260,8 +259,6 @@ class DropdownLabel(QLabel):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             event.accept() 
-            
-            # 修正 2：不要把 self 傳進去！括號留空，讓它成為純粹的獨立彈出視窗
             menu = QMenu() 
             
             menu.setStyleSheet("""
@@ -273,7 +270,6 @@ class DropdownLabel(QLabel):
                 action = menu.addAction(opt)
                 action.triggered.connect(lambda checked, o=opt: self.save_cb(o))
             
-            # 修正 3：捨棄舊的 mapToGlobal，改用 PyQt6 專屬的 globalPosition()
             menu.exec(event.globalPosition().toPoint())
 
 # 標題列 (Header)
@@ -377,7 +373,6 @@ class WaypointRow(QWidget):
         dl.setContentsMargins(0, 0, 0, 0)
         dl.setSpacing(2)
 
-        # 🌟 1. 新增 Blend 下拉選單 (FINE 代表精準到位不融合，其餘為提早轉彎比例)
         self.blend_lbl = DropdownLabel(self, ["FINE", "10%", "25%", "50%", "75%", "100%"], self.save_blend, align=Qt.AlignmentFlag.AlignRight)
         self.blend_lbl.setFixedWidth(75)
         self.update_blend_display()
@@ -435,7 +430,7 @@ class WaypointRow(QWidget):
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(10, self.on_update_cb)
 
-    # 🌟 新增：Blend 的儲存與顯示
+    # Blend 的儲存與顯示
     def save_blend(self, blend_str):
         self.data['blend'] = blend_str
         self.update_blend_display()

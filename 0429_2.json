@@ -1,0 +1,146 @@
+[
+    {
+        "name": "Point 1",
+        "joints": [
+            -25.89,
+            2.81,
+            59.95,
+            -16.97,
+            -63.63,
+            -12.58
+        ],
+        "aux_joints": null,
+        "type": "PTP",
+        "speed": 50.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 2",
+        "joints": [
+            -26.285,
+            9.582,
+            65.84,
+            -12.8588,
+            -96.5732,
+            -8.6788
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 50.0,
+        "accel": 50.0,
+        "blend": "25%",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 3",
+        "joints": [
+            -24.47,
+            3.4787,
+            49.7924,
+            -28.5707,
+            -31.5832,
+            -23.6231
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 50.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 4",
+        "joints": [
+            -52.94,
+            3.4787,
+            49.7924,
+            -28.5707,
+            -31.5832,
+            -23.6231
+        ],
+        "aux_joints": null,
+        "type": "PTP",
+        "speed": 50.0,
+        "accel": 50.0,
+        "blend": "100%",
+        "active": false,
+        "note": ""
+    },
+    {
+        "name": "Point 5",
+        "joints": [
+            -51.2678,
+            11.6128,
+            44.1325,
+            -24.1118,
+            -90.94,
+            -19.9525
+        ],
+        "aux_joints": null,
+        "type": "PTP",
+        "speed": 50.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 6",
+        "joints": [
+            -57.5119,
+            17.5867,
+            35.088,
+            -57.7822,
+            -102.2307,
+            -21.5003
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 100.0,
+        "accel": 50.0,
+        "blend": "25%",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 7",
+        "joints": [
+            -39.5852,
+            7.6817,
+            45.0342,
+            23.1072,
+            -77.8165,
+            -8.958
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 100.0,
+        "accel": 50.0,
+        "blend": "25%",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 8",
+        "joints": [
+            -51.2678,
+            11.6128,
+            44.1325,
+            -24.1118,
+            -90.94,
+            -19.9525
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 100.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    }
+]
