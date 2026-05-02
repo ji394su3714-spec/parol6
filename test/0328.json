@@ -16,7 +16,7 @@
         "active": true,
         "note": "",
         "accel": 100.0,
-        "blend": "50%"
+        "blend": "FINE"
     },
     {
         "name": "Point 2",
@@ -35,7 +35,7 @@
         "active": true,
         "note": "",
         "accel": 100.0,
-        "blend": "50%"
+        "blend": "FINE"
     },
     {
         "name": "Point 3",
@@ -54,7 +54,7 @@
         "active": true,
         "note": "",
         "accel": 100.0,
-        "blend": "50%"
+        "blend": "25%"
     },
     {
         "name": "Point 4",
@@ -73,7 +73,7 @@
         "active": true,
         "note": "",
         "accel": 100.0,
-        "blend": "50%"
+        "blend": "25%"
     },
     {
         "name": "Point 5",
@@ -92,7 +92,7 @@
         "active": true,
         "note": "",
         "accel": 100.0,
-        "blend": "50%"
+        "blend": "FINE"
     },
     {
         "name": "Point 6",
@@ -130,7 +130,7 @@
         "active": true,
         "note": "",
         "accel": 100.0,
-        "blend": "50%"
+        "blend": "10%"
     },
     {
         "name": "Point 8",
@@ -149,7 +149,7 @@
         "active": true,
         "note": "",
         "accel": 100.0,
-        "blend": "50%"
+        "blend": "10%"
     },
     {
         "name": "Point 9",
@@ -168,7 +168,7 @@
         "active": true,
         "note": "",
         "accel": 100.0,
-        "blend": "50%"
+        "blend": "FINE"
     },
     {
         "name": "Point 10",
@@ -187,7 +187,7 @@
         "active": true,
         "note": "",
         "accel": 100.0,
-        "blend": "50%"
+        "blend": "25%"
     },
     {
         "name": "Point 11",
@@ -206,7 +206,7 @@
         "active": true,
         "note": "",
         "accel": 100.0,
-        "blend": "50%"
+        "blend": "25%"
     },
     {
         "name": "Point 12",
@@ -225,7 +225,7 @@
         "active": true,
         "note": "",
         "accel": 100.0,
-        "blend": "50%"
+        "blend": "FINE"
     },
     {
         "name": "Point 13",
@@ -244,6 +244,6 @@
         "active": true,
         "note": "",
         "accel": 50.0,
-        "blend": "75%"
+        "blend": "FINE"
     }
 ]

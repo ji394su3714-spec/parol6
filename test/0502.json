@@ -1,0 +1,92 @@
+[
+    {
+        "name": "Point 1",
+        "joints": [
+            0.0008,
+            21.3518,
+            44.8207,
+            0.0016,
+            23.8275,
+            0.001
+        ],
+        "aux_joints": null,
+        "type": "PTP",
+        "speed": 100.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 2",
+        "joints": [
+            -0.0,
+            -0.0005,
+            0.0009,
+            0.0,
+            89.9995,
+            0.0
+        ],
+        "aux_joints": null,
+        "type": "PTP",
+        "speed": 100.0,
+        "accel": 50.0,
+        "blend": "50%",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 3",
+        "joints": [
+            0.0008,
+            21.3518,
+            44.8207,
+            0.0016,
+            23.8275,
+            0.001
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 90.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 4",
+        "joints": [
+            -0.0,
+            -0.0005,
+            0.0009,
+            0.0,
+            89.9995,
+            0.0
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 90.0,
+        "accel": 50.0,
+        "blend": "50%",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 5",
+        "joints": [
+            0.0008,
+            21.3518,
+            44.8207,
+            0.0016,
+            23.8275,
+            0.001
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 50.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    }
+]

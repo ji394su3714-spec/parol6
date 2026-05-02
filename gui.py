@@ -673,7 +673,7 @@ class RobotGUI(QMainWindow):
         
         target_data = self.path_manager.waypoints[index]
 
-        # 新增防護網：如果是 Delay 節點，因為沒有座標，直接跳過預覽！
+        # 如果是 Delay 節點，因為沒有座標，直接跳過預覽！
         if target_data.get('type') == 'DELAY' or 'joints' not in target_data:
             #self.log(">> [Info] Delay point has no physical coordinates to preview.")
             return

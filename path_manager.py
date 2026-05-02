@@ -194,6 +194,7 @@ class StreamingPathExecutor(QThread):
             else:
                 target_joints = np.array(wp.get("target_joints", current_seed))
                 
+                # 呼叫 TrajectoryMathEngine 的對應方法
                 if move_type == "PTP":
                     exact_traj, t_tot, msg = TrajectoryMathEngine.calculate_ptp_trajectory(
                         current_seed, target_joints, speed_factor, accel_factor
@@ -217,6 +218,8 @@ class StreamingPathExecutor(QThread):
                     self.error_signal.emit(f"Unsupported move type {move_type}")
                     self.producer_error = True
                     return
+                
+            curr_trajectory = [list(pt) for pt in curr_trajectory]
 
             if len(curr_trajectory) == 0:
                 self.error_signal.emit(f"Waypoint {wp_idx+1} failed: {msg}")
@@ -226,147 +229,60 @@ class StreamingPathExecutor(QThread):
             if msg and msg != "SUCCESS" and not msg.startswith("wait"):
                 self.log_signal.emit(f"Waypoint {wp_idx+1}: {msg}")
 
-            # 2. 終極魔法：空間幾何貝茲切片 (Geometric Bezier Splicing)
-            # 徹底解決速度與長度不均導致的軌跡變形問題！
+            # 2. 時間軸向量疊加融合 (DJ Crossfade)
             if pending_trajectory is not None:
+                N = 0
                 if pending_blend_str != 'FINE' and move_type != 'DELAY':
                     try:
                         pct = float(pending_blend_str.replace('%', '')) / 100.0
+                        # 允許高達 100% 的融合，但不能超過 1.0 (避免索引越界)
+                        safe_pct = min(max(pct, 0.0), 1.0)
+                        N = int(min(len(pending_trajectory), len(curr_trajectory)) * safe_pct)
                     except ValueError:
-                        pct = 0.0
-                        
-                    if pct > 0:
-                        # --- TCP 空間融合升級版 ---
-                        # 0. 準備 TCP 轉換矩陣
-                        try:
-                            tcp_inv = np.linalg.inv(tcp_offset_mat)
-                        except:
-                            tcp_inv = np.eye(4)
-                            
-                        # 1. 依然使用「法蘭面 (Flange)」的座標來計算物理距離 (因為定點繞軸時，法蘭面才有物理位移)
-                        pos_A_start_flange = kinematics.forward_kinematics(pending_trajectory[0])[:3, 3]
-                        pos_mid_flange = kinematics.forward_kinematics(pending_trajectory[-1])[:3, 3] # P2 點
-                        pos_B_end_flange = kinematics.forward_kinematics(curr_trajectory[-1])[:3, 3]
-
-                        # 2. 計算法蘭面的物理長度 (mm)
-                        len_A = np.linalg.norm(pos_mid_flange - pos_A_start_flange) * 1000.0
-                        len_B = np.linalg.norm(pos_B_end_flange - pos_mid_flange) * 1000.0
-
-                        # 3. 嚴格基於短邊距離計算融合半徑
-                        safe_pct = min(pct, 0.5)
-                        blend_dist_mm = min(len_A, len_B) * safe_pct
-
-                        if blend_dist_mm > 0.5: # 距離大於 0.5mm 才做融合
-                            M = len(pending_trajectory)
-                            L = len(curr_trajectory)
-                            
-                            # 4. 找尋切斷點 i_A (基於法蘭面距離)
-                            i_A = M - 1
-                            for i in range(M - 1, 0, -1):
-                                pos_i = kinematics.forward_kinematics(pending_trajectory[i])[:3, 3]
-                                if np.linalg.norm(pos_mid_flange - pos_i) * 1000.0 >= blend_dist_mm:
-                                    i_A = i
-                                    break
-                            
-                            # 5. 找尋切斷點 i_B (基於法蘭面距離)
-                            i_B = 0
-                            for i in range(0, L):
-                                pos_i = kinematics.forward_kinematics(curr_trajectory[i])[:3, 3]
-                                if np.linalg.norm(pos_i - pos_mid_flange) * 1000.0 >= blend_dist_mm:
-                                    i_B = i
-                                    break
-                                    
-                            # 核心改變：將橋樑的起、中、終點，全部轉換到 TCP 空間！
-                            T_flange_start = kinematics.forward_kinematics(pending_trajectory[i_A])
-                            T_tcp_start = T_flange_start @ tcp_offset_mat
-                            P_start_tcp = T_tcp_start[:3, 3]
-                            rot_start_tcp = R.from_matrix(T_tcp_start[:3, :3])
-                            
-                            T_flange_mid = kinematics.forward_kinematics(pending_trajectory[-1])
-                            T_tcp_mid = T_flange_mid @ tcp_offset_mat
-                            P_mid_tcp = T_tcp_mid[:3, 3]
-                            
-                            T_flange_end = kinematics.forward_kinematics(curr_trajectory[i_B])
-                            T_tcp_end = T_flange_end @ tcp_offset_mat
-                            P_end_tcp = T_tcp_end[:3, 3]
-                            rot_end_tcp = R.from_matrix(T_tcp_end[:3, :3])
-
-                            # 6. 計算過彎所需的時間 (必須使用法蘭面的弦長，否則定點繞軸時時間會變成0)
-                            P_start_flange = T_flange_start[:3, 3]
-                            P_end_flange = T_flange_end[:3, 3]
-                            chord_flange = np.linalg.norm(P_end_flange - P_start_flange) * 1000.0
-                            legs_flange = (np.linalg.norm(pos_mid_flange - P_start_flange) + np.linalg.norm(P_end_flange - pos_mid_flange)) * 1000.0
-                            curve_len_flange = (chord_flange + legs_flange) / 2.0 
-                            
-                            # 7. 讀取兩端的法蘭面真實車速 (mm / 15ms)
-                            if i_A > 0:
-                                pos_prev_A = kinematics.forward_kinematics(pending_trajectory[i_A - 1])[:3, 3]
-                                v_A = np.linalg.norm(P_start_flange - pos_prev_A) * 1000.0
-                            else:
-                                v_A = 0.05
-                            v_A = max(v_A, 0.05) 
-                            
-                            if i_B < L - 1:
-                                pos_next_B = kinematics.forward_kinematics(curr_trajectory[i_B + 1])[:3, 3]
-                                v_B = np.linalg.norm(pos_next_B - P_end_flange) * 1000.0
-                            else:
-                                v_B = 0.05
-                            v_B = max(v_B, 0.05) 
-                                
-                            v_avg = (v_A + v_B) / 2.0
-                            N_blend = int(curve_len_flange / v_avg)
-                            N_blend = max(N_blend, 3)
-
-                            # 8. 生成實體空間的貝茲曲線
-                            blended_section = []
-                            current_seed = pending_trajectory[i_A] 
-                            slerp_engine = Slerp([0, 1], R.from_matrix([rot_start_tcp.as_matrix(), rot_end_tcp.as_matrix()]))
-
-                            for k in range(N_blend):
-                                x = k / (N_blend - 1) if N_blend > 1 else 1.0
-                                numerator = v_A * x + 0.5 * (v_B - v_A) * (x ** 2)
-                                denominator = (v_A + v_B) / 2.0
-                                t = numerator / denominator
-                                t = max(0.0, min(1.0, t)) 
-                                
-                                # 空間位置：在 TCP 空間執行二階貝茲！
-                                # 如果是定點繞軸，這三點座標相同，算出來保證還是同一個點。
-                                P_bezier_tcp = ((1 - t)**2) * P_start_tcp + 2 * (1 - t) * t * P_mid_tcp + (t**2) * P_end_tcp
-                                
-                                # 空間姿態：在 TCP 空間執行 SLERP
-                                rot_bezier_tcp = slerp_engine(t).as_matrix()
-                                
-                                T_tcp_target = np.eye(4)
-                                T_tcp_target[:3, :3] = rot_bezier_tcp
-                                T_tcp_target[:3, 3] = P_bezier_tcp
-                                
-                                # 最後一擊：將完美融合的 TCP 目標，反推回法蘭面丟給 IK
-                                T_flange_target = T_tcp_target @ tcp_inv
-                                
-                                ik_result, err = kinematics.inverse_kinematics(T_flange_target, current_seed)
-                                if ik_result is not None:
-                                    current_seed = ik_result
-                                    blended_section.append(ik_result)
-                                else:
-                                    break
-                            
-                            # 10. 外科手術級拼接
-                            if len(blended_section) == N_blend:
-                                pending_trajectory = list(pending_trajectory[:i_A]) + list(blended_section)
-                                curr_trajectory = list(curr_trajectory[i_B:])
-
-                # 3. 發射！把處理好的 pending 軌跡倒進水庫
-                for ik_joints in pending_trajectory:
-                    if not self._is_running: return
-                    self.point_queue.put(ik_joints, block=True)
+                        pass
                 
+                if N > 0:
+                    M = len(pending_trajectory)
+                    
+                    # 擷取 A 的尾巴 (準備減速到 0 的部分)
+                    arr_A = np.array(pending_trajectory[M - N : M])
+                    
+                    # 擷取 B 的開頭 (準備從 0 加速起步的部分)
+                    arr_B = np.array(curr_trajectory[:N])
+                    
+                    # 擷取轉角的絕對頂點 (Target A)
+                    vertex = np.array(pending_trajectory[-1])
+                    
+                    # 數學魔法：向量解析解 (Vectorized Analytic Solution)
+                    blended_section = arr_A + arr_B - vertex
+                    
+                    # 流水線機制：先發射已經「安全 (不會再被下一段融合)」的前半段
+                    for ik_joints in pending_trajectory[: M - N]:
+                        if not self._is_running: return
+                        self.point_queue.put(ik_joints, block=True)
+                        
+                    # 將「融合段 + B 的剩餘段」結合成新的 pending，扣在手上等下一回合
+                    pending_trajectory = blended_section.tolist() + curr_trajectory[N:]
+                    
+                else:
+                    # 如果不需要融合 (N=0) 或遇到 DELAY，直接發射手上整條 pending
+                    for ik_joints in pending_trajectory:
+                        if not self._is_running: return
+                        self.point_queue.put(ik_joints, block=True)
+                    
+                    # 換手
+                    pending_trajectory = curr_trajectory
+                    
                 self.msleep(1)
+            else:
+                # 第一回合，直接把 curr 扣在手上
+                pending_trajectory = curr_trajectory
 
             # 4. 準備下一回合交接
-            pending_trajectory = curr_trajectory
             pending_blend_str = wp.get('blend', 'FINE')
             
-            prev_seed = current_seed 
+            # 修復瞬移魔法：因為流水線結合了融合段與剩餘段，長度永遠等於 curr_trajectory
+            # 所以 pending_trajectory[-1] 永遠完美對齊空間中真實的幾何終點！
             if len(pending_trajectory) > 0:
                 current_seed = pending_trajectory[-1]
             
@@ -388,8 +304,7 @@ class TrajectoryMathEngine:
             tcp_inv = np.linalg.inv(tcp_offset_mat)
         except:
             return None, 0, "Invalid TCP Matrix"
-
-        # 1. 幾何運算
+    
         T_flange_start = kinematics.forward_kinematics(start_joints)
         T_tcp_start = T_flange_start @ tcp_offset_mat
         T_flange_end = kinematics.forward_kinematics(target_joints)
@@ -445,7 +360,7 @@ class TrajectoryMathEngine:
 
         trajectory_joints = np.array(trajectory_joints) 
 
-        # 🌟 優化 2：動態智慧 SG 濾波器 (防震盪)
+        # 優化 2：動態智慧 SG 濾波器 (防震盪)
         # window_len 絕對不能超過資料長度的 1/3，否則會產生多項式變形。
         max_safe_window = max(5, int(len(trajectory_joints) / 3))
         if max_safe_window % 2 == 0: max_safe_window += 1 # 保證是奇數
@@ -458,7 +373,7 @@ class TrajectoryMathEngine:
         if len(trajectory_joints) >= 5: 
             d2_joint_dp2 = savgol_filter(d2_joint_dp2, window_len, 3, axis=0)
 
-        # 🌟 優化 3：擴大邊界幽靈切除範圍
+        # 優化 3：擴大邊界幽靈切除範圍
         # 濾波器跟微積分在頭尾產生的誤差會蔓延，切掉頭尾 5% 才是最純淨的物理數據！
         trim_idx = max(2, int(sample_steps * 0.05))
         if len(d_joint_dp) > trim_idx * 2:
@@ -491,11 +406,9 @@ class TrajectoryMathEngine:
             if peak_joint_a > allowed_a and allowed_a > 0:
                 overspeed_ratio = max(overspeed_ratio, math.sqrt(peak_joint_a / allowed_a))
                 
-        # ==========================================
-        # 🌟 優化 4：修正算力防護網的「假性超載」
+        # 優化 4：修正算力防護網的「假性超載」
         # 我們不能把 6 軸的「歷史最大值」相加。
         # 必須算出每一個「瞬間」的總脈衝數 (axis=1)，再抓出其中最大的一瞬！
-        # ==========================================
         instant_pulse_freqs = np.sum(np.abs(d_joint_dp_core) * peak_prog_v * STEPS_PER_DEG, axis=1)
         peak_pulse_freq = np.max(instant_pulse_freqs) if len(instant_pulse_freqs) > 0 else 0
         
@@ -760,20 +673,18 @@ class PathManager(QObject):
         """後期編輯：更新指定點位的目標座標"""
         if 0 <= index < len(self.waypoints):
             # 強制更新座標，並保留小數點後四位
-            self.waypoints[index]['joints'] = [round(j, 4) for j in joints]
-            
+            self.waypoints[index]['joints'] = [round(j, 4) for j in joints]            
             # 如果原本不小心對 DELAY 點按了更新，自動把它轉回實體點位
             if self.waypoints[index].get('type') == 'DELAY':
-                self.waypoints[index]['type'] = 'PTP'
-                
+                self.waypoints[index]['type'] = 'PTP'                
             self.list_update_signal.emit()
             self.log_signal.emit(f"Updated: {self.waypoints[index]['name']} (Target Pos)")
 
     def update_aux_joints(self, index, joints):
-        """後期編輯：更新/新增指定點位的 AUX 輔助點，並自動轉為 CIRC"""
+        """後期編輯：更新指定點位的輔助座標"""
         if 0 <= index < len(self.waypoints):
             self.waypoints[index]['type'] = 'CIRC'
-            self.waypoints[index]['aux_joints'] = [round(j, 4) for j in joints]            
+            self.waypoints[index]['aux_joints'] = [round(j, 4) for j in joints]
             self.list_update_signal.emit()
             self.log_signal.emit(f"Updated: {self.waypoints[index]['name']} (AUX Pos Added)")
 
@@ -896,7 +807,7 @@ class PathManager(QObject):
                 "speed_factor": pt_speed,
                 "accel_factor": pt_accel,
                 "value": pt.get('value', 0.0), 
-                "blend": pt.get('blend', 'FINE') # 🌟 確保把 UI 的融合參數傳進大腦！
+                "blend": pt.get('blend', 'FINE') # 確保把 UI 的融合參數傳進大腦！
             }
             if move_type == "CIRC" and 'aux_joints' in pt:
                 wp["aux_joints"] = pt['aux_joints']

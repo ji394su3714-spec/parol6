@@ -28,9 +28,9 @@
             1.8157
         ],
         "aux_joints": null,
-        "type": "LIN",
-        "speed": 100.0,
-        "accel": 50.0,
+        "type": "PTP",
+        "speed": 25.0,
+        "accel": 10.0,
         "blend": "FINE",
         "active": true,
         "note": ""
@@ -48,8 +48,8 @@
         "aux_joints": null,
         "type": "LIN",
         "speed": 100.0,
-        "accel": 50.0,
-        "blend": "100%",
+        "accel": 80.0,
+        "blend": "50%",
         "active": true,
         "note": ""
     },
@@ -66,7 +66,7 @@
         "aux_joints": null,
         "type": "LIN",
         "speed": 100.0,
-        "accel": 50.0,
+        "accel": 80.0,
         "blend": "FINE",
         "active": true,
         "note": ""
@@ -84,8 +84,8 @@
         "aux_joints": null,
         "type": "LIN",
         "speed": 100.0,
-        "accel": 50.0,
-        "blend": "100%",
+        "accel": 80.0,
+        "blend": "50%",
         "active": true,
         "note": ""
     },
@@ -102,7 +102,7 @@
         "aux_joints": null,
         "type": "LIN",
         "speed": 100.0,
-        "accel": 50.0,
+        "accel": 80.0,
         "blend": "FINE",
         "active": true,
         "note": ""
