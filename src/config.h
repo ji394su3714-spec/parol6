@@ -17,15 +17,13 @@ struct MotorCurrentConfig {
     float hold_ratio;
 };
 
-#define R_SENSE_5160 0.075f
-//#define R_SENSE_2240 0.075f // 為了滿足函式庫數學運算，必須給 0.075f
-
-#define X_CS_PIN  70 // J1
-#define Y_CS_PIN  39 // J2
-#define Z_CS_PIN  74 // J3
-#define E0_CS_PIN 47 // J4
-#define E1_CS_PIN 32 // J5
-#define E2_CS_PIN 42 // J6
+// 🌟 S6 全 6 軸 CS 腳位定義 (對應 X, Y, Z, E0, E1, E2)
+#define X_CS_PIN  PE7
+#define Y_CS_PIN  PE15
+#define Z_CS_PIN  PD10
+#define E0_CS_PIN PD7
+#define E1_CS_PIN PC14
+#define E2_CS_PIN PC15
 
 // 宣告外部常數陣列
 extern const JointConfig JOINTS[6];
@@ -33,8 +31,7 @@ extern const MotorCurrentConfig MOTOR_CURRENTS[6];
 extern const float GEAR_RATIOS[6];
 
 // 全域硬體常數
-const byte LED_PIN = 13;
-const float MICROSTEPS = 8.0;
+const float MICROSTEPS = 32.0; // 🌟 配合 TMC2240 改為 32 微步
 const float MOTOR_STEPS = 200.0; 
 
 #endif

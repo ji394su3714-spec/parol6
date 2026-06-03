@@ -14,14 +14,14 @@ extern bool normalMoveActive;
 extern char receivedChars[NUM_CHARS];
 extern char tempChars[NUM_CHARS];
 extern long receivedSteps[6];
-extern boolean newData;
+extern bool newData;
 
 // 宣告共用的輔助函式
 float getStepsPerDeg(int axis);
 bool isAnyHoming();
 
-// 環形緩衝區 (Ring Buffer) 變數
-#define BUF_SIZE 120
+// 🌟 解放記憶體：將環形緩衝區從 120 擴大到 1000！
+#define BUF_SIZE 1000
 
 struct BufPoint {
     long targetSteps[6];

@@ -4,8 +4,8 @@ import serial.tools.list_ports
 import time
 from PyQt6.QtCore import QObject, pyqtSignal
 
-GEAR_RATIOS = [6.4, 20.0, 18.1, 4.0, 4.0, 10.0]
-MICROSTEPS = 8 
+GEAR_RATIOS = [6.4, 20.0, 18.095, 4.0, 4.0, 10.0]
+MICROSTEPS = 32 
 STEPS_PER_DEG = [(200.0 * MICROSTEPS * gr) / 360.0 for gr in GEAR_RATIOS]
 
 class SerialManager(QObject):

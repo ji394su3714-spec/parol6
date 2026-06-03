@@ -32,7 +32,7 @@ void updateHomingLogic() {
                     }
                 }
                 if (readyToBounce) {
-                    steppers[i]->setRampLen(10);
+                    steppers[i]->setRampLen(40);
                     steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 13);
                     int bounceDir = (JOINTS[i].homingSpeed > 0) ? -1 : 1;
                     long bounceDist = JOINTS[i].bounceSteps * bounceDir;
@@ -54,7 +54,7 @@ void updateHomingLogic() {
                     }
                 }
                 if (readyToSecondTap) {
-                    steppers[i]->setRampLen(10);
+                    steppers[i]->setRampLen(40);
                     steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 5); 
                     int dir = (JOINTS[i].homingSpeed > 0) ? 1 : -1;
                     steppers[i]->rotate(dir); 
@@ -70,7 +70,6 @@ void updateHomingLogic() {
                     steppers[i]->setRampLen(0);
                     steppers[i]->stop(); 
                     homingState[i] = 14; 
-                    //Serial.print(">>> J"); Serial.print(i + 1); Serial.println(" Hit 2! Ready for final offset.");
                 }
             } 
         }
@@ -89,7 +88,7 @@ void updateHomingLogic() {
                 if (i == 5) {
                     readyToOffset = false; 
                     long prepSteps = J6_PREP_ANGLE * getStepsPerDeg(i);
-                    steppers[i]->setRampLen(100);
+                    steppers[i]->setRampLen(400);
                     steppers[i]->setSpeedSteps(JOINTS[i].maxSpeedSteps10);
                     steppers[i]->doSteps(prepSteps); 
                     homingState[i] = 4; 
@@ -100,11 +99,11 @@ void updateHomingLogic() {
                 }
                 if (readyToOffset) {
                     if (i <= 2) {
-                        steppers[i]->setRampLen(100);
+                        steppers[i]->setRampLen(400); 
                         steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 20);
                     } 
                     else if (i == 3) {
-                        steppers[i]->setRampLen(100);
+                        steppers[i]->setRampLen(400); 
                         steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 15);
                     }
                     long offsetSteps = JOINTS[i].homingPos * getStepsPerDeg(i);
@@ -117,7 +116,6 @@ void updateHomingLogic() {
         else if (homingState[i] == 3) {
             if (!steppers[i]->moving()) {
                 steppers[i]->setZero(0); 
-                //steppers[i]->writeSteps(0); 
                 homingState[i] = 0;
                 Serial.print(">>> Axis "); Serial.print(i + 1); Serial.println(" Homing Done <<<");
 
@@ -131,10 +129,9 @@ void updateHomingLogic() {
                                 else if (k == 5 && j4_waiting) homingState[k] = 10; 
                                 else {
                                     homingState[k] = 1;  
-                                    steppers[k]->setRampLen(10);
+                                    steppers[k]->setRampLen(40);
                                     steppers[k]->setSpeedSteps(abs(JOINTS[k].homingSpeed) * 10);
                                     steppers[k]->rotate((JOINTS[k].homingSpeed > 0) ? 1 : -1);
-                                    //Serial.print(">>> Homing Start: J"); Serial.println(k + 1);
                                 }
                             }
                         }
@@ -142,10 +139,9 @@ void updateHomingLogic() {
                 }
                 if (i == 3 && homingState[5] == 10) {
                     homingState[5] = 1;
-                    steppers[5]->setRampLen(10);
+                    steppers[5]->setRampLen(40);
                     steppers[5]->setSpeedSteps(abs(JOINTS[5].homingSpeed) * 10);
                     steppers[5]->rotate((JOINTS[5].homingSpeed > 0) ? 1 : -1);
-                    //Serial.println(">>> Homing Start: J6 ");
                 }
             }
         }
@@ -155,17 +151,16 @@ void updateHomingLogic() {
                 homingState[i] = 5; 
                 if (homingState[4] == 10) {
                     homingState[4] = 1;
-                    steppers[4]->setRampLen(10);
+                    steppers[4]->setRampLen(40);
                     steppers[4]->setSpeedSteps(abs(JOINTS[4].homingSpeed) * 15);
                     steppers[4]->rotate((JOINTS[4].homingSpeed > 0) ? 1 : -1);
-                    //Serial.println(">>> Homing Start: J5 ");
                 }
             }
         }
         // 狀態 6：J5 撞到開關了，等待 J6 準備好
         else if (homingState[i] == 6 && i == 4) {
             if (homingState[5] == 5) {
-                steppers[4]->setRampLen(100);
+                steppers[4]->setRampLen(400);
                 steppers[4]->setSpeedSteps(abs(JOINTS[4].homingSpeed) * 14);
                 long offsetJ5 = JOINTS[4].homingPos * getStepsPerDeg(4);
                 steppers[4]->doSteps(offsetJ5);
@@ -177,7 +172,7 @@ void updateHomingLogic() {
         // 狀態 15：J6 的 0.3 秒非阻塞延遲
         else if (homingState[i] == 15 && i == 5) {
             if (millis() - j6DelayStartTime >= 300) { 
-                steppers[5]->setRampLen(350); 
+                steppers[5]->setRampLen(1400);
                 steppers[5]->setSpeedSteps(abs(JOINTS[5].homingSpeed) * 15);
                 float remainingAngle = JOINTS[5].homingPos - J6_PREP_ANGLE;
                 long offsetJ6 = remainingAngle * getStepsPerDeg(5);

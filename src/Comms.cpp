@@ -207,7 +207,7 @@ void processCommand() {
 }
 
 void recvWithStartEndMarkers() {
-    static boolean recvInProgress = false;
+    static bool recvInProgress = false;
     static byte ndx = 0;
     char startMarker = '<';
     char endMarker = '>';

@@ -14,30 +14,30 @@ import kinematics
 from motion_profile import SCurveProfile 
 
 # 關節專屬極限 (J1~J6)
-MAX_JOINT_SPEEDS = np.array([158.20, 50.63, 55.94, 253.13, 253.13, 101.25])     
-MAX_JOINT_ACCELS = np.array([527.34, 168.75, 186.46, 843.75, 843.75, 337.50])   
-MAX_JOINT_JERKS = MAX_JOINT_ACCELS *5.0                               
+MAX_JOINT_SPEEDS = np.array([175.78, 56.25, 62.17, 281.25, 281.25, 112.50])     
+MAX_JOINT_ACCELS = np.array([703.13, 225.00, 248.69, 1125.00, 1125.00, 450.00])   
+MAX_JOINT_JERKS = MAX_JOINT_ACCELS *7.0                               
 
 # 直角空間極限 (LIN/CIRC 用)
-MAX_LIN_SPEED = 150.0    
-MAX_LIN_ACCEL = 300.0    
-MAX_LIN_JERK = MAX_LIN_ACCEL * 5.0    
+MAX_LIN_SPEED = 200.0    
+MAX_LIN_ACCEL = 500.0    
+MAX_LIN_JERK = MAX_LIN_ACCEL * 7.0    
 
 MAX_ROT_SPEED = 100.0     
 MAX_ROT_ACCEL = 200.0     
-MAX_ROT_JERK = MAX_ROT_ACCEL * 5.0     
+MAX_ROT_JERK = MAX_ROT_ACCEL * 7.0     
 
 # 晶片總體算力防護網參數
-MAX_TOTAL_PULSE_SLICE = 15000   
-MAX_TOTAL_PULSE_NATIVE = 65000  
+MAX_TOTAL_PULSE_SLICE = 200000  
+MAX_TOTAL_PULSE_NATIVE = 260000  
 
 N_PTP_T_ACC = 0.2  # N_PTP 預設起步時間
 
 GEAR_RATIOS = np.array([6.4, 20.0, 18.095, 4.0, 4.0, 10.0])
-STEPS_PER_DEG = (1600.0 * GEAR_RATIOS) / 360.0
+STEPS_PER_DEG = (6400.0 * GEAR_RATIOS) / 360.0
 
 # 對應 C++ JOINTS 陣列裡 mode=2 的硬體極速 (max_spd)
-HW_MAX_STEPS = np.array([65000, 65000, 65000, 65000, 65000, 65000])
+HW_MAX_STEPS = np.array([260000, 260000, 260000, 260000, 260000, 260000])
 
 def update_advanced_settings(lin_spd, lin_acc, rot_spd, rot_acc, slice_pulse, native_pulse, hw_max, t_acc):
     global MAX_LIN_SPEED, MAX_LIN_ACCEL, MAX_LIN_JERK
@@ -45,8 +45,8 @@ def update_advanced_settings(lin_spd, lin_acc, rot_spd, rot_acc, slice_pulse, na
     global MAX_TOTAL_PULSE_SLICE, MAX_TOTAL_PULSE_NATIVE
     global HW_MAX_STEPS, N_PTP_T_ACC
     
-    MAX_LIN_SPEED, MAX_LIN_ACCEL, MAX_LIN_JERK = lin_spd, lin_acc, lin_acc * 5.0
-    MAX_ROT_SPEED, MAX_ROT_ACCEL, MAX_ROT_JERK = rot_spd, rot_acc, rot_acc * 5.0
+    MAX_LIN_SPEED, MAX_LIN_ACCEL, MAX_LIN_JERK = lin_spd, lin_acc, lin_acc * 7.0
+    MAX_ROT_SPEED, MAX_ROT_ACCEL, MAX_ROT_JERK = rot_spd, rot_acc, rot_acc * 7.0
     MAX_TOTAL_PULSE_SLICE, MAX_TOTAL_PULSE_NATIVE = slice_pulse, native_pulse
     HW_MAX_STEPS = np.array([hw_max]*6, dtype=float)
     N_PTP_T_ACC = t_acc
@@ -129,7 +129,7 @@ class StreamingPathExecutor(QThread):
 
         real_start_time = time.time()
         counter = 0
-        interval = 0.015
+        interval = 0.010
         gui_skip_frames = 5
         self.update_signal.emit(list(self.start_joints))
         
@@ -188,7 +188,7 @@ class StreamingPathExecutor(QThread):
             # 1. 正常計算當前路段 (軌跡 B)
             if move_type == "DELAY":
                 delay_time = wp.get("value", 0.0)
-                delay_steps = max(1, int(delay_time / 0.015))
+                delay_steps = max(1, int(delay_time / 0.010))
                 curr_trajectory = [current_seed] * delay_steps
                 msg = f"wait {delay_time} seconds..."
             else:
@@ -430,7 +430,7 @@ class TrajectoryMathEngine:
         final_profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
 
         # 3. 向量化切片
-        interval = 0.015  
+        interval = 0.010  
         t_steps = np.arange(0, final_profile.T_total, interval)
         if len(t_steps) == 0 or t_steps[-1] < final_profile.T_total:
             t_steps = np.append(t_steps, final_profile.T_total)
@@ -500,7 +500,7 @@ class TrajectoryMathEngine:
         final_profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
 
         # 3. 向量化切片
-        interval = 0.015
+        interval = 0.010
         t_steps = np.arange(0, final_profile.T_total, interval)
         if len(t_steps) == 0 or t_steps[-1] < final_profile.T_total:
             t_steps = np.append(t_steps, final_profile.T_total)
@@ -557,7 +557,7 @@ class TrajectoryMathEngine:
         final_profile = SCurveProfile(arc_length_mm, target_speed, target_accel, target_jerk)
 
         # 4. 向量化切片
-        interval = 0.015  
+        interval = 0.010  
         t_steps = np.arange(0, final_profile.T_total, interval)
         if len(t_steps) == 0 or t_steps[-1] < final_profile.T_total:
             t_steps = np.append(t_steps, final_profile.T_total)

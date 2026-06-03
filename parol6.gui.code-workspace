@@ -1,6 +1,12 @@
 {
 	"folders": [
 		{
+			"path": ".git"
+		},
+		{
+			"path": "../../Documents/PlatformIO/Projects/S6"
+		},
+		{
 			"path": "."
 		}
 	],
