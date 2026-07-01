@@ -7,7 +7,7 @@
 #define TMC_MISO PE13
 #define TMC_SCK  PE12
 
-// 確保軟體 SPI 腳位只被初始化一次
+// 軟體 SPI 初始化旗標
 static bool spi_initialized = false;
 static void initSoftSPI() {
     if (!spi_initialized) {
@@ -45,7 +45,6 @@ static uint8_t softSpiTransfer(uint8_t data) {
 static void writeReg(uint8_t cs, uint8_t addr, uint32_t data) {
     initSoftSPI();
     
-    // CS 腳位的輸出宣告，確保每次寫入前都設定為 OUTPUT 模式
     pinMode(cs, OUTPUT);
     digitalWrite(cs, LOW);
     
@@ -63,7 +62,7 @@ void setupTMC2240_RawSPI(uint8_t cs_pin, uint16_t run_mA, float hold_ratio, bool
     // Bit 2 (0x04): 微步濾波
     uint32_t gconf_val = 0x02 | 0x04;  
     
-    // 🌟 修正：TMC2240 的 Shaft 反轉位元是 Bit 4 (0x10)！
+    // Bit 4 (0x10): 方向反轉
     if (invert_dir) {
         gconf_val |= 0x10; 
     }
@@ -95,13 +94,16 @@ void setupTMC2240_RawSPI(uint8_t cs_pin, uint16_t run_mA, float hold_ratio, bool
     writeReg(cs_pin, 0x70, 0xC40C001E);
 
     // 6. TPOWERDOWN (待機降流延遲)
+    // 0x00000017 (0.5 秒)
+    // 0x0000002E (1 秒)
+    // 0x0000005C (2 秒)
+    // ==========================================
     writeReg(cs_pin, 0x11, 0x0000002E);
 }
 
+// 讀取 TMC2240 的內部溫度，返回攝氏度
 float readTMC2240Temp(uint8_t cs_pin) {
     initSoftSPI();
-    
-    // 同樣補上 CS 腳位的輸出宣告
     pinMode(cs_pin, OUTPUT);
     
     digitalWrite(cs_pin, LOW);

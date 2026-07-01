@@ -31,9 +31,9 @@ class TerminalController:
             self.gui.clear_log()
             
         elif cmd_lower == "help":
-            self.gui.log(">> 可用指令: CLEAR, STOP, HOME, UPD T, UPD A, LIN, REL")
+            self.gui.log(">> 可用指令: CLEAR, S(STOP), HOME, UPD P, UPD A, LIN, REL")
             
-        elif cmd_lower == "stop":
+        elif cmd_lower == "s":
             self.gui.emergency_stop()
             
         elif cmd_lower == "home":

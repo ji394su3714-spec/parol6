@@ -1,31 +1,33 @@
-import threading  # 確保有匯入
+import threading  
 import serial
 import serial.tools.list_ports
 import time
-from PyQt6.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal
 
 GEAR_RATIOS = [6.4, 20.0, 18.095, 4.0, 4.0, 10.0]
 MICROSTEPS = 32 
 STEPS_PER_DEG = [(200.0 * MICROSTEPS * gr) / 360.0 for gr in GEAR_RATIOS]
 
 class SerialManager(QObject):
-    log_signal = pyqtSignal(str)
-    connection_state_signal = pyqtSignal(bool) 
+    log_signal = Signal(str)
+    connection_state_signal = Signal(bool) 
 
     def __init__(self):
         super().__init__()
         self.ser = None
         self.is_connected = False
         self.last_sent_time = 0
-        self.send_interval = 0.05 
         
-        # 🔐 新增：這是防止執行緒打架的終極武器
+        # 新增：這是防止執行緒打架的終極武器
         self._tx_lock = threading.Lock() 
         
         self.read_thread = None
         self.running = False
         self.motion_done_event = threading.Event()
-        self.ok_event = threading.Event() 
+        self.ok_semaphore = threading.Semaphore(50) # 允許最多 50 個 OK 信號在管道中等待，防止過度積壓
+        
+        # 🌟 新增：夾爪專用的完成事件鎖
+        self.ee_done_event = threading.Event()
 
     def list_ports(self):
         ports = serial.tools.list_ports.comports()
@@ -50,7 +52,7 @@ class SerialManager(QObject):
             
             # 連線時清空旗標 
             self.motion_done_event.clear()  
-            self.ok_event.clear() 
+            self.ee_done_event.clear() # 🌟 清空夾爪旗標
             
             self.read_thread = threading.Thread(target=self._read_loop, daemon=True)
             self.read_thread.start()
@@ -77,10 +79,10 @@ class SerialManager(QObject):
         self.log_signal.emit("Disconnected.")
 
     # ==========================================
-    # 🔐 加上保護鎖的發送區塊
+    # 加上保護鎖的發送區塊
     # ==========================================
     def send_command(self, cmd_str):
-        """ 發送特殊指令 (例如急停 <STOP>, 回原點 <HOMING>) """
+        """ 發送特殊指令 (例如急停 <STOP>, 回原點 <HOMING>, 夾爪 <EE...>) """
         if not self.is_connected or not self.ser: return False
         
         # 使用 with 確保同一時間只有一個執行緒可以發送指令
@@ -100,8 +102,6 @@ class SerialManager(QObject):
         """ 發送步數指令給 Arduino """
         if not self.is_connected or not self.ser: return False
         
-        # 事件清理可以放在鎖外面，不影響通訊安全
-        self.ok_event.clear()
         self.motion_done_event.clear()
         
         try:
@@ -124,10 +124,9 @@ class SerialManager(QObject):
             else:
                 packet = f"<{data_str},1.000,0>\n"
                 
-            # 🔐 關鍵保護：將真正寫入 Serial 的行為鎖起來
+            # 關鍵保護：將真正寫入 Serial 的行為鎖起來
             with self._tx_lock:
                 self.ser.write(packet.encode('utf-8'))
-                self.ser.flush()
             return True
                 
         except Exception as e:
@@ -135,7 +134,7 @@ class SerialManager(QObject):
             return False
 
     # ==========================================
-    # 接收與等待區塊 (維持原樣)
+    # 接收與等待區塊
     # ==========================================
     def _read_loop(self):
         """ 背景讀取 Arduino 回傳的訊息 """
@@ -154,7 +153,12 @@ class SerialManager(QObject):
                             continue 
 
                         if line == "OK":
-                            self.ok_event.set() 
+                            self.ok_semaphore.release()
+                            continue
+                            
+                        # 🌟 新增：攔截夾爪專屬的完成暗號
+                        if line == "<EE_DONE>":
+                            self.ee_done_event.set()
                             continue
 
                         self.log_signal.emit(f"[HW] {line}")
@@ -177,6 +181,19 @@ class SerialManager(QObject):
         self.log_signal.emit("[Warning] Wait Done Timeout!")
         return False
     
-    def wait_for_ok(self, timeout=0.5):
+    def wait_for_ok(self, timeout=2.0):
         if not self.is_connected: return False
-        return self.ok_event.wait(timeout)
+        return self.ok_semaphore.acquire(timeout=timeout)
+        
+    # 🌟 新增：專門讓大腦等待夾爪完成的方法
+    def wait_for_ee_done(self, timeout=10.0):
+        """ 等待 Arduino 回傳 <EE_DONE>，具有超時保護 """
+        if not self.is_connected: return False
+        
+        self.ee_done_event.clear() # 等待前先確保鎖是乾淨的
+        success = self.ee_done_event.wait(timeout)
+        
+        if not success:
+            self.log_signal.emit("[Warning] Wait EE_DONE Timeout! (夾爪可能卡住或未回應)")
+            
+        return success

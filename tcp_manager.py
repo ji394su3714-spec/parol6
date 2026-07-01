@@ -88,15 +88,20 @@ class TCPManager:
         return self.tools[self.current_index]
 
     def get_active_matrix(self):
-        """直接回傳 4x4 矩陣供 Kinematics 使用"""
+        """直接回傳 4x4 矩陣供 Kinematics 與全系統使用"""
         vals = self.tools[self.current_index]["values"]
         x, y, z, rx, ry, rz = vals
         
-        mat = np.eye(4)
-        # 計算旋轉
+        # 1. 使用者在 UI 設定的 TCP 數值矩陣
+        user_mat = np.eye(4)
         r_mat = R.from_euler('xyz', [rx, ry, rz], degrees=True).as_matrix()
-        mat[:3, :3] = r_mat
-        # 計算位移 (mm -> m)
-        mat[:3, 3] = [x/1000.0, y/1000.0, z/1000.0]
+        user_mat[:3, :3] = r_mat
+        user_mat[:3, 3] = [x/1000.0, y/1000.0, z/1000.0]
         
-        return mat
+        # 2. 法蘭盤全域校正矩陣 (Flange Offset)
+        # 這裡的 -90 度會自動應用到整個系統 (包含拖曳運算與 IK)
+        flange_offset = np.eye(4)
+        flange_offset[:3, :3] = R.from_euler('x', -90, degrees=True).as_matrix()
+        
+        # 3. 疊加後回傳 (Flange -> Offset -> Tool)
+        return flange_offset @ user_mat

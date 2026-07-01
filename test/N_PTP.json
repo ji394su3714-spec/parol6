@@ -11,10 +11,12 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "N_PTP",
+        "type": "PTP",
         "speed": 10.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "FINE",
+        "accel": 10.0
     },
     {
         "name": "Point 2",
@@ -28,10 +30,12 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "N_PTP",
+        "type": "PTP",
         "speed": 100.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "FINE",
+        "accel": 25.0
     },
     {
         "name": "Point 3",
@@ -45,10 +49,12 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "N_PTP",
+        "type": "PTP",
         "speed": 100.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "FINE",
+        "accel": 25.0
     },
     {
         "name": "Point 4",
@@ -62,10 +68,12 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "N_PTP",
+        "type": "PTP",
         "speed": 100.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "FINE",
+        "accel": 25.0
     },
     {
         "name": "Point 5",
@@ -79,10 +87,12 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "N_PTP",
+        "type": "PTP",
         "speed": 100.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "FINE",
+        "accel": 25.0
     },
     {
         "name": "Point 6",
@@ -96,10 +106,12 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "N_PTP",
+        "type": "PTP",
         "speed": 100.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "FINE",
+        "accel": 25.0
     },
     {
         "name": "Point 7",
@@ -113,10 +125,12 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "N_PTP",
+        "type": "PTP",
         "speed": 100.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "FINE",
+        "accel": 25.0
     },
     {
         "name": "Point 8",
@@ -130,10 +144,12 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "N_PTP",
+        "type": "PTP",
         "speed": 100.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "FINE",
+        "accel": 25.0
     },
     {
         "name": "Point 9",
@@ -147,10 +163,12 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "N_PTP",
+        "type": "PTP",
         "speed": 100.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "FINE",
+        "accel": 25.0
     },
     {
         "name": "Point 10",
@@ -164,10 +182,12 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "N_PTP",
+        "type": "PTP",
         "speed": 100.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "FINE",
+        "accel": 25.0
     },
     {
         "name": "Point 11",
@@ -181,10 +201,12 @@
         ],
         "aux_joints": null,
         "delay": 0.3,
-        "type": "N_PTP",
+        "type": "PTP",
         "speed": 100.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "FINE",
+        "accel": 25.0
     },
     {
         "name": "Point 12",
@@ -198,10 +220,12 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "N_PTP",
+        "type": "PTP",
         "speed": 10.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "FINE",
+        "accel": 10.0
     },
     {
         "name": "Point 13",
@@ -215,10 +239,12 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "N_PTP",
+        "type": "PTP",
         "speed": 100.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "FINE",
+        "accel": 10.0
     },
     {
         "name": "Point 14",
@@ -232,10 +258,12 @@
         ],
         "aux_joints": null,
         "delay": 0.3,
-        "type": "N_PTP",
+        "type": "PTP",
         "speed": 100.0,
         "active": true,
-        "note": ""
+        "note": "",
+        "blend": "FINE",
+        "accel": 10.0
     },
     {
         "name": "Point 15",
@@ -249,9 +277,11 @@
         ],
         "aux_joints": null,
         "delay": 0.0,
-        "type": "N_PTP",
+        "type": "PTP",
         "speed": 10.0,
-        "active": true,
-        "note": ""
+        "active": false,
+        "note": "",
+        "blend": "FINE",
+        "accel": 10.0
     }
 ]

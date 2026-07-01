@@ -46,27 +46,8 @@ class AdvancedSettingsDialog(QDialog):
         self.slice_pulse.setValidator(double_val)
         form_pulse.addRow("切片模式算力極限 (Hz):", self.slice_pulse)
         
-        self.native_pulse = QLineEdit(str(path_manager.MAX_TOTAL_PULSE_NATIVE))
-        self.native_pulse.setValidator(double_val)
-        form_pulse.addRow("原生模式算力極限 (Hz):", self.native_pulse)
-        
         group_pulse.setLayout(form_pulse)
         layout.addWidget(group_pulse)
-        
-        # --- 3. 底層硬體物理天花板與動態參數 ---
-        group_hw = QGroupBox("硬體底層設定 (Hardware Config)")
-        form_hw = QFormLayout()
-        
-        self.hw_max = QLineEdit(str(int(path_manager.HW_MAX_STEPS[0])))
-        self.hw_max.setValidator(int_val)
-        form_hw.addRow("馬達物理極限 (Steps/s):", self.hw_max)
-        
-        self.t_acc = QLineEdit(str(getattr(path_manager, 'N_PTP_T_ACC', 0.15)))
-        self.t_acc.setValidator(double_val)
-        form_hw.addRow("N_PTP 起步加減速時間 (秒):", self.t_acc)
-        
-        group_hw.setLayout(form_hw)
-        layout.addWidget(group_hw)
         
         # --- 按鈕區 ---
         btn_layout = QHBoxLayout()
@@ -88,9 +69,6 @@ class AdvancedSettingsDialog(QDialog):
                 'rot_spd': float(self.rot_spd.text()),
                 'rot_acc': float(self.rot_acc.text()),
                 'slice_pulse': float(self.slice_pulse.text()),
-                'native_pulse': float(self.native_pulse.text()),
-                'hw_max': float(self.hw_max.text()),
-                't_acc': float(self.t_acc.text())
             }
             # 傳給 path_manager 進行全域更新與硬體同步
             path_manager.update_advanced_settings(**vals)

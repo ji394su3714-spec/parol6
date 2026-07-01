@@ -20,8 +20,7 @@ extern bool newData;
 float getStepsPerDeg(int axis);
 bool isAnyHoming();
 
-// 🌟 解放記憶體：將環形緩衝區從 120 擴大到 1000！
-#define BUF_SIZE 1000
+#define BUF_SIZE 300
 
 struct BufPoint {
     long targetSteps[6];
@@ -29,9 +28,9 @@ struct BufPoint {
 };
 
 extern BufPoint ringBuf[BUF_SIZE];
-extern byte bufHead;
-extern byte bufTail;
-extern byte bufCount;
+extern int bufHead;
+extern int bufTail;
+extern int bufCount;
 extern bool isBufPlaying;
 extern bool pendingOK;
 

@@ -1,0 +1,336 @@
+[
+    {
+        "name": "Point 1",
+        "joints": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "aux_joints": null,
+        "type": "PTP",
+        "speed": 80.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "EE: \u958b\u5408\u5ea6 90%",
+        "type": "I/O",
+        "action_type": "SERVO",
+        "value": 90,
+        "active": true,
+        "note": "\u958b\u5408\u5ea6 90%",
+        "blend": "FINE",
+        "accel": 50.0
+    },
+    {
+        "name": "Point 3",
+        "joints": [
+            0.0,
+            18.44,
+            39.55,
+            0.0,
+            -58.06,
+            0.0
+        ],
+        "aux_joints": null,
+        "type": "PTP",
+        "speed": 80.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Wait 2.0s",
+        "type": "DELAY",
+        "value": 2.0,
+        "active": false,
+        "note": "",
+        "blend": "FINE"
+    },
+    {
+        "name": "EE: \u958b\u5408\u5ea6 6%",
+        "type": "I/O",
+        "action_type": "SERVO",
+        "value": 6,
+        "active": true,
+        "note": "\u958b\u5408\u5ea6 6%",
+        "blend": "FINE",
+        "accel": 50.0
+    },
+    {
+        "name": "Wait 2.0s",
+        "type": "DELAY",
+        "value": 2.0,
+        "active": false,
+        "note": "",
+        "blend": "FINE"
+    },
+    {
+        "name": "Point 7",
+        "joints": [
+            -0.0001,
+            41.3482,
+            40.402,
+            -0.0001,
+            -81.8159,
+            -0.0003
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 80.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "EE: \u958b\u5408\u5ea6 93%",
+        "type": "I/O",
+        "action_type": "SERVO",
+        "value": 93,
+        "active": true,
+        "note": "\u958b\u5408\u5ea6 93%",
+        "blend": "FINE",
+        "accel": 50.0
+    },
+    {
+        "name": "Wait 2.0s",
+        "type": "DELAY",
+        "value": 2.0,
+        "active": false,
+        "note": "",
+        "blend": "FINE"
+    },
+    {
+        "name": "Point 10",
+        "joints": [
+            0.0,
+            18.44,
+            39.55,
+            0.0,
+            -58.06,
+            0.0
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 80.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 11",
+        "joints": [
+            -16.5412,
+            20.6865,
+            36.2852,
+            -19.4904,
+            -58.5441,
+            -10.4761
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 80.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 12",
+        "joints": [
+            -16.5486,
+            42.5925,
+            37.1068,
+            -16.776,
+            -80.171,
+            -2.9514
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 80.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Wait 2.0s",
+        "type": "DELAY",
+        "value": 2.0,
+        "active": false,
+        "note": "",
+        "blend": "FINE"
+    },
+    {
+        "name": "EE: \u958b\u5408\u5ea6 8%",
+        "type": "I/O",
+        "action_type": "SERVO",
+        "value": 8,
+        "active": true,
+        "note": "\u958b\u5408\u5ea6 8%",
+        "blend": "FINE",
+        "accel": 50.0
+    },
+    {
+        "name": "Wait 2.0s",
+        "type": "DELAY",
+        "value": 2.0,
+        "active": false,
+        "note": "",
+        "blend": "FINE"
+    },
+    {
+        "name": "Point 16",
+        "joints": [
+            -16.5412,
+            20.6865,
+            36.2852,
+            -19.4904,
+            -58.5441,
+            -10.4761
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 80.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 17",
+        "joints": [
+            -16.5486,
+            42.5916,
+            37.1105,
+            -16.7753,
+            -80.1736,
+            -2.9504
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 80.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "EE: \u958b\u5408\u5ea6 93%",
+        "type": "I/O",
+        "action_type": "SERVO",
+        "value": 93,
+        "active": true,
+        "note": "\u958b\u5408\u5ea6 93%",
+        "accel": 50.0,
+        "blend": "FINE"
+    },
+    {
+        "name": "Point 19",
+        "joints": [
+            -16.5412,
+            20.6865,
+            36.2852,
+            -19.4904,
+            -58.5441,
+            -10.4761
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 80.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 20",
+        "joints": [
+            0.0,
+            18.44,
+            39.55,
+            0.0,
+            -58.06,
+            0.0
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 80.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 21",
+        "joints": [
+            -0.0001,
+            41.6751,
+            40.3404,
+            -0.0001,
+            -82.0813,
+            -0.0004
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 80.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "EE: \u958b\u5408\u5ea6 8%",
+        "type": "I/O",
+        "action_type": "SERVO",
+        "value": 8,
+        "active": true,
+        "note": "\u958b\u5408\u5ea6 8%",
+        "accel": 50.0,
+        "blend": "FINE"
+    },
+    {
+        "name": "Point 23",
+        "joints": [
+            0.0,
+            18.44,
+            39.55,
+            0.0,
+            -58.06,
+            0.0
+        ],
+        "aux_joints": null,
+        "type": "LIN",
+        "speed": 80.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    },
+    {
+        "name": "Point 24",
+        "joints": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "aux_joints": null,
+        "type": "PTP",
+        "speed": 80.0,
+        "accel": 50.0,
+        "blend": "FINE",
+        "active": true,
+        "note": ""
+    }
+]

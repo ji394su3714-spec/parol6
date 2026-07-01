@@ -8,16 +8,17 @@
 #include "Globals.h"
 #include "Homing.h"
 #include "Comms.h"
+#include "EndEffector.h" //  1. 引入夾爪模組
 
-// S6 專屬 6 軸腳位矩陣 (X, Y, Z, E0, E1, E2)
+// S6 專屬 6 軸腳位矩陣
 const JointConfig JOINTS[6] = {
     // Step, Dir,  En,   Limit, ActiveState, homingSpd, homingPos, bounce, ctrlSpd10, maxSpd10, ramp
-    {PE11, PE10, PE9,  PB14,  LOW,   1200,  -28,  1000, 48000, 260000, 1400}, // J1 (X)
-    {PD8,  PB12, PD9,  PB13,  HIGH, -2400,   50,  2000, 68000, 260000, 2000}, // J2 (Y)
-    {PD14, PD13, PD15, PA0,   HIGH,  3000,  -70,  2400, 68000, 260000, 2000}, // J3 (Z)
-    {PD5,  PD6,  PD4,  PD0,   LOW,   3800, -144,  1600, 60000, 260000, 1000}, // J4 (E0)
-    {PE6,  PC13, PE5,  PA2,   HIGH,  2800, -125,  1200, 60000, 260000, 1000}, // J5 (E1)
-    {PE2,  PE4,  PE3,  PA3,   LOW,   4800,    2,  1600, 80000, 260000, 1400}  // J6 (E2)
+    {PE11, PE10, PE9,  PB14,  LOW,   1200,  -28,  1000, 48000, 200000, 1400}, // J1 (X)
+    {PD8,  PB12, PD9,  PB13,  HIGH, -2400,   50,  2000, 68000, 200000, 2000}, // J2 (Y)
+    {PD14, PD13, PD15, PA0,   HIGH,  3000,  -70,  2400, 68000, 200000, 2000}, // J3 (Z)
+    {PD5,  PD6,  PD4,  PA1,   LOW,   3800, -144,  1600, 60000, 200000, 1000}, // J4 (E0)
+    {PE6,  PC13, PE5,  PA2,   HIGH,  2800, -125,  1200, 60000, 200000, 1000}, // J5 (E1)
+    {PE2,  PE4,  PE3,  PA3,   LOW,   5000,    2,  1600, 80000, 200000, 1400}  // J6 (E2)
 };
 
 const MotorCurrentConfig MOTOR_CURRENTS[6] = {
@@ -41,8 +42,6 @@ MoToStepper stepper_J6(6400, STEPDIR);
 
 MoToStepper* steppers[6] = {&stepper_J1, &stepper_J2, &stepper_J3, &stepper_J4, &stepper_J5, &stepper_J6};
 
-long global_hw_max_steps = 65000;
-float global_T_acc = 0.2;
 byte homingState[6] = {0, 0, 0, 0, 0, 0}; 
 bool normalMoveActive = false;
 
@@ -51,9 +50,9 @@ char tempChars[NUM_CHARS];
 long receivedSteps[6] = {0};
 
 BufPoint ringBuf[BUF_SIZE];
-byte bufHead = 0;
-byte bufTail = 0;
-byte bufCount = 0;
+int bufHead = 0;
+int bufTail = 0;
+int bufCount = 0;
 bool isBufPlaying = false;
 bool pendingOK = false;
 
@@ -69,12 +68,12 @@ void updateRingBuffer() {
         unsigned long nowUs = micros(); 
         
         // 1. 起步蓄水池：硬體級的完美冷卻防抖
-        // 蓄滿 100 個封包 (約 1.5 秒的路徑) 才出發，讓 Python 有絕對的餘裕算數學和印 Log！
         if (!isBufPlaying) {
             if (firstPacketWaitUs == 0) firstPacketWaitUs = nowUs;
             
-            // 如果水庫裡的水不到 100 滴，且等待時間還沒超過 2 秒，就繼續憋氣
-            if (bufCount < 100 && (nowUs - firstPacketWaitUs < 2000000)) {
+            // 如果 0.5 秒內水桶還沒滿 25 點，就繼續等！
+            //這給了 Python 足夠的時間來緩衝和計算，確保發車就是滿滿的流暢！
+            if (bufCount < 25 && (nowUs - firstPacketWaitUs < 500000)) {
                 return;
             }
             firstPacketWaitUs = 0;
@@ -87,15 +86,16 @@ void updateRingBuffer() {
             isBufPlaying = true;
         }
 
-        // 2. 絕對時鐘推進 (嚴格遵守 Python 給的 0.010s 切片節奏)
+        // 2. 核心定時器：確保每個點都在正確的時間被送出來
         if (nowUs - lastPointTimeUs >= currentPointIntervalUs) {
             
             BufPoint pt = ringBuf[bufTail];
             bufTail = (bufTail + 1) % BUF_SIZE;
             bufCount--;
+            Serial.println("OK");
 
             unsigned long interval = pt.interval_us;
-            if (interval < 5000) interval = 5000; 
+            if (interval < 5000) interval = 5000;
 
             // 核心：純粹的開環前饋 (Open-Loop Feed-Forward)
             for (int i = 0; i < 6; i++) {
@@ -107,7 +107,7 @@ void updateRingBuffer() {
                 if (idealDelta > 0) {
                     unsigned long mobaSpeed = (idealDelta * 10000UL) / (interval / 1000UL); 
                  
-                // 配合 S6 與 32 微步，將天花板提高到我們前面設定的極限 260000 (或直接設為 MobaTools 的極限 300000)
+                // 配合 S6 與 32 微步，將天花板直接設為 MobaTools 的極限 300000
                 if (mobaSpeed > 300000) mobaSpeed = 300000; 
 
                 if (mobaSpeed < 10) mobaSpeed = 10;
@@ -120,21 +120,15 @@ void updateRingBuffer() {
                 lastBufTarget[i] = target;
             }
 
-            // 推進時鐘
-            lastPointTimeUs += currentPointIntervalUs;
+            lastPointTimeUs += currentPointIntervalUs; // 推進時鐘
             
             // 防護：如果 Windows 卡頓太久，防止 Arduino 內部時鐘累積過多債務而暴衝
             if (nowUs > lastPointTimeUs + 50000) { 
                 lastPointTimeUs = nowUs; 
             }
             currentPointIntervalUs = interval;
-            
-            // 處理通訊：水桶有空間了，跟 Python 要下一個封包
-            if (pendingOK && bufCount < BUF_SIZE) {
-                Serial.println("OK");
-                pendingOK = false;
-            }
         }
+        
     } else {
         // 3. 乾淨俐落的收尾
         if (isBufPlaying) {
@@ -170,6 +164,8 @@ void setup() {
     delay(1000);
     Serial.println("\n--- S6 Controller Booting ---");
 
+    initEndEffector(); //  2. 啟動夾爪
+
     // 初始化所有 SPI CS 腳位
     const uint8_t all_cs_pins[6] = {X_CS_PIN, Y_CS_PIN, Z_CS_PIN, E0_CS_PIN, E1_CS_PIN, E2_CS_PIN};
     for(int i=0; i<6; i++) {
@@ -177,7 +173,7 @@ void setup() {
         digitalWrite(all_cs_pins[i], HIGH);
     }
 
-    // 修正初始化時序：將 SPI 設定移入迴圈，確保晶片被喚醒後才寫入！
+    // 初始化時序：將 SPI 設定移入迴圈，確保晶片被喚醒後才寫入暫存器
     for (int i = 0; i < 6; i++) {
         // 1. 綁定運動腳位
         steppers[i]->attach(JOINTS[i].stepPin, JOINTS[i].dirPin);
@@ -186,13 +182,12 @@ void setup() {
         pinMode(JOINTS[i].enPin, OUTPUT);
         digitalWrite(JOINTS[i].enPin, LOW); 
         
-        // 3. 給晶片 10 毫秒的開機穩定時間
-        delay(10);
+        delay(10);// 開機穩定時間
         
-        // 4. 現在才寫入 SPI 暫存器，並明確傳入 true 啟動反轉！
+        // 3. 寫入 SPI 暫存器，設定電流和方向反轉
         setupTMC2240_RawSPI(all_cs_pins[i], MOTOR_CURRENTS[i].run_mA, MOTOR_CURRENTS[i].hold_ratio, true);
 
-        // 5. 初始化極限開關
+        // 4. 初始化極限開關
         if (JOINTS[i].limitPin != 0) {
             pinMode(JOINTS[i].limitPin, INPUT_PULLUP);
         }
@@ -206,15 +201,22 @@ void setup() {
 void loop() {
     updateRingBuffer(); 
 
-// ❌ 下面這段舊代碼請「整段刪除」：
+    recvWithStartEndMarkers();
+
     if (newData) {
         strcpy(tempChars, receivedChars);
-        processCommand();
+        if (!parseEndEffectorCmd(tempChars)) {
+            processCommand();
+        }
         newData = false;
     }
 
     updateHomingLogic();
 
+    // ==========================================
+    //  判斷手臂是否完全空閒 (準備傳給夾爪)
+    // ==========================================
+    // 1. 檢查六顆馬達在物理上是否還在轉動
     bool isMoving = false; 
     for (int i = 0; i < 6; i++) {
         if (steppers[i]->stepsToDo() != 0) { 
@@ -230,9 +232,15 @@ void loop() {
         }
     }
 
+    // 2. 嚴格定義空閒：水庫沒水 + 播放器關閉 + 馬達實體停轉
+    bool isArmIdle = (bufCount == 0 && !isBufPlaying && !isMoving);
+
+    // 3. 把空閒狀態傳給夾爪，讓夾爪決定要不要作動
+    updateEndEffector(isArmIdle); 
+    
     // 溫度讀取安全機制：確保移動中和播放中絕對不進行 SPI 讀取
     static unsigned long lastTempReport = 0;
-    if (millis() - lastTempReport >= 10000) {
+    if (millis() - lastTempReport >= 30000) {
         lastTempReport = millis();
         
         if (!isBufPlaying && !isMoving) {

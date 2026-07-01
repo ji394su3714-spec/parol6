@@ -209,3 +209,55 @@ def calculate_jog_joints(current_joints, axis, step_val, frame, T_total_offset):
             return None, f"Limit Hit J{i+1}"
 
     return list(new_joints), None
+
+def extract_continuous_rpy(T_matrix, prev_rpy_deg=None):
+    """
+    終極尤拉角連續化濾波器 
+    (包含萬向鎖奇異點對策 + 孿生解平滑 + 強制收束於 ±180度)
+    """
+    import numpy as np
+    from scipy.spatial.transform import Rotation as R
+
+    r = R.from_matrix(T_matrix[:3, :3])
+    e1 = r.as_euler('xyz', degrees=True)
+
+    if prev_rpy_deg is None:
+        # 第一幀也要確保在 -180 ~ 180 之間
+        return (e1 + 180.0) % 360.0 - 180.0
+
+    # 🌟 1. 萬向鎖 (Gimbal Lock) 奇異點防護
+    if abs(abs(e1[1]) - 90.0) < 0.1:
+        prev_yaw = prev_rpy_deg[2]
+        for sign in [1, -1]:
+            const_val = e1[0] + sign * e1[2]
+            test_roll = const_val - sign * prev_yaw
+            
+            test_rpy = [test_roll, e1[1], prev_yaw]
+            test_matrix = R.from_euler('xyz', test_rpy, degrees=True).as_matrix()
+            
+            if np.allclose(test_matrix, T_matrix[:3, :3], atol=1e-3):
+                e1 = np.array(test_rpy)
+                break
+
+    # 🌟 2. 跨越 90 度天花板的孿生解
+    e2 = np.array([e1[0] + 180.0, 180.0 - e1[1], e1[2] + 180.0])
+
+    def unwrap_to_nearest(target, ref):
+        diff = (target - ref) % 360.0
+        diff = np.where(diff > 180.0, diff - 360.0, diff)
+        return ref + diff
+
+    e1_unwrapped = unwrap_to_nearest(e1, prev_rpy_deg)
+    e2_unwrapped = unwrap_to_nearest(e2, prev_rpy_deg)
+
+    dist1 = np.linalg.norm(e1_unwrapped - prev_rpy_deg)
+    dist2 = np.linalg.norm(e2_unwrapped - prev_rpy_deg)
+
+    # 🌟 3. 比較並選擇視覺上最接近上一幀的解
+    best_rpy = e1_unwrapped if dist1 < dist2 else e2_unwrapped
+
+    # 🌟 4. 終極收束：強制把無限累加的角度綁回 -180 ~ +180 之間！
+    # 例如：-450 度會被這行算式完美還原成 -90 度
+    normalized_rpy = (best_rpy + 180.0) % 360.0 - 180.0
+    
+    return normalized_rpy

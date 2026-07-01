@@ -22,21 +22,6 @@ void processCommand() {
         return;
     }
 
-    // 攔截 Python 傳來的動態設定指令
-    if (strncmp(tempChars, "SET_CFG", 7) == 0) {
-        char * strtokIndx = strtok(tempChars, ","); // SET_CFG
-        
-        strtokIndx = strtok(NULL, ",");
-        if (strtokIndx != NULL) global_hw_max_steps = atol(strtokIndx);
-        
-        strtokIndx = strtok(NULL, ",");
-        if (strtokIndx != NULL) global_T_acc = atof(strtokIndx);
-        
-        Serial.print("Config OK: MaxSteps="); Serial.print(global_hw_max_steps);
-        Serial.print(", T_acc="); Serial.println(global_T_acc);
-        return;
-    }
-
     // 2. 升級版字串解析 (純整數極速解析)
     long tempParsedSteps[6] = {0};
     float param7 = 1.0;
@@ -62,7 +47,7 @@ void processCommand() {
         receivedSteps[i] = tempParsedSteps[i];
     }
 
-    // 3. 歸零觸發 (將 999.0 改為 999999)
+    // 3. 歸零觸發
     bool group1_req = (receivedSteps[0] == 999999 || receivedSteps[1] == 999999 || receivedSteps[2] == 999999);
     bool j4_req = (receivedSteps[3] == 999999);
     bool j6_req = (receivedSteps[5] == 999999);
@@ -76,7 +61,7 @@ void processCommand() {
                 else if (i == 5 && j4_req) { homingState[i] = 10; homingTriggered = true; } 
                 else {
                     homingState[i] = 1; 
-                    steppers[i]->setRampLen(50); 
+                    steppers[i]->setRampLen(100); 
                     long homingSpd = abs(JOINTS[i].homingSpeed) * 10;
                     steppers[i]->setSpeedSteps(homingSpd);
                     steppers[i]->rotate((JOINTS[i].homingSpeed > 0) ? 1 : -1); 
@@ -90,7 +75,7 @@ void processCommand() {
     // 4. 一般移動分派
     if (!isAnyHoming() && !homingTriggered) {
 
-        // 模式 1：串流模式 (Streaming) - 塞進水桶
+        // 模式 1：串流模式 (Streaming)
         if (moveMode == 1) {
             if (bufCount < BUF_SIZE) {
                 for(int i = 0; i < 6; i++) {
@@ -102,57 +87,18 @@ void processCommand() {
                         ringBuf[bufHead].targetSteps[i] = steppers[i]->currentPosition(); 
                     }
                 }
-                ringBuf[bufHead].interval_us = (unsigned long)param7; // Python已經換算成微秒了
+                ringBuf[bufHead].interval_us = (unsigned long)param7; 
 
                 bufHead = (bufHead + 1) % BUF_SIZE;
                 bufCount++;
-                if (bufCount < BUF_SIZE) Serial.println("OK");
-                else pendingOK = true;
             } else {
                 Serial.println("BufferFull");
             }
             normalMoveActive = true;
             return;
         }
-
-        // 模式 2：原生 PTP
-        else if (moveMode == 2) {
-            float speedFactor = (param7 <= 0.0) ? 1.0 : param7;
-            float maxTime = 0.0;
-            long deltaSteps[6] = {0};
-
-            for (int i = 0; i < 6; i++) {
-                if (receivedSteps[i] != 999999) {
-                    // 零計算，直接讀取步數
-                    deltaSteps[i] = abs(receivedSteps[i] - steppers[i]->currentPosition());
-                    float v_max = (global_hw_max_steps / 10.0) * speedFactor;
-                    float t_needed = deltaSteps[i] / v_max;
-                    if (t_needed > maxTime) maxTime = t_needed;
-                }
-            }
-
-            for (int i = 0; i < 6; i++) {
-                if (receivedSteps[i] != 999999 && deltaSteps[i] > 0) {
-                    float syncSpeed = deltaSteps[i] / maxTime;
-                    long mobaSpeed = (long)(syncSpeed * 10.0 + 0.5);
-                    if (mobaSpeed < 10) mobaSpeed = 10;
-
-                    long dynamicRamp = (long)((syncSpeed * global_T_acc) / 2.0);
-                    if (dynamicRamp > deltaSteps[i] / 2) dynamicRamp = deltaSteps[i] / 2;
-
-                    steppers[i]->setSpeedSteps(mobaSpeed);
-                    steppers[i]->setRampLen(dynamicRamp); 
-                    
-                    // 零計算，直接發送目標步數
-                    steppers[i]->writeSteps(receivedSteps[i]);
-                }
-            }
-            normalMoveActive = true; 
-            Serial.println("OK");    
-            return;
-        }
         
-        // 模式 0：手動/點動模式 (終極平滑多軸同步版)
+        // 模式 0：手動/點動模式
         else if (moveMode == 0) {
             float speedFactor = (param7 <= 0.0) ? 1.0 : param7;
             long deltaSteps[6] = {0};
@@ -187,7 +133,7 @@ void processCommand() {
                         
                         long syncRamp = (long)(JOINTS[i].rampSteps * ratio * ratio);
                         
-                        // 拔除舊版錯誤的 deltaSteps/2 限制，放心交給 MobaTools 處理短距離三角形！
+                        // 移除 deltaSteps/2 限制，交給 MobaTools 處理短距離三角形
                         if (syncRamp < 0) syncRamp = 0;
 
                         steppers[i]->setSpeedSteps(mobaSpeed);

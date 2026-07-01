@@ -17,7 +17,7 @@ struct MotorCurrentConfig {
     float hold_ratio;
 };
 
-// 🌟 S6 全 6 軸 CS 腳位定義 (對應 X, Y, Z, E0, E1, E2)
+// S6 CS 腳位定義 (對應 X, Y, Z, E0, E1, E2)
 #define X_CS_PIN  PE7
 #define Y_CS_PIN  PE15
 #define Z_CS_PIN  PD10
@@ -31,7 +31,7 @@ extern const MotorCurrentConfig MOTOR_CURRENTS[6];
 extern const float GEAR_RATIOS[6];
 
 // 全域硬體常數
-const float MICROSTEPS = 32.0; // 🌟 配合 TMC2240 改為 32 微步
+const float MICROSTEPS = 32.0; 
 const float MOTOR_STEPS = 200.0; 
 
 #endif

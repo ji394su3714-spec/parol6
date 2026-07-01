@@ -1,4 +1,4 @@
-#include "Homing.h"
+//#include "Homing.h"
 #include "Globals.h"
 #include "Config.h"
 
@@ -88,7 +88,7 @@ void updateHomingLogic() {
                 if (i == 5) {
                     readyToOffset = false; 
                     long prepSteps = J6_PREP_ANGLE * getStepsPerDeg(i);
-                    steppers[i]->setRampLen(400);
+                    steppers[i]->setRampLen(300);
                     steppers[i]->setSpeedSteps(JOINTS[i].maxSpeedSteps10);
                     steppers[i]->doSteps(prepSteps); 
                     homingState[i] = 4; 
@@ -99,11 +99,11 @@ void updateHomingLogic() {
                 }
                 if (readyToOffset) {
                     if (i <= 2) {
-                        steppers[i]->setRampLen(400); 
+                        steppers[i]->setRampLen(300); 
                         steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 20);
                     } 
                     else if (i == 3) {
-                        steppers[i]->setRampLen(400); 
+                        steppers[i]->setRampLen(300); 
                         steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 15);
                     }
                     long offsetSteps = JOINTS[i].homingPos * getStepsPerDeg(i);
@@ -152,7 +152,7 @@ void updateHomingLogic() {
                 if (homingState[4] == 10) {
                     homingState[4] = 1;
                     steppers[4]->setRampLen(40);
-                    steppers[4]->setSpeedSteps(abs(JOINTS[4].homingSpeed) * 15);
+                    steppers[4]->setSpeedSteps(abs(JOINTS[4].homingSpeed) * 10);
                     steppers[4]->rotate((JOINTS[4].homingSpeed > 0) ? 1 : -1);
                 }
             }
@@ -160,7 +160,7 @@ void updateHomingLogic() {
         // 狀態 6：J5 撞到開關了，等待 J6 準備好
         else if (homingState[i] == 6 && i == 4) {
             if (homingState[5] == 5) {
-                steppers[4]->setRampLen(400);
+                steppers[4]->setRampLen(300);
                 steppers[4]->setSpeedSteps(abs(JOINTS[4].homingSpeed) * 14);
                 long offsetJ5 = JOINTS[4].homingPos * getStepsPerDeg(4);
                 steppers[4]->doSteps(offsetJ5);
@@ -169,11 +169,11 @@ void updateHomingLogic() {
                 j6DelayStartTime = millis(); 
             }
         }
-        // 狀態 15：J6 的 0.3 秒非阻塞延遲
+        // 狀態 15：J6 的 0.5 秒非阻塞延遲
         else if (homingState[i] == 15 && i == 5) {
-            if (millis() - j6DelayStartTime >= 300) { 
-                steppers[5]->setRampLen(1400);
-                steppers[5]->setSpeedSteps(abs(JOINTS[5].homingSpeed) * 15);
+            if (millis() - j6DelayStartTime >= 500) { 
+                steppers[5]->setRampLen(2000);
+                steppers[5]->setSpeedSteps(abs(JOINTS[5].homingSpeed) * 10);
                 float remainingAngle = JOINTS[5].homingPos - J6_PREP_ANGLE;
                 long offsetJ6 = remainingAngle * getStepsPerDeg(5);
                 steppers[5]->doSteps(offsetJ6);
