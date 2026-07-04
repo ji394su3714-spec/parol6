@@ -4,8 +4,8 @@ from ctypes import wintypes
 
 from PySide6.QtWidgets import (QDoubleSpinBox, QGridLayout, QListWidget, QListWidgetItem, QSizePolicy, QSpacerItem, QWidget, QVBoxLayout, QHBoxLayout, 
                                QFrame, QLabel, QPushButton, QSlider, QTextEdit, QLineEdit, QApplication, QMenu, QMessageBox)
-from PySide6.QtCore import QTimer, Qt, QObject, QEvent, QSize, Signal
-from PySide6.QtGui import QAction, QCursor, QResizeEvent, QPainter, QPen, QColor
+from PySide6.QtCore import QTimer, Qt, QObject, QEvent, QSize, Signal, QRunnable, QThreadPool
+from PySide6.QtGui import QAction, QCursor, QDoubleValidator, QImage, QKeySequence, QResizeEvent, QPainter, QPen, QColor, QShortcut
 import qtawesome as qta
 
 import styles
@@ -318,6 +318,10 @@ class CustomTopBar(QFrame):
         self.btn_tools = self._create_btn('mdi.tools') 
         layout.addWidget(self.btn_tools)
 
+        self.btn_base = self._create_btn('mdi.view-grid-outline')
+        self.btn_base.setToolTip("Base Frame Manager")
+        layout.addWidget(self.btn_base)
+
     def _create_btn(self, icon_name):
         btn = QPushButton()
         btn.setIcon(qta.icon(icon_name, color='#e0e0e0'))
@@ -371,36 +375,50 @@ class CustomTopBar(QFrame):
         if msg_box.exec() == QMessageBox.StandardButton.Ok:
             print("[System] Homing sequence initiated...")
 
+# ==========================================
+# 升級版：可即時手動輸入編輯的 MonitorWidget
+# ==========================================
 class MonitorWidget(QFrame):
+    # 👑 定義手動編輯訊號，與 gui.py 大腦對接
+    tcp_edit_requested = Signal(str, float)    # 範例: ('X', 150.50)
+    joint_edit_requested = Signal(int, float)  # 範例: (0, 45.00) -> 代表 J1
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(44) 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(2, 2, 2, 2)
         main_layout.setSpacing(4) 
-        self.labels = {}
         
+        self.inputs = {}  # 儲存所有輸入框元件
+        
+        # 建立防呆驗證器：限制只能輸入數字、正負號、小數點，且最多兩位小數
+        self.validator = QDoubleValidator(-5000.0, 5000.0, 2, self)
+        self.validator.setNotation(QDoubleValidator.Notation.StandardNotation)
+        
+        # --- Row 1: 笛卡爾座標 (TCP) ---
         row1_layout = QHBoxLayout()
         row1_layout.setContentsMargins(0, 0, 0, 0)
         row1_layout.setSpacing(2)
         for name in ["X", "Y", "Z", "Rx", "Ry", "Rz"]:
-            row1_layout.addWidget(self._create_box(name))
+            row1_layout.addWidget(self._create_box(name, group="TCP"))
         row1_layout.addStretch(1)
         self.btn_copy_tcp = self._create_copy_btn(self.copy_tcp_to_clipboard)
         row1_layout.addWidget(self.btn_copy_tcp)
         main_layout.addLayout(row1_layout)
 
+        # --- Row 2: 關節角度 (Joints) ---
         row2_layout = QHBoxLayout()
         row2_layout.setContentsMargins(0, 0, 0, 0)
         row2_layout.setSpacing(2)
-        for name in ["θ1", "θ2", "θ3", "θ4", "θ5", "θ6"]:
-            row2_layout.addWidget(self._create_box(name))
+        for i, name in enumerate(["θ1", "θ2", "θ3", "θ4", "θ5", "θ6"]):
+            row2_layout.addWidget(self._create_box(name, group="JOINT", index=i))
         row2_layout.addStretch(1)
         self.btn_copy_joints = self._create_copy_btn(self.copy_joints_to_clipboard)
         row2_layout.addWidget(self.btn_copy_joints)
         main_layout.addLayout(row2_layout)
 
-    def _create_box(self, name):
+    def _create_box(self, name, group, index=None):
         frame = QFrame()
         frame.setFixedSize(68, 20) 
         frame.setStyleSheet(styles.MONITOR_BOX_STYLE)
@@ -411,21 +429,65 @@ class MonitorWidget(QFrame):
         title = QLabel(name)
         title.setStyleSheet(styles.MONITOR_TITLE_STYLE)
         title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        
-        value_lbl = QLabel("0.00") 
-        value_lbl.setStyleSheet(styles.MONITOR_VALUE_STYLE)
-        value_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        
         hbox.addWidget(title)
         hbox.addStretch(1)
-        hbox.addWidget(value_lbl)
-        self.labels[name] = value_lbl 
+        
+        # 👑 將原 QLabel 升級為 QLineEdit，並套用偽裝外觀樣式
+        value_input = QLineEdit("0.00") 
+        value_input.setValidator(self.validator)
+        value_input.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        value_input.setStyleSheet("""
+            QLineEdit { 
+                background: transparent; 
+                border: none; 
+                color: #00e6b8; 
+                font-family: 'Consolas', monospace; 
+                font-size: 12px; 
+                padding: 0px;
+            }
+            QLineEdit:focus { 
+                color: #ffffff; 
+                background-color: rgba(255, 255, 255, 0.12);
+                border-radius: 2px;
+            }
+        """)
+        
+        # 監聽編輯完成事件 (按下 Enter 或點擊他處失去焦點時觸發)
+        if group == "TCP":
+            value_input.editingFinished.connect(lambda n=name, inp=value_input: self._on_tcp_edited(n, inp))
+        else:
+            value_input.editingFinished.connect(lambda i=index, inp=value_input: self._on_joint_edited(i, inp))
+            
+        hbox.addWidget(value_input)
+        self.inputs[name] = value_input 
         return frame
     
+    def _on_tcp_edited(self, name, line_edit):
+        """當 TCP 輸入框編輯完成"""
+        text = line_edit.text()
+        if text:
+            try:
+                val = float(text)
+                self.tcp_edit_requested.emit(name, val)
+            except ValueError:
+                pass
+        line_edit.clearFocus()  # 強制交出焦點，恢復即時刷新
+
+    def _on_joint_edited(self, index, line_edit):
+        """當關節角度輸入框編輯完成"""
+        text = line_edit.text()
+        if text:
+            try:
+                val = float(text)
+                self.joint_edit_requested.emit(index, val)
+            except ValueError:
+                pass
+        line_edit.clearFocus()  # 強制交出焦點，恢復即時刷新
+
     def _create_copy_btn(self, callback):
         btn = QPushButton()
         btn.setIcon(qta.icon('mdi.content-copy', color='#a0a0a0'))
-        btn.setIconSize(QSize(14, 14))
+        btn.setIconSize(QSize(12, 14))
         btn.setFixedSize(20, 20)
         btn.setCursor(Qt.CursorShape.PointingHandCursor) 
         btn.setStyleSheet(styles.BTN_GHOST_COPY_STYLE)
@@ -433,20 +495,30 @@ class MonitorWidget(QFrame):
         return btn
 
     def update_tcp(self, x, y, z, rx, ry, rz):
+        """即時刷新界面：加入焦點檢查防護"""
         for name, val in zip(["X", "Y", "Z", "Rx", "Ry", "Rz"], [x, y, z, rx, ry, rz]):
-            self.labels[name].setText(f"{val:.2f}")
+            # 🛡️ 絕對防護：如果操作員正在該輸入框輸入文字，不要用系統舊數據去覆蓋它！
+            if not self.inputs[name].hasFocus():
+                self.inputs[name].setText(f"{val:.2f}")
+                
         self.current_tcp_str = f"X:{x:.2f} Y:{y:.2f} Z:{z:.2f} Rx:{rx:.2f} Ry:{ry:.2f} Rz:{rz:.2f}"
 
     def update_joints(self, *joints):
+        """即時刷新界面：加入焦點檢查防護"""
         for name, val in zip(["θ1", "θ2", "θ3", "θ4", "θ5", "θ6"], joints):
-            self.labels[name].setText(f"{val:.2f}")
+            # 🛡️ 絕對防護
+            if not self.inputs[name].hasFocus():
+                self.inputs[name].setText(f"{val:.2f}")
+                
         self.current_joints_str = " ".join([f"J{i+1}:{j:.2f}" for i, j in enumerate(joints)])
 
     def copy_tcp_to_clipboard(self):
-        if hasattr(self, 'current_tcp_str'): QApplication.clipboard().setText(self.current_tcp_str)
+        if hasattr(self, 'current_tcp_str'): 
+            QApplication.clipboard().setText(self.current_tcp_str)
 
     def copy_joints_to_clipboard(self):
-        if hasattr(self, 'current_joints_str'): QApplication.clipboard().setText(self.current_joints_str)
+        if hasattr(self, 'current_joints_str'): 
+            QApplication.clipboard().setText(self.current_joints_str)
 
 class JogWidget(BaseBlock):
     def __init__(self, parent=None):
@@ -803,7 +875,6 @@ class JogWidget(BaseBlock):
         g_slider_row.setContentsMargins(0, 0, 0, 0)
         g_slider_row.setSpacing(10)
 
-        # 👇 1. 替換為純白色的 transfer-left 圖示，並套用 Jog 按鈕樣式
         g_btn_minus = QPushButton(qta.icon('mdi.transfer-left', color='#ffffff'), "")
         g_btn_minus.setIconSize(QSize(16, 16))
         g_btn_minus.setFixedSize(22, 22)
@@ -818,7 +889,6 @@ class JogWidget(BaseBlock):
         self.g_slider.setStyleSheet(styles.SLIDER_GRIPPER_STYLE)
         g_slider_row.addWidget(self.g_slider)
 
-        # 👇 2. 替換為純白色的 transfer-right 圖示，並套用 Jog 按鈕樣式
         g_btn_plus = QPushButton(qta.icon('mdi.transfer-right', color='#ffffff'), "")
         g_btn_plus.setIconSize(QSize(16, 16))
         g_btn_plus.setFixedSize(22, 22)
@@ -875,7 +945,7 @@ class JogWidget(BaseBlock):
             is_rot = len(axis_str) > 1
             axis_arg = axis_str if is_rot else axis_str.lower()
             
-            # 👇 2. 神經分流：判斷目前是連續還是步進模式
+            # 2. 神經分流：判斷目前是連續還是步進模式
             is_continuous = getattr(self, 'is_cartesian_continuous', True)
             
             if is_continuous:
@@ -946,7 +1016,7 @@ class JogWidget(BaseBlock):
             # 切換為步進 (Step) 模式
             self.btn_jog_mode.setText("Step")
             self.is_cartesian_continuous = False
-            self.step_container.setVisible(True)  # 👈 新增這行：顯示 Step 設定框
+            self.step_container.setVisible(True)  
             
             for btn, _ in self.cart_buttons:
                 btn.setAutoRepeat(False)
@@ -954,7 +1024,7 @@ class JogWidget(BaseBlock):
             # 切換為連續 (Cont) 模式
             self.btn_jog_mode.setText("Cont")
             self.is_cartesian_continuous = True
-            self.step_container.setVisible(False) # 👈 新增這行：隱藏 Step 設定框
+            self.step_container.setVisible(False)
             
             for btn, _ in self.cart_buttons:
                 btn.setAutoRepeat(True)
@@ -974,16 +1044,42 @@ class JogWidget(BaseBlock):
     def update_ee_speed_display(self):
         for i, seg in enumerate(self.ee_speed_segments):
             seg.setStyleSheet(styles.SPEED_SEG_ON_STYLE if i < self.ee_speed_level else styles.SPEED_SEG_OFF_STYLE)
+import os
+from datetime import datetime
+from PySide6.QtCore import QRunnable, QThreadPool, QObject, Signal
+from PySide6.QtGui import QPixmap
+# 建議放在檔案最上方（class 外面）
+class _ScreenshotSaveSignals(QObject):
+    finished = Signal(str)
+    error = Signal(str)
 
-class View3DWidget(BaseBlock):
-    # 🗑️ (已刪除 record_tcp_requested 神經索)
-    
+class _ScreenshotSaveTask(QRunnable):
+    """在背景執行緒做 PNG 存檔，並使用執行緒安全的 QImage 避免崩潰"""
+    def __init__(self, image: QImage, filepath: str):
+        super().__init__()
+        self.image = image # 👈 接收 thread-safe 的 QImage
+        self.filepath = filepath
+        self.signals = _ScreenshotSaveSignals()
+
+    def run(self):
+        try:
+            ok = self.image.save(self.filepath, "PNG")
+            if ok:
+                self.signals.finished.emit(self.filepath)
+            else:
+                self.signals.error.emit(f"儲存失敗: {self.filepath}")
+        except Exception as e:
+            self.signals.error.emit(str(e))
+
+# ==========================================
+# View3DWidget
+# ==========================================
+class View3DWidget(BaseBlock):    
     def __init__(self, parent=None):
-        # 🗑️ (已刪除機器人圖示，僅保留移動、旋轉、相機與選單)
         nav_config = [
             {'icon': 'mdi.axis-arrow', 'toggle_icon': 'mdi.axis-arrow', 'toggle_color': '#00e6b8'},
             {'icon': 'mdi.rotate-orbit', 'toggle_icon': 'mdi.rotate-orbit', 'toggle_color': '#e6a800'},
-            {'icon': 'mdi.camera-outline'}, # 👈 保留相機圖示 (目前為 index 2)
+            {'icon': 'mdi.camera-outline'}, 
             {'icon': 'mdi.dots-vertical'}
         ]
         super().__init__(parent=parent, nav_config=nav_config)
@@ -1000,17 +1096,38 @@ class View3DWidget(BaseBlock):
         layout.addWidget(self.robot_view)
         
         self.robot_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.robot_view.customContextMenuRequested.connect(self.show_context_menu)
+        self.robot_view.customContextMenuRequested.connect(lambda pos: self.show_context_menu())
         
         self.btn_translate = self.nav_bar.nav_buttons[0]
         self.btn_rotate = self.nav_bar.nav_buttons[1]
-        self.btn_camera = self.nav_bar.nav_buttons[2] # 將相機圖示對應起來備用
+        self.btn_camera = self.nav_bar.nav_buttons[2] 
+        self.btn_camera.clicked.connect(self.on_camera_clicked) 
+
+        self._screenshot_pool = QThreadPool() 
         
+        
+        
+        self._active_menu = None
         self._updating_btns = False 
         self.btn_translate.toggled.connect(self.on_translate_toggled)
         self.btn_rotate.toggled.connect(self.on_rotate_toggled)
 
-        # 🗑️ (已刪除 btn_record, btn_record_ee, btn_mode 以及 modes 陣列相關綁定)
+    def _handle_spacebar(self):
+        focus_w = QApplication.focusWidget()
+        if focus_w:
+            if focus_w.inherits("QLineEdit") or focus_w.inherits("QAbstractSpinBox") or focus_w.inherits("QTextEdit"):
+                return
+
+        local_pos = self.mapFromGlobal(QCursor.pos())
+        if not self.rect().contains(local_pos):
+            return 
+
+        if getattr(self, '_active_menu', None) is not None:
+            self._active_menu.close()
+            self._active_menu = None
+            return
+
+        self.show_context_menu(pos=None)
 
     def on_translate_toggled(self, checked):
         if self._updating_btns: return
@@ -1039,16 +1156,43 @@ class View3DWidget(BaseBlock):
             self.btn_translate.setChecked(False)
             self.btn_rotate.setChecked(False)
 
-    # 🗑️ (已刪除 cycle_record_mode 函式)
-    # 🗑️ (已刪除 current_record_mode 屬性)
+    def on_camera_clicked(self):
+        """非阻塞截圖：主執行緒快速 grab 並轉成 QImage，背景執行緒安全寫檔"""
+        QApplication.processEvents() # 確保畫面最新
+        pixmap = self.grab() # 👈 改回 self.grab()，把 MonitorWidget 的數據一起拍下來！
+        image = pixmap.toImage() # 👈 轉換為 thread-safe 的 QImage
 
-    def show_context_menu(self, pos):        
-        menu = QMenu(self)
-        menu.setStyleSheet(styles.MENU_STYLE)
+        screenshot_dir = os.path.join(os.getcwd(), "screenshots")
+        os.makedirs(screenshot_dir, exist_ok=True)
+        filename = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3] + ".png"
+        filepath = os.path.join(screenshot_dir, filename)
+
+        task = _ScreenshotSaveTask(image, filepath)
+        task.signals.error.connect(lambda msg: print(f"[截圖錯誤] {msg}"))
+        self._screenshot_pool.start(task)
+
+        self._flash_camera_icon('#00e6b8', duration=80)
+
+    def _flash_camera_icon(self, color: str, duration: int = 80):
+        if not hasattr(self, '_camera_btn_original_style'):
+            self._camera_btn_original_style = self.btn_camera.styleSheet()
+
+        self.btn_camera.setStyleSheet(
+            f"QToolButton {{ background-color: {color} !important; border-radius: 4px; }}"
+        )
+        QTimer.singleShot(duration, self._restore_camera_icon)
+
+    def _restore_camera_icon(self):
+        self.btn_camera.setStyleSheet(self._camera_btn_original_style)
+
+    def show_context_menu(self, pos=None):        
+        menu_pos = QCursor.pos()
         
-        # ==========================================
-        # 1. 定義一般按鈕
-        # ==========================================
+        menu = QMenu(self.window())
+        self._active_menu = menu
+        menu.setStyleSheet(styles.MENU_STYLE)
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        
         action_reset = QAction(qta.icon('mdi.camera-retake', color='#e0e0e0'), "Reset Camera", self)
         
         grid_visible = self.robot_view.floor_grid.visible
@@ -1060,23 +1204,20 @@ class View3DWidget(BaseBlock):
         path_visible = getattr(self.robot_view, 'show_trajectory', True)
         action_path = QAction(qta.icon('mdi.vector-polyline', color='#e0e0e0'), "Hide Trajectory" if path_visible else "Show Trajectory", self)
         
-        # 🗑️ (已刪除 Tool Box 抽屜的建置邏輯)
-
-        # ==========================================
-        # 2. 依序組裝主選單
-        # ==========================================
         menu.addAction(action_reset)
         menu.addSeparator() 
         menu.addAction(action_grid)
         menu.addAction(action_toggle_drag)
         menu.addAction(action_path) 
         
-        # 顯示選單並等待使用者點擊
-        selected_action = menu.exec(QCursor.pos())
+        try:
+            selected_action = menu.exec(menu_pos)
+        finally:
+            self._active_menu = None
+            
+        if not selected_action:
+            return
         
-        # ==========================================
-        # 3. 處理動作
-        # ==========================================
         if selected_action == action_reset:
             self.robot_view.view.camera.center = (0, 0, 0.15)
             self.robot_view.view.camera.elevation = 30
@@ -1142,7 +1283,7 @@ class LogWidget(BaseBlock):
             color = "#e6a800" # 警告 (橘黃)
             
         elif "[SYSTEM]" in msg_upper or "系統" in msg_upper:
-            color = "#569cd6" # 系統提示 (藍)
+            color = "#00a8e6" # 系統提示 (藍)
             
         elif "[HW]" in msg_upper or "CONNECTED" in msg_upper or "DISCONNECTED" in msg_upper:
             color = "#c586c0" # 硬體通訊 (紫)

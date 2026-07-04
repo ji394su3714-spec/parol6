@@ -1,4 +1,4 @@
-# tcp_dialog.py
+# base_dialog.py
 from PySide6.QtWidgets import (QCheckBox, QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
                                QPushButton, QLabel, QLineEdit, QGridLayout, QInputDialog, QMessageBox, QWidget)
 from PySide6.QtCore import QSize, Qt
@@ -8,10 +8,10 @@ import styles
 from widgets import apply_windows_dark_titlebar
 
 # ==========================================
-# 刀具清單專用的單行排版元件
+# 基座清單專用的單行排版元件 (與 TCP 完全對齊)
 # ==========================================
-class ToolRowWidget(QWidget):
-    def __init__(self, index, name, in_box=False, on_toggle_cb=None, parent=None):
+class BaseRowWidget(QWidget):
+    def __init__(self, index, name, in_box=True, is_locked=False, on_toggle_cb=None, parent=None):
         super().__init__(parent)
         self.index = index
         self.on_toggle_cb = on_toggle_cb
@@ -26,18 +26,26 @@ class ToolRowWidget(QWidget):
         self.lbl_idx.setStyleSheet("color: #888888; font-family: 'Consolas', monospace; font-size: 13px; background: transparent;")
         layout.addWidget(self.lbl_idx)
 
-        self.lbl_name = QLabel(name)
-        self.lbl_name.setStyleSheet("color: #d4d4d4; font-family: 'Segoe UI', sans-serif; font-size: 13px; background: transparent;")
+        # 鎖定狀態的視覺提示
+        display_name = f"{name} (Locked)" if is_locked else name
+        name_color = "#e6a800" if is_locked else "#d4d4d4"
+        
+        self.lbl_name = QLabel(display_name)
+        self.lbl_name.setStyleSheet(f"color: {name_color}; font-family: 'Segoe UI', sans-serif; font-size: 13px; background: transparent;")
         layout.addWidget(self.lbl_name)
         
         layout.addStretch()
 
         self.chk_box = QCheckBox()
         self.chk_box.setChecked(in_box)
-        self.chk_box.setToolTip("Add to Tool Box")
+        self.chk_box.setToolTip("Show in Right-Click Menu")
         self.chk_box.setStyleSheet("""
             QCheckBox::indicator { width: 16px; height: 16px; }
         """)
+        
+        if is_locked:
+            self.chk_box.setEnabled(False) # 鎖定的 Base 0 不允許被移出選單
+            
         self.chk_box.toggled.connect(self._handle_toggle)
         layout.addWidget(self.chk_box)
 
@@ -45,47 +53,53 @@ class ToolRowWidget(QWidget):
         if self.on_toggle_cb:
             self.on_toggle_cb(self.index, checked)
 
-class TCPManagerDialog(QDialog):
-    def __init__(self, tcp_manager, parent=None):
+class BaseManagerDialog(QDialog):
+    def __init__(self, base_manager, parent=None):
         super().__init__(parent)
-        self.tcp_manager = tcp_manager
-        self.setWindowTitle("TCP / Tool Manager")
-        self.setMinimumSize(450, 300)
+        self.base_manager = base_manager
+        self.setWindowTitle("Base Frame Manager")
+        self.setMinimumSize(450, 320)
         self.setStyleSheet(styles.PREFERENCES_DIALOG_STYLE)
         
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(15, 15, 15, 15)
         main_layout.setSpacing(15)
 
-        # --- 左側清單 ---
+        # ==========================================
+        # 左側清單
+        # ==========================================
         left_layout = QVBoxLayout()
         left_layout.setSpacing(8)
-        lbl_list = QLabel("Tool List")
+        lbl_list = QLabel("Base Frame List")
         lbl_list.setFont(styles.FONT_TITLE)
         left_layout.addWidget(lbl_list)
 
         self.list_widget = QListWidget()
         self.list_widget.setStyleSheet(styles.PATH_LIST_STYLE)
-        self.list_widget.currentRowChanged.connect(self.on_tool_selected)
+        self.list_widget.currentRowChanged.connect(self.on_base_selected)
         left_layout.addWidget(self.list_widget)
 
         btn_layout = QHBoxLayout()
         self.btn_add = QPushButton(qta.icon('mdi.plus', color='#00e6b8'), "Add")
         self.btn_del = QPushButton(qta.icon('mdi.trash-can-outline', color='#e0e0e0'), "Del")
         self.btn_rename = QPushButton(qta.icon('mdi.form-textbox', color='#e0e0e0'), "Rename")
-        self.btn_add.clicked.connect(self.add_tool)
-        self.btn_del.clicked.connect(self.delete_tool)
-        self.btn_rename.clicked.connect(self.rename_tool)
+        
+        self.btn_add.clicked.connect(self.add_base)
+        self.btn_del.clicked.connect(self.delete_base)
+        self.btn_rename.clicked.connect(self.rename_base)
+        
         btn_layout.addWidget(self.btn_add)
         btn_layout.addWidget(self.btn_del)
         btn_layout.addWidget(self.btn_rename)
         left_layout.addLayout(btn_layout)
         main_layout.addLayout(left_layout, 1)
 
-        # --- 右側數值 ---
+        # ==========================================
+        # 右側數值 (Grid Layout)
+        # ==========================================
         right_layout = QVBoxLayout()
         right_layout.setSpacing(15)
-        lbl_edit = QLabel("TCP Offset Parameters")
+        lbl_edit = QLabel("Base Offset Parameters")
         lbl_edit.setFont(styles.FONT_TITLE)
         right_layout.addWidget(lbl_edit)
 
@@ -111,101 +125,113 @@ class TCPManagerDialog(QDialog):
         right_layout.addLayout(grid)
         right_layout.addStretch(1)
 
+        # 教導按鈕
+        self.btn_teach = QPushButton(" Teach (3-Point Method)")
+        self.btn_teach.setIcon(qta.icon('mdi.target', color='#e6a800'))
+        self.btn_teach.setStyleSheet(styles.BTN_SECONDARY_STYLE)
+        self.btn_teach.setFixedHeight(30)
+        self.btn_teach.setEnabled(False) 
+        right_layout.addWidget(self.btn_teach)
+
+        # 套用按鈕
         self.btn_apply = QPushButton("Apply & Close")
         self.btn_apply.setFixedHeight(30)
         self.btn_apply.clicked.connect(self.apply_and_close)
         right_layout.addWidget(self.btn_apply)
+        
         main_layout.addLayout(right_layout, 1)
 
         self._is_loading = False
-        # 初始開啟時，讓選擇框停留在系統當前生效的刀具
-        self.refresh_list(target_idx=self.tcp_manager.current_index)
+        self.refresh_list(target_idx=self.base_manager.current_index)
 
     def refresh_list(self, target_idx=None):
-        """刷新清單，並加入防抖動與選取記憶"""
         current_idx = self.list_widget.currentRow() if target_idx is None else target_idx
         if current_idx < 0: 
             current_idx = 0
 
-        # 💡 阻斷訊號：在填入資料時，不要觸發 currentRowChanged
         self.list_widget.blockSignals(True)
         self.list_widget.clear()
         
-        for i, tool in enumerate(self.tcp_manager.tools):
+        for i, base_data in enumerate(self.base_manager.bases):
             item = QListWidgetItem()
-            in_box = tool.get("in_box", True) 
+            in_box = base_data.get("in_box", True) 
+            is_locked = base_data.get("is_locked", False)
             
-            row_widget = ToolRowWidget(i, tool['name'], in_box, self.on_toolbox_toggled)
+            row_widget = BaseRowWidget(i, base_data['name'], in_box, is_locked, self.on_box_toggled)
             item.setSizeHint(QSize(0, 30))
             
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, row_widget)
             
-        if len(self.tcp_manager.tools) > 0:
-            if current_idx >= len(self.tcp_manager.tools):
-                current_idx = len(self.tcp_manager.tools) - 1
+        if len(self.base_manager.bases) > 0:
+            if current_idx >= len(self.base_manager.bases):
+                current_idx = len(self.base_manager.bases) - 1
             self.list_widget.setCurrentRow(current_idx)
             
         self.list_widget.blockSignals(False)
-        # 刷新完畢後，手動觸發一次選取更新右側數值
-        self.on_tool_selected(current_idx)
+        self.on_base_selected(current_idx)
 
-    def on_toolbox_toggled(self, index, checked):
-        """僅更新字典的暫存狀態，不發射訊號也不存檔"""
-        if 0 <= index < len(self.tcp_manager.tools):
-            self.tcp_manager.tools[index]["in_box"] = checked
+    def on_box_toggled(self, index, checked):
+        if 0 <= index < len(self.base_manager.bases):
+            self.base_manager.bases[index]["in_box"] = checked
 
-    def on_tool_selected(self, index):
+    def on_base_selected(self, index):
         if self._is_loading or index < 0: return
         
-        # 💡 致命錯誤修正：絕對不要在這裡呼叫 self.tcp_manager.set_current_index(index)
-        # 編輯對話框的點擊，不應該干涉系統大腦的狀態！
-        
-        # 我們只需單純「讀取」陣列即可
-        tool_data = self.tcp_manager.tools[index]
-        vals = tool_data.get("values", [0.0]*6)
+        base_data = self.base_manager.bases[index]
+        vals = base_data.get("values", [0.0]*6)
+        is_locked = base_data.get("is_locked", False)
         
         self._is_loading = True
         for k, v in zip(["x", "y", "z", "rx", "ry", "rz"], vals):
             self.inputs[k].setText(f"{v:.3f}")
         self._is_loading = False
+        
+        # 💡 動態保護：如果選到鎖定的 Base 0，不准刪除與改名，按鈕外觀也會變化
+        self.btn_del.setEnabled(not is_locked)
+        self.btn_rename.setEnabled(not is_locked)
+        self.btn_teach.setEnabled(not is_locked)
+        
+        if is_locked:
+            self.btn_apply.setText("Apply World Calibration & Close")
+            self.btn_apply.setStyleSheet(styles.BTN_PRIMARY_STYLE) 
+        else:
+            self.btn_apply.setText("Apply & Close")
+            self.btn_apply.setStyleSheet(styles.BTN_SECONDARY_STYLE) 
 
-    def add_tool(self):
-        self.tcp_manager.add_tool(f"Tool {len(self.tcp_manager.get_tools()) + 1}")
-        # 新增後直接選中最後一個 (最新) 的工具
-        self.refresh_list(target_idx=len(self.tcp_manager.tools) - 1)
+    def add_base(self):
+        # 預設新數值為全 0
+        self.base_manager.add_base(f"Base {len(self.base_manager.bases)}", [0.0]*6, True)
+        self.refresh_list(target_idx=len(self.base_manager.bases) - 1)
 
-    def delete_tool(self):
-        if len(self.tcp_manager.get_tools()) <= 1:
-            QMessageBox.warning(self, "Warning", "Cannot delete the last TCP tool.")
+    def delete_base(self):
+        if len(self.base_manager.bases) <= 1:
+            QMessageBox.warning(self, "Warning", "Cannot delete the last Base frame.")
             return
-        self.tcp_manager.delete_tool(self.list_widget.currentRow())
+        self.base_manager.delete_base(self.list_widget.currentRow())
         self.refresh_list()
 
-    def rename_tool(self):
-        """僅修改暫存名稱並重繪 List，保持選取狀態不動"""
+    def rename_base(self):
         idx = self.list_widget.currentRow()
         if idx < 0: return
-        old_name = self.tcp_manager.get_tools()[idx]["name"]
-        new_name, ok = QInputDialog.getText(self, "Rename Tool", "New name:", QLineEdit.EchoMode.Normal, old_name)
+        old_name = self.base_manager.bases[idx]["name"]
+        new_name, ok = QInputDialog.getText(self, "Rename Base", "New name:", QLineEdit.EchoMode.Normal, old_name)
         if ok and new_name.strip():
-            self.tcp_manager.tools[idx]["name"] = new_name.strip()
+            self.base_manager.bases[idx]["name"] = new_name.strip()
             self.refresh_list(target_idx=idx)
 
     def apply_and_close(self):
-        """將畫面上當前選中的工具輸入框數值打包，透過 update_tool 寫入大腦"""
         idx = self.list_widget.currentRow()
         if idx >= 0:
             try:
                 new_vals = [float(self.inputs[k].text() or 0.0) for k in ["x", "y", "z", "rx", "ry", "rz"]]
                 
-                # 抓取這把刀具目前的名稱跟 in_box 狀態
-                current_tool = self.tcp_manager.tools[idx]
-                name = current_tool.get("name", f"Tool {idx}")
-                in_box = current_tool.get("in_box", True)
+                current_base = self.base_manager.bases[idx]
+                name = current_base.get("name", f"Base {idx}")
+                in_box = current_base.get("in_box", True)
                 
-                # 呼叫 tcp_manager 的唯一更新入口！
-                self.tcp_manager.update_tool(idx, name, new_vals, in_box)
+                # 寫入大腦！
+                self.base_manager.update_base(idx, name, new_vals, in_box)
             except ValueError:
                 pass
                 

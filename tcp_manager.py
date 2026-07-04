@@ -3,11 +3,15 @@ import json
 import os
 import numpy as np
 from scipy.spatial.transform import Rotation as R
+from PySide6.QtCore import QObject, Signal
 
 TCP_CONFIG_FILE = "tcp_config.json"
 
-class TCPManager:
-    def __init__(self):
+class TCPManager(QObject):
+    data_changed = Signal() 
+
+    def __init__(self, parent=None):
+        super().__init__(parent) 
         self.tools = []
         self.current_index = 0
         self.load_config()
@@ -42,7 +46,8 @@ class TCPManager:
     def create_default_tool(self):
         self.tools = [{
             "name": "Default Tool",
-            "values": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # X, Y, Z, Rx, Ry, Rz
+            "values": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "in_box": True
         }]
         self.current_index = 0
         self.save_config()
@@ -54,33 +59,42 @@ class TCPManager:
     def add_tool(self, name="New Tool"):
         self.tools.append({
             "name": name,
-            "values": [0.0]*6
+            "values": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], # 強制賦予全新的獨立陣列
+            "in_box": True
         })
-        self.current_index = len(self.tools) - 1 # 切換到新工具
+        self.current_index = len(self.tools) - 1 
         self.save_config()
+        self.data_changed.emit()
 
     def delete_tool(self, index):
-        if len(self.tools) <= 1: return # 至少保留一個
+        if len(self.tools) <= 1: return 
         
         self.tools.pop(index)
         if self.current_index >= len(self.tools):
             self.current_index = len(self.tools) - 1
         self.save_config()
+        self.data_changed.emit()
 
     def set_current_index(self, index):
         if 0 <= index < len(self.tools):
             self.current_index = index
             self.save_config()
+            self.data_changed.emit()
 
-    def update_tool_values(self, index, values):
-        """更新數值但不存檔 (由 UI 決定何時存檔，避免頻繁寫入)"""
+    # 💡 核心修復：供 Apply 按鈕呼叫的唯一更新入口
+    def update_tool(self, index, name, values, in_box=True):
+        """按下 Apply 後才呼叫：寫入資料、存檔，並觸發全系統 3D 重繪"""
         if 0 <= index < len(self.tools):
-            self.tools[index]["values"] = values
-
-    def rename_tool(self, index, new_name):
-        if 0 <= index < len(self.tools):
-            self.tools[index]["name"] = new_name
+            self.tools[index]["name"] = name
+            
+            # 🔥 終極防禦：使用 list() 強制拷貝陣列，徹底切斷記憶體共用問題！
+            self.tools[index]["values"] = list(values) 
+            
+            self.tools[index]["in_box"] = in_box
             self.save_config()
+            self.data_changed.emit()
+
+    # (原本的 update_tool_values 與 rename_tool 已被刪除，由 update_tool 統一管理)
 
     # --- 核心運算 ---
     def get_active_tool_data(self):
@@ -89,7 +103,8 @@ class TCPManager:
 
     def get_active_matrix(self):
         """直接回傳 4x4 矩陣供 Kinematics 與全系統使用"""
-        vals = self.tools[self.current_index]["values"]
+        # 加上 .get() 安全防護，避免讀到舊格式資料出錯
+        vals = self.tools[self.current_index].get("values", [0.0]*6)
         x, y, z, rx, ry, rz = vals
         
         # 1. 使用者在 UI 設定的 TCP 數值矩陣
@@ -99,7 +114,6 @@ class TCPManager:
         user_mat[:3, 3] = [x/1000.0, y/1000.0, z/1000.0]
         
         # 2. 法蘭盤全域校正矩陣 (Flange Offset)
-        # 這裡的 -90 度會自動應用到整個系統 (包含拖曳運算與 IK)
         flange_offset = np.eye(4)
         flange_offset[:3, :3] = R.from_euler('x', -90, degrees=True).as_matrix()
         

@@ -1,0 +1,94 @@
+[
+    {
+        "type": "SET_TCP",
+        "value": 0,
+        "name": "Tool: Flange",
+        "active": true
+    },
+    {
+        "type": "SET_BASE",
+        "value": 0,
+        "name": "Base: Base 0 (World)",
+        "active": true
+    },
+    {
+        "type": "PTP",
+        "name": "Point 1",
+        "joints": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "speed": 50,
+        "accel": 50,
+        "blend": "FINE",
+        "active": true
+    },
+    {
+        "type": "PTP",
+        "name": "Point 2",
+        "joints": [
+            -0.0005,
+            21.0944,
+            44.8218,
+            -0.0003,
+            -65.9158,
+            -0.0003
+        ],
+        "speed": 50,
+        "accel": 50,
+        "blend": "FINE",
+        "active": true
+    },
+    {
+        "type": "DELAY",
+        "value": 1.0,
+        "active": true
+    },
+    {
+        "type": "SET_TCP",
+        "value": 1,
+        "name": "Tool: Gripper front",
+        "active": true
+    },
+    {
+        "type": "PTP",
+        "name": "Point 3",
+        "joints": [
+            -0.0005,
+            21.0944,
+            44.8218,
+            -0.0003,
+            -65.9158,
+            -0.0003
+        ],
+        "speed": 50,
+        "accel": 50,
+        "blend": "FINE",
+        "active": true
+    },
+    {
+        "type": "DELAY",
+        "value": 1.0,
+        "active": true
+    },
+    {
+        "type": "LIN",
+        "name": "Point 4",
+        "joints": [
+            29.1909,
+            27.6918,
+            34.0293,
+            32.3906,
+            -65.5681,
+            -14.7022
+        ],
+        "speed": 50,
+        "accel": 50,
+        "blend": "FINE",
+        "active": true
+    }
+]

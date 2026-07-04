@@ -463,6 +463,69 @@ PREFERENCES_DIALOG_STYLE = """
         background-color: #054b7c; 
     }
 """
+# ==========================================
+# 輸入框樣式 (Line Edit)
+# ==========================================
+LINE_EDIT_STYLE = """
+    QLineEdit {
+        background-color: #2b2b2b;
+        color: #ffffff;
+        border: 1px solid #454545;
+        border-radius: 4px;
+        padding: 4px 8px;
+        font-family: 'Segoe UI';
+        font-size: 13px;
+    }
+    QLineEdit:focus {
+        border: 1px solid #00e6b8;  /* 取得焦點時顯示亮綠色邊框 */
+        background-color: #333333;
+    }
+    QLineEdit:read-only {
+        background-color: #1e1e1e;
+        color: #777777;
+        border: 1px solid #333333;
+    }
+"""
+
+# ==========================================
+# 對話框專用按鈕樣式 (Primary / Secondary / Danger)
+# ==========================================
+BTN_PRIMARY_STYLE = """
+    QPushButton {
+        background-color: #005947; 
+        color: #00e6b8; 
+        border: 1px solid #00e6b8; 
+        border-radius: 4px; 
+        padding: 6px 12px;
+        font-weight: bold;
+    }
+    QPushButton:hover { background-color: #008066; color: #ffffff; }
+    QPushButton:disabled { background-color: #2b2b2b; color: #555555; border: 1px solid #444444; }
+"""
+
+BTN_SECONDARY_STYLE = """
+    QPushButton {
+        background-color: #2b2b2b; 
+        color: #cccccc; 
+        border: 1px solid #555555; 
+        border-radius: 4px; 
+        padding: 6px 12px;
+    }
+    QPushButton:hover { background-color: #444444; color: #ffffff; border: 1px solid #888888; }
+    QPushButton:disabled { background-color: #1e1e1e; color: #555555; border: 1px solid #333333; }
+"""
+
+BTN_DANGER_STYLE = """
+    QPushButton {
+        background-color: #591a1a; 
+        color: #ff4d4d; 
+        border: 1px solid #ff4d4d; 
+        border-radius: 4px; 
+        padding: 6px 12px;
+    }
+    QPushButton:hover { background-color: #802626; color: #ffffff; }
+    QPushButton:disabled { background-color: #2b2b2b; color: #555555; border: 1px solid #444444; }
+"""
 
 DARK_MESSAGE_BOX_STYLE = """
     QMessageBox {

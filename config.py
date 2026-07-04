@@ -6,6 +6,38 @@ from vispy import scene
 
 import kinematics
 
+# 關節專屬極限 (J1~J6)
+MAX_JOINT_SPEEDS = np.array([175.78, 56.25, 62.17, 281.25, 281.25, 112.50])     
+MAX_JOINT_ACCELS = np.array([703.13, 225.00, 248.69, 1125.00, 1125.00, 450.00])   
+MAX_JOINT_JERKS = MAX_JOINT_ACCELS * 10.0
+
+# 直角空間極限 (LIN/CIRC 用)
+MAX_LIN_SPEED = 200.0    
+MAX_LIN_ACCEL = 500.0    
+MAX_LIN_JERK = MAX_LIN_ACCEL * 10.0    
+
+MAX_ROT_SPEED = 100.0     
+MAX_ROT_ACCEL = 200.0     
+MAX_ROT_JERK = MAX_ROT_ACCEL * 10.0     
+
+# 晶片總體算力防護網參數
+MAX_TOTAL_PULSE_SLICE = 50000
+
+GEAR_RATIOS = np.array([6.4, 20.0, 18.095, 4.0, 4.0, 10.0])
+STEPS_PER_DEG = (6400.0 * GEAR_RATIOS) / 360.0
+
+
+def update_advanced_settings(lin_spd, lin_acc, rot_spd, rot_acc, slice_pulse):
+    global MAX_LIN_SPEED, MAX_LIN_ACCEL, MAX_LIN_JERK
+    global MAX_ROT_SPEED, MAX_ROT_ACCEL, MAX_ROT_JERK
+    global MAX_TOTAL_PULSE_SLICE
+    
+    MAX_LIN_SPEED, MAX_LIN_ACCEL, MAX_LIN_JERK = lin_spd, lin_acc, lin_acc * 10.0
+    MAX_ROT_SPEED, MAX_ROT_ACCEL, MAX_ROT_JERK = rot_spd, rot_acc, rot_acc * 10.0
+    MAX_TOTAL_PULSE_SLICE = slice_pulse
+
+# ==========================================
+
 # ==========================================
 # 全域機構與運算參數 (供 kinematics.py 讀取)
 # ==========================================
