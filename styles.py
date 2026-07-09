@@ -73,7 +73,6 @@ BTN_SPLIT_RIGHT_STYLE = """
 """
 
 SEPARATOR_STYLE = "border-top: 1px solid #444;"
-MINI_AXIS_BG_COLOR = "#262626"
 
 SPIN_STEP_STYLE = """
     QDoubleSpinBox {
@@ -229,7 +228,7 @@ BTN_GRIPPER_TOGGLE_STYLE = """
 # ==========================================
 SLIDER_GRIPPER_STYLE = """
     QSlider { 
-        min-height: 22px; /* 👈 縮小整體高度，讓上方的 0% 標籤貼得更近 */
+        min-height: 22px; /* 縮小整體高度，讓上方的 0% 標籤貼得更近 */
         max-height: 22px;
     }
     
@@ -247,7 +246,7 @@ SLIDER_GRIPPER_STYLE = """
         width: 10px;  /* 寬度稍微窄一點 */
         height: 16px; /* 高度拉長，呈現矩形 */
         
-        /* 💡 置中數學：總高 18 (16+上下邊框) - 軌道 4 = 14，14 / 2 = 7px */
+        /* 置中數學：總高 18 (16+上下邊框) - 軌道 4 = 14，14 / 2 = 7px */
         margin: -7px 0px;   
         
         border-radius: 3px; /* 微小的圓角，保留矩形的俐落感 */
@@ -278,6 +277,63 @@ SPEED_PLUS_STYLE = """
 SPEED_SEG_ON_STYLE = "background-color: #e5d5ff;"
 SPEED_SEG_OFF_STYLE = "background-color: #4a4a4c;"
 
+BTN_PRIMARY_STYLE = """
+    QPushButton {
+        background-color: #008f72; /* 深一點的青色底 */
+        color: #ffffff;
+        border: 1px solid #00e6b8; /* 亮青色邊框 */
+        border-radius: 4px;
+        padding: 5px 15px;
+        font-family: 'Segoe UI', sans-serif;
+        font-weight: bold;
+        font-size: 12px;
+    }
+    QPushButton:hover {
+        background-color: #00ab89;
+        border: 1px solid #00ffcc;
+    }
+    QPushButton:pressed {
+        background-color: #007059;
+        padding-top: 6px; 
+        padding-left: 16px;
+    }
+    QPushButton:disabled {
+        background-color: #2b2b2b;
+        color: #666666;
+        border: 1px solid #333333;
+    }
+"""
+
+BTN_SECONDARY_STYLE = """
+    QPushButton {
+        background-color: #444444;
+        color: #dddddd;
+        border: 1px solid #555555;
+        border-radius: 4px;
+        padding: 5px 15px;
+        font-family: 'Segoe UI', sans-serif;
+        font-weight: bold;
+        font-size: 12px;
+    }
+    QPushButton:hover {
+        background-color: #555555;
+        border: 1px solid #777777;
+        color: #ffffff;
+    }
+    QPushButton:pressed {
+        background-color: #333333;
+        border: 1px solid #444444;
+        /* 按下時產生微小的視覺下壓感 */
+        padding-top: 6px; 
+        padding-left: 16px;
+    }
+    QPushButton:disabled {
+        background-color: #2b2b2b;
+        color: #666666;
+        border: 1px solid #333333;
+    }
+"""
+
 BTN_CARTESIAN_STYLE = """
     QPushButton { background-color: #333; border: 1px solid #444; border-radius: 4px; color: #ddd; font-size: 10px; font-weight: bold; }
     QPushButton:hover { background-color: #555; color: white; border-color: #666; }
@@ -285,8 +341,17 @@ BTN_CARTESIAN_STYLE = """
 """
 
 BTN_FRAME_TOGGLE_STYLE = """
-    QPushButton { background-color: #333; color: #e6a800; border: 1px solid #e6a800; border-radius: 4px; font-weight: bold; font-size: 11px; }
+    QPushButton { background-color: #333; color: #00a8e6; border: 1px solid #00a8e6; border-radius: 4px; font-weight: bold; font-size: 11px; }
     QPushButton:hover { background-color: #444; }
+    QPushButton:checked { color: #e6a800; border: 1px solid #e6a800; }
+    QPushButton:checked:hover { background-color: #444; }
+"""
+BTN_STEP_TOGGLE_STYLE = """
+    QPushButton { background-color: #333; border: 1px solid #444; border-radius: 4px; color: #ddd; font-size: 10px; font-weight: bold; }
+    QPushButton:hover { background-color: #555; color: white; border-color: #666; }
+    QPushButton:pressed { background-color: #111; margin: 1px 0 0 1px; }
+    
+    /* 當按鈕被切換為 Step (Checked 狀態) 時的變化 */
     QPushButton:checked { color: #00e6b8; border: 1px solid #00e6b8; }
     QPushButton:checked:hover { background-color: #444; }
 """
@@ -301,7 +366,7 @@ WAYPOINT_ROW_BTN_STYLE = """
     QPushButton:hover { background-color: #4a4a4a; border-radius: 4px; }
 """
 
-# 2. 雙棲路徑清單 (QListWidget) - 區隔 Hover 與 Selected (純暗灰系)
+# 2. 路徑清單 - 區隔 Hover 與 Selected (純暗灰系)
 PATH_LIST_STYLE = """
     QListWidget { 
         background-color: transparent; 
@@ -370,22 +435,8 @@ LOG_CONSOLE_STYLE = """
     }
 """
 
-# 4. 3D 區文字輪播按鈕樣式模板 (使用 Python f-string 或 format 動態注入色彩)
-MODE_CYCLE_BTN_TEMPLATE = """
-    QPushButton {{
-        background-color: transparent;
-        color: {theme_color};
-        border: 1px solid {theme_color};
-        border-radius: 4px;
-        font-family: 'Segoe UI';
-        font-size: 11px;
-        font-weight: bold;
-    }}
-    QPushButton:hover {{ background-color: #3a3a3a; }}
-    QPushButton:pressed {{ background-color: #555555; }}
-"""
 # ==========================================
-# 右鍵功能選單 (Context Menu) 樣式
+# 功能選單樣式
 # ==========================================
 MENU_STYLE = """
     QMenu {
@@ -485,46 +536,6 @@ LINE_EDIT_STYLE = """
         color: #777777;
         border: 1px solid #333333;
     }
-"""
-
-# ==========================================
-# 對話框專用按鈕樣式 (Primary / Secondary / Danger)
-# ==========================================
-BTN_PRIMARY_STYLE = """
-    QPushButton {
-        background-color: #005947; 
-        color: #00e6b8; 
-        border: 1px solid #00e6b8; 
-        border-radius: 4px; 
-        padding: 6px 12px;
-        font-weight: bold;
-    }
-    QPushButton:hover { background-color: #008066; color: #ffffff; }
-    QPushButton:disabled { background-color: #2b2b2b; color: #555555; border: 1px solid #444444; }
-"""
-
-BTN_SECONDARY_STYLE = """
-    QPushButton {
-        background-color: #2b2b2b; 
-        color: #cccccc; 
-        border: 1px solid #555555; 
-        border-radius: 4px; 
-        padding: 6px 12px;
-    }
-    QPushButton:hover { background-color: #444444; color: #ffffff; border: 1px solid #888888; }
-    QPushButton:disabled { background-color: #1e1e1e; color: #555555; border: 1px solid #333333; }
-"""
-
-BTN_DANGER_STYLE = """
-    QPushButton {
-        background-color: #591a1a; 
-        color: #ff4d4d; 
-        border: 1px solid #ff4d4d; 
-        border-radius: 4px; 
-        padding: 6px 12px;
-    }
-    QPushButton:hover { background-color: #802626; color: #ffffff; }
-    QPushButton:disabled { background-color: #2b2b2b; color: #555555; border: 1px solid #444444; }
 """
 
 DARK_MESSAGE_BOX_STYLE = """

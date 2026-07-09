@@ -1,11 +1,13 @@
 # widgets.py
 import ctypes
 from ctypes import wintypes
+import datetime
+import os
 
-from PySide6.QtWidgets import (QDoubleSpinBox, QGridLayout, QListWidget, QListWidgetItem, QSizePolicy, QSpacerItem, QWidget, QVBoxLayout, QHBoxLayout, 
+from PySide6.QtWidgets import (QDoubleSpinBox, QGridLayout, QSizePolicy, QSpacerItem, QWidget, QVBoxLayout, QHBoxLayout, 
                                QFrame, QLabel, QPushButton, QSlider, QTextEdit, QLineEdit, QApplication, QMenu, QMessageBox)
 from PySide6.QtCore import QTimer, Qt, QObject, QEvent, QSize, Signal, QRunnable, QThreadPool
-from PySide6.QtGui import QAction, QCursor, QDoubleValidator, QImage, QKeySequence, QResizeEvent, QPainter, QPen, QColor, QShortcut
+from PySide6.QtGui import QAction, QCursor, QDoubleValidator, QImage, QResizeEvent, QPainter, QPen, QColor
 import qtawesome as qta
 
 import styles
@@ -112,13 +114,9 @@ class EditableValueLabel(QLineEdit):
     def __init__(self, default_text="0.00", parent=None):
         super().__init__(default_text, parent)
         self.slider = None
-        # 👇 1. 將高度稍微放寬 2~4px，給字體和游標一點呼吸空間
         self.setFixedHeight(12) 
-        
         self.setFixedWidth(50) 
         self.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
-
-        
         self.set_label_mode()
         self.editingFinished.connect(self.commit_value)
 
@@ -129,20 +127,12 @@ class EditableValueLabel(QLineEdit):
         self.clearFocus()
 
     def mousePressEvent(self, event):
-        # 1. 先讓 Qt 處理預設的滑鼠點擊行為 (定位游標等)
         super().mousePressEvent(event)
-        
-        # 2. 判斷：必須是按左鍵，而且「目前是唯讀狀態」才觸發編輯模式
-        # (加 isReadOnly 判斷是為了避免你在編輯到一半時，點擊游標又被強制全選)
         if event.button() == Qt.MouseButton.LeftButton and self.isReadOnly():
             self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             self.setReadOnly(False)
             self.setStyleSheet(styles.EDITABLE_EDITOR_MODE_STYLE)
             self.setFocus()
-            
-            # 💡 終極全選黑魔法：
-            # 利用 QTimer 延遲 0 毫秒，強制把全選指令排到事件佇列的最尾端！
-            # 這樣就能保證全選動作絕對不會被滑鼠放開時的預設行為取消掉。
             QTimer.singleShot(0, self.selectAll)
 
     def commit_value(self):
@@ -247,6 +237,62 @@ class FloatingNavBar(QFrame):
                 self.nav_buttons.append(btn)
 
 # ==========================================
+# 共用 UI 元件 (DRY 重構新增)
+# ==========================================
+class SpeedControlWidget(QFrame):
+    """獨立的速度檔位控制器 (將加減速按鈕與燈號封裝成單一元件)"""
+    def __init__(self, parent=None, initial_level=2, max_level=4):
+        super().__init__(parent)
+        self.level = initial_level
+        self.max_level = max_level
+        
+        self.setFixedHeight(22)
+        self.setStyleSheet(styles.SPEED_CAPSULE_STYLE)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self.btn_minus = QPushButton("−")
+        self.btn_minus.setFixedSize(30, 22)
+        self.btn_minus.setStyleSheet(styles.SPEED_MINUS_STYLE)
+        self.btn_minus.clicked.connect(self.decrease)
+        layout.addWidget(self.btn_minus)
+
+        seg_container = QWidget()
+        seg_layout = QHBoxLayout(seg_container)
+        seg_layout.setContentsMargins(0, 0, 0, 0)
+        seg_layout.setSpacing(2)
+        self.segments = []
+        for _ in range(self.max_level):
+            seg = QFrame()
+            seg.setFixedSize(10, 4) 
+            seg_layout.addWidget(seg)
+            self.segments.append(seg)
+        layout.addWidget(seg_container)
+
+        self.btn_plus = QPushButton("+")
+        self.btn_plus.setFixedSize(30, 22)
+        self.btn_plus.setStyleSheet(styles.SPEED_PLUS_STYLE)
+        self.btn_plus.clicked.connect(self.increase)
+        layout.addWidget(self.btn_plus)
+
+        self.update_display()
+
+    def decrease(self):
+        if self.level > 1:
+            self.level -= 1
+            self.update_display()
+
+    def increase(self):
+        if self.level < self.max_level:
+            self.level += 1
+            self.update_display()
+
+    def update_display(self):
+        for i, seg in enumerate(self.segments):
+            seg.setStyleSheet(styles.SPEED_SEG_ON_STYLE if i < self.level else styles.SPEED_SEG_OFF_STYLE)
+
+# ==========================================
 # 大型面板區塊 (Blocks)
 # ==========================================
 class BaseBlock(QFrame):
@@ -284,7 +330,6 @@ class CustomTopBar(QFrame):
         title_lbl = QLabel("Parol Stream")
         title_lbl.setFont(styles.FONT_TITLE)
         layout.addWidget(title_lbl)
-
         layout.addStretch(1)
 
         self.btn_play = self._create_btn('mdi.motion-play-outline')
@@ -355,33 +400,52 @@ class CustomTopBar(QFrame):
         )
         
         msg_box.setStyleSheet(styles.DARK_MESSAGE_BOX_STYLE)
-        
         msg_box.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+        msg_box.setDefaultButton(QMessageBox.StandardButton.Cancel)
         
-        # 針對「確認」按鈕做覆蓋，給予危險操作專屬的橘色警告反饋
         ok_btn = msg_box.button(QMessageBox.StandardButton.Ok)
         ok_btn.setText("Proceed")
         ok_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #b37700; 
-                border: 1px solid #d99000; 
-                color: #ffffff;
-            }
-            QPushButton:hover {
-                background-color: #cc8800;
-            }
+            QPushButton {background-color: #b37700; border: 1px solid #d99000; color: #ffffff;}
+            QPushButton:hover {background-color: #cc8800;}
         """)
         
         if msg_box.exec() == QMessageBox.StandardButton.Ok:
-            print("[System] Homing sequence initiated...")
+            main_win = self.window()
+            homing_cmd = "<999999,999999,999999,999999,999999,999999,1.0,0>\n"
+            
+            if hasattr(main_win, 'serial_manager') and main_win.serial_manager.is_connected:
+                main_win.serial_manager.send_command(homing_cmd)
+                if hasattr(main_win, 'log_widget'):
+                    main_win.log_widget.append_log("[System] Homing sequence initiated...")
+            else:
+                if hasattr(main_win, 'log_widget'):
+                    main_win.log_widget.append_log("[ERROR] Homing failed: Controller not connected.")
 
-# ==========================================
-# 升級版：可即時手動輸入編輯的 MonitorWidget
-# ==========================================
+class MonitorLineEdit(QLineEdit):
+    def __init__(self, contents="0.00", parent=None):
+        super().__init__(contents, parent)
+        self.setReadOnly(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.is_locked = False 
+
+    def mousePressEvent(self, event):
+        if self.is_locked:
+            event.ignore()
+            return
+            
+        super().mousePressEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton and self.isReadOnly():
+            self.setReadOnly(False)
+            QTimer.singleShot(0, self.selectAll)
+
+    def focusOutEvent(self, event):
+        self.setReadOnly(True)
+        super().focusOutEvent(event)
+
 class MonitorWidget(QFrame):
-    # 👑 定義手動編輯訊號，與 gui.py 大腦對接
-    tcp_edit_requested = Signal(str, float)    # 範例: ('X', 150.50)
-    joint_edit_requested = Signal(int, float)  # 範例: (0, 45.00) -> 代表 J1
+    tcp_edit_requested = Signal(str, float)    
+    joint_edit_requested = Signal(int, float)  
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -390,13 +454,10 @@ class MonitorWidget(QFrame):
         main_layout.setContentsMargins(2, 2, 2, 2)
         main_layout.setSpacing(4) 
         
-        self.inputs = {}  # 儲存所有輸入框元件
-        
-        # 建立防呆驗證器：限制只能輸入數字、正負號、小數點，且最多兩位小數
+        self.inputs = {} 
         self.validator = QDoubleValidator(-5000.0, 5000.0, 2, self)
         self.validator.setNotation(QDoubleValidator.Notation.StandardNotation)
         
-        # --- Row 1: 笛卡爾座標 (TCP) ---
         row1_layout = QHBoxLayout()
         row1_layout.setContentsMargins(0, 0, 0, 0)
         row1_layout.setSpacing(2)
@@ -407,7 +468,6 @@ class MonitorWidget(QFrame):
         row1_layout.addWidget(self.btn_copy_tcp)
         main_layout.addLayout(row1_layout)
 
-        # --- Row 2: 關節角度 (Joints) ---
         row2_layout = QHBoxLayout()
         row2_layout.setContentsMargins(0, 0, 0, 0)
         row2_layout.setSpacing(2)
@@ -432,27 +492,14 @@ class MonitorWidget(QFrame):
         hbox.addWidget(title)
         hbox.addStretch(1)
         
-        # 👑 將原 QLabel 升級為 QLineEdit，並套用偽裝外觀樣式
-        value_input = QLineEdit("0.00") 
+        value_input = MonitorLineEdit("0.00") 
         value_input.setValidator(self.validator)
         value_input.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         value_input.setStyleSheet("""
-            QLineEdit { 
-                background: transparent; 
-                border: none; 
-                color: #00e6b8; 
-                font-family: 'Consolas', monospace; 
-                font-size: 12px; 
-                padding: 0px;
-            }
-            QLineEdit:focus { 
-                color: #ffffff; 
-                background-color: rgba(255, 255, 255, 0.12);
-                border-radius: 2px;
-            }
+            QLineEdit { background: transparent; border: none; color: #00e6b8; font-family: 'Consolas', monospace; font-size: 11px; padding: 0px; }
+            QLineEdit:focus { color: #ffffff; background-color: rgba(255, 255, 255, 0.12); border-radius: 2px; }
         """)
         
-        # 監聽編輯完成事件 (按下 Enter 或點擊他處失去焦點時觸發)
         if group == "TCP":
             value_input.editingFinished.connect(lambda n=name, inp=value_input: self._on_tcp_edited(n, inp))
         else:
@@ -461,28 +508,36 @@ class MonitorWidget(QFrame):
         hbox.addWidget(value_input)
         self.inputs[name] = value_input 
         return frame
+
+    def set_locked(self, locked):
+        for inp in self.inputs.values():
+            inp.is_locked = locked
+            if locked:
+                inp.clearFocus()
+                inp.setReadOnly(True)
+                inp.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+                inp.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            else:
+                inp.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+                inp.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
     
     def _on_tcp_edited(self, name, line_edit):
-        """當 TCP 輸入框編輯完成"""
         text = line_edit.text()
         if text:
             try:
                 val = float(text)
                 self.tcp_edit_requested.emit(name, val)
-            except ValueError:
-                pass
-        line_edit.clearFocus()  # 強制交出焦點，恢復即時刷新
+            except ValueError: pass
+        line_edit.clearFocus() 
 
     def _on_joint_edited(self, index, line_edit):
-        """當關節角度輸入框編輯完成"""
         text = line_edit.text()
         if text:
             try:
                 val = float(text)
                 self.joint_edit_requested.emit(index, val)
-            except ValueError:
-                pass
-        line_edit.clearFocus()  # 強制交出焦點，恢復即時刷新
+            except ValueError: pass
+        line_edit.clearFocus() 
 
     def _create_copy_btn(self, callback):
         btn = QPushButton()
@@ -495,30 +550,22 @@ class MonitorWidget(QFrame):
         return btn
 
     def update_tcp(self, x, y, z, rx, ry, rz):
-        """即時刷新界面：加入焦點檢查防護"""
         for name, val in zip(["X", "Y", "Z", "Rx", "Ry", "Rz"], [x, y, z, rx, ry, rz]):
-            # 🛡️ 絕對防護：如果操作員正在該輸入框輸入文字，不要用系統舊數據去覆蓋它！
             if not self.inputs[name].hasFocus():
                 self.inputs[name].setText(f"{val:.2f}")
-                
         self.current_tcp_str = f"X:{x:.2f} Y:{y:.2f} Z:{z:.2f} Rx:{rx:.2f} Ry:{ry:.2f} Rz:{rz:.2f}"
 
     def update_joints(self, *joints):
-        """即時刷新界面：加入焦點檢查防護"""
         for name, val in zip(["θ1", "θ2", "θ3", "θ4", "θ5", "θ6"], joints):
-            # 🛡️ 絕對防護
             if not self.inputs[name].hasFocus():
                 self.inputs[name].setText(f"{val:.2f}")
-                
         self.current_joints_str = " ".join([f"J{i+1}:{j:.2f}" for i, j in enumerate(joints)])
 
     def copy_tcp_to_clipboard(self):
-        if hasattr(self, 'current_tcp_str'): 
-            QApplication.clipboard().setText(self.current_tcp_str)
+        if hasattr(self, 'current_tcp_str'): QApplication.clipboard().setText(self.current_tcp_str)
 
     def copy_joints_to_clipboard(self):
-        if hasattr(self, 'current_joints_str'): 
-            QApplication.clipboard().setText(self.current_joints_str)
+        if hasattr(self, 'current_joints_str'): QApplication.clipboard().setText(self.current_joints_str)
 
 class JogWidget(BaseBlock):
     def __init__(self, parent=None):
@@ -553,40 +600,9 @@ class JogWidget(BaseBlock):
         joint_title_row.addWidget(title_joint)
         joint_title_row.addStretch(1)
 
-        self.j_speed_level = 2 
-        self.is_cartesian_continuous = True
-        j_speed_ctrl = QFrame()
-        j_speed_ctrl.setFixedHeight(22)
-        j_speed_ctrl.setStyleSheet(styles.SPEED_CAPSULE_STYLE)
-        j_spd_layout = QHBoxLayout(j_speed_ctrl)
-        j_spd_layout.setContentsMargins(0, 0, 0, 0)
-        j_spd_layout.setSpacing(4)
-
-        self.btn_j_spd_minus = QPushButton("−")
-        self.btn_j_spd_minus.setFixedSize(30, 22)
-        self.btn_j_spd_minus.setStyleSheet(styles.SPEED_MINUS_STYLE)
-        self.btn_j_spd_minus.clicked.connect(self.decrease_j_speed)
-        j_spd_layout.addWidget(self.btn_j_spd_minus)
-
-        j_seg_container = QWidget()
-        j_seg_layout = QHBoxLayout(j_seg_container)
-        j_seg_layout.setContentsMargins(0, 0, 0, 0)
-        j_seg_layout.setSpacing(2)
-        self.j_speed_segments = []
-        for _ in range(4):
-            seg = QFrame()
-            seg.setFixedSize(10, 4) 
-            j_seg_layout.addWidget(seg)
-            self.j_speed_segments.append(seg)
-        j_spd_layout.addWidget(j_seg_container)
-
-        self.btn_j_spd_plus = QPushButton("+")
-        self.btn_j_spd_plus.setFixedSize(30, 22)
-        self.btn_j_spd_plus.setStyleSheet(styles.SPEED_PLUS_STYLE)
-        self.btn_j_spd_plus.clicked.connect(self.increase_j_speed)
-        j_spd_layout.addWidget(self.btn_j_spd_plus)
-
-        joint_title_row.addWidget(j_speed_ctrl)
+        # 使用 DRY 重構後的速度控制器
+        self.j_speed_ctrl = SpeedControlWidget()
+        joint_title_row.addWidget(self.j_speed_ctrl)
         joint_title_row.addSpacing(10)
 
         btn_add_joint = QPushButton("+")
@@ -597,7 +613,6 @@ class JogWidget(BaseBlock):
 
         upper_layout = QHBoxLayout()
         upper_layout.setContentsMargins(10, 0, 10, 0)
-
         jog_area = QVBoxLayout()
         jog_area.setAlignment(Qt.AlignmentFlag.AlignTop)
         jog_area.setSpacing(5)
@@ -636,27 +651,12 @@ class JogWidget(BaseBlock):
             slider.valueChanged.connect(self.on_joint_slider_changed)
             slider.valueChanged.connect(lambda val, label=val_lbl: label.setText(f"{val/100:.1f}"))
 
-            # 👇 更新：左側按鈕換成 transfer-left 圖示與專屬樣式
-            btn_minus = QPushButton(qta.icon('mdi.transfer-left', color='#ffffff'), "")
-            btn_minus.setIconSize(QSize(16, 16)) # 稍微限縮圖示大小，完美塞進 22x22 的框裡
-            btn_minus.setFixedSize(22, 22)
-            btn_minus.setStyleSheet(styles.BTN_JOG_SLIDER_STYLE)
-            btn_minus.setAutoRepeat(True)            
-            btn_minus.setAutoRepeatDelay(250)        
-            btn_minus.setAutoRepeatInterval(10)      
-            btn_minus.clicked.connect(lambda *args, idx=i-1: self._step_joint(idx, -1))
+            # 使用 DRY 共用按鈕創建函式
+            btn_minus = self._create_jog_btn('mdi.transfer-left', lambda *args, idx=i-1: self._step_joint(idx, -1))
             row.addWidget(btn_minus)
             row.addWidget(slider)
 
-            # 👇 更新：右側按鈕換成 transfer-right 圖示與專屬樣式
-            btn_plus = QPushButton(qta.icon('mdi.transfer-right', color='#ffffff'), "")
-            btn_plus.setIconSize(QSize(16, 16))
-            btn_plus.setFixedSize(22, 22)
-            btn_plus.setStyleSheet(styles.BTN_JOG_SLIDER_STYLE)
-            btn_plus.setAutoRepeat(True)
-            btn_plus.setAutoRepeatDelay(250)
-            btn_plus.setAutoRepeatInterval(10)
-            btn_plus.clicked.connect(lambda *args, idx=i-1: self._step_joint(idx, 1))
+            btn_plus = self._create_jog_btn('mdi.transfer-right', lambda *args, idx=i-1: self._step_joint(idx, 1))
             row.addWidget(btn_plus)
 
             row.insertSpacerItem(1, QSpacerItem(5, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum))
@@ -679,39 +679,11 @@ class JogWidget(BaseBlock):
         cart_title_row.addWidget(title_cart)
         cart_title_row.addStretch(1)
 
-        self.c_speed_level = 2 
-        c_speed_ctrl = QFrame()
-        c_speed_ctrl.setFixedHeight(22)
-        c_speed_ctrl.setStyleSheet(styles.SPEED_CAPSULE_STYLE)
-        c_spd_layout = QHBoxLayout(c_speed_ctrl)
-        c_spd_layout.setContentsMargins(0, 0, 0, 0)
-        c_spd_layout.setSpacing(4)
-
-        self.btn_c_spd_minus = QPushButton("−")
-        self.btn_c_spd_minus.setFixedSize(30, 22)
-        self.btn_c_spd_minus.setStyleSheet(styles.SPEED_MINUS_STYLE)
-        self.btn_c_spd_minus.clicked.connect(self.decrease_c_speed)
-        c_spd_layout.addWidget(self.btn_c_spd_minus)
-
-        c_seg_container = QWidget()
-        c_seg_layout = QHBoxLayout(c_seg_container)
-        c_seg_layout.setContentsMargins(0, 0, 0, 0)
-        c_seg_layout.setSpacing(2)
-        self.c_speed_segments = []
-        for _ in range(4):
-            seg = QFrame()
-            seg.setFixedSize(10, 4) 
-            c_seg_layout.addWidget(seg)
-            self.c_speed_segments.append(seg)
-        c_spd_layout.addWidget(c_seg_container)
-
-        self.btn_c_spd_plus = QPushButton("+")
-        self.btn_c_spd_plus.setFixedSize(30, 22)
-        self.btn_c_spd_plus.setStyleSheet(styles.SPEED_PLUS_STYLE)
-        self.btn_c_spd_plus.clicked.connect(self.increase_c_speed)
-        c_spd_layout.addWidget(self.btn_c_spd_plus)
-
-        cart_title_row.addWidget(c_speed_ctrl)
+        self.is_cartesian_continuous = True
+        
+        # 使用 DRY 重構後的速度控制器
+        self.c_speed_ctrl = SpeedControlWidget()
+        cart_title_row.addWidget(self.c_speed_ctrl)
         main_layout.addLayout(cart_title_row)
 
         cart_main_layout = QHBoxLayout()
@@ -732,18 +704,15 @@ class JogWidget(BaseBlock):
         self.btn_jog_mode = QPushButton("Cont")
         self.btn_jog_mode.setCheckable(True)
         self.btn_jog_mode.setFixedSize(45, 32) 
-        self.btn_jog_mode.setStyleSheet(styles.BTN_FRAME_TOGGLE_STYLE) 
+        self.btn_jog_mode.setStyleSheet(styles.BTN_STEP_TOGGLE_STYLE)
         self.btn_jog_mode.toggled.connect(self.toggle_cartesian_mode)
         cart_ctrl_tower.addWidget(self.btn_jog_mode)
 
-        # 1. 建立一個迷你的自訂 SpinBox，專門用來處理去 .0 的邏輯
         class SmartStepSpinBox(QDoubleSpinBox):
             def textFromValue(self, value):
-                if value == int(value):
-                    return str(int(value))
+                if value == int(value): return str(int(value))
                 return str(value)
 
-        # 2. 更新容器與輸入框設定
         self.step_container = QWidget()
         step_layout = QVBoxLayout(self.step_container)
         step_layout.setContentsMargins(0, 0, 0, 0) 
@@ -756,12 +725,9 @@ class JogWidget(BaseBlock):
         self.spin_step.setDecimals(2)
         self.spin_step.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons) 
         self.spin_step.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        # 🌟 關鍵修正：直接套用 styles.py 裡整理好的 CSS 樣式
         self.spin_step.setStyleSheet(styles.SPIN_STEP_STYLE)
         
         step_layout.addWidget(self.spin_step)
-        
         self.step_container.setVisible(False)
         cart_ctrl_tower.addWidget(self.step_container)
 
@@ -782,11 +748,9 @@ class JogWidget(BaseBlock):
                 btn.setFixedHeight(32)
                 btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
                 btn.setStyleSheet(styles.BTN_CARTESIAN_STYLE)
-                
                 btn.setAutoRepeat(True)
                 btn.setAutoRepeatDelay(250)
                 btn.setAutoRepeatInterval(10)
-                
                 btn.clicked.connect(lambda checked=False, bl=base_label: self.on_cartesian_clicked(bl))
                 cart_grid.addWidget(btn, row_idx, col_idx)
                 self.cart_buttons.append((btn, base_label))
@@ -805,39 +769,9 @@ class JogWidget(BaseBlock):
         ee_title_row.addWidget(title_ee)
         ee_title_row.addStretch(1)
 
-        self.ee_speed_level = 2 
-        ee_speed_ctrl = QFrame()
-        ee_speed_ctrl.setFixedHeight(22)
-        ee_speed_ctrl.setStyleSheet(styles.SPEED_CAPSULE_STYLE)
-        ee_spd_layout = QHBoxLayout(ee_speed_ctrl)
-        ee_spd_layout.setContentsMargins(0, 0, 0, 0)
-        ee_spd_layout.setSpacing(4)
-
-        self.btn_ee_spd_minus = QPushButton("−")
-        self.btn_ee_spd_minus.setFixedSize(30, 22)
-        self.btn_ee_spd_minus.setStyleSheet(styles.SPEED_MINUS_STYLE)
-        self.btn_ee_spd_minus.clicked.connect(self.decrease_ee_speed)
-        ee_spd_layout.addWidget(self.btn_ee_spd_minus)
-
-        ee_seg_container = QWidget()
-        ee_seg_layout = QHBoxLayout(ee_seg_container)
-        ee_seg_layout.setContentsMargins(0, 0, 0, 0)
-        ee_seg_layout.setSpacing(2)
-        self.ee_speed_segments = []
-        for _ in range(4):
-            seg = QFrame()
-            seg.setFixedSize(10, 4) 
-            ee_seg_layout.addWidget(seg)
-            self.ee_speed_segments.append(seg)
-        ee_spd_layout.addWidget(ee_seg_container)
-
-        self.btn_ee_spd_plus = QPushButton("+")
-        self.btn_ee_spd_plus.setFixedSize(30, 22)
-        self.btn_ee_spd_plus.setStyleSheet(styles.SPEED_PLUS_STYLE)
-        self.btn_ee_spd_plus.clicked.connect(self.increase_ee_speed)
-        ee_spd_layout.addWidget(self.btn_ee_spd_plus)
-
-        ee_title_row.addWidget(ee_speed_ctrl)
+        # 使用 DRY 重構後的速度控制器
+        self.ee_speed_ctrl = SpeedControlWidget()
+        ee_title_row.addWidget(self.ee_speed_ctrl)
         ee_title_row.addSpacing(10)
 
         btn_add_gripper = QPushButton("+")
@@ -875,26 +809,17 @@ class JogWidget(BaseBlock):
         g_slider_row.setContentsMargins(0, 0, 0, 0)
         g_slider_row.setSpacing(10)
 
-        g_btn_minus = QPushButton(qta.icon('mdi.transfer-left', color='#ffffff'), "")
-        g_btn_minus.setIconSize(QSize(16, 16))
-        g_btn_minus.setFixedSize(22, 22)
-        g_btn_minus.setStyleSheet(styles.BTN_JOG_SLIDER_STYLE)
-        g_btn_minus.setAutoRepeat(True)
-        g_btn_minus.clicked.connect(lambda checked=False: self.g_slider.setValue(self.g_slider.value() - 1))
+        # 使用 DRY 共用按鈕創建函式
+        g_btn_minus = self._create_jog_btn('mdi.transfer-left', lambda checked=False: self.g_slider.setValue(self.g_slider.value() - 1))
         g_slider_row.addWidget(g_btn_minus)
 
-        self.g_slider = GripperSlider(Qt.Orientation.Horizontal)
+        self.g_slider = QSlider(Qt.Orientation.Horizontal) 
         self.g_slider.setRange(0, 100)
         self.g_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.g_slider.setStyleSheet(styles.SLIDER_GRIPPER_STYLE)
         g_slider_row.addWidget(self.g_slider)
 
-        g_btn_plus = QPushButton(qta.icon('mdi.transfer-right', color='#ffffff'), "")
-        g_btn_plus.setIconSize(QSize(16, 16))
-        g_btn_plus.setFixedSize(22, 22)
-        g_btn_plus.setStyleSheet(styles.BTN_JOG_SLIDER_STYLE)
-        g_btn_plus.setAutoRepeat(True)
-        g_btn_plus.clicked.connect(lambda checked=False: self.g_slider.setValue(self.g_slider.value() + 1))
+        g_btn_plus = self._create_jog_btn('mdi.transfer-right', lambda checked=False: self.g_slider.setValue(self.g_slider.value() + 1))
         g_slider_row.addWidget(g_btn_plus)
 
         g_slider_row.insertSpacerItem(1, QSpacerItem(5, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum))
@@ -906,99 +831,75 @@ class JogWidget(BaseBlock):
         self.g_slider.valueChanged.connect(lambda val, label=g_val_lbl: label.setText(f"{val} %"))
         main_layout.addLayout(lower_layout) 
 
-        self.update_j_speed_display()
-        self.update_c_speed_display()
-        self.update_ee_speed_display()
+    # ==========================================
+    # 屬性代理 (保證與 gui.py 完美相容)
+    # ==========================================
+    @property
+    def j_speed_level(self):
+        return self.j_speed_ctrl.level
 
-    # == 連動邏輯區 ==
+    @property
+    def c_speed_level(self):
+        return self.c_speed_ctrl.level
+
+    @property
+    def ee_speed_level(self):
+        return self.ee_speed_ctrl.level
+
+    # ==========================================
+    # 共用 UI 創建函式
+    # ==========================================
+    def _create_jog_btn(self, icon_name, callback):
+        """將重複的手動點動 (Jog) 按鈕邏輯獨立抽取"""
+        btn = QPushButton(qta.icon(icon_name, color='#ffffff'), "")
+        btn.setIconSize(QSize(16, 16))
+        btn.setFixedSize(22, 22)
+        btn.setStyleSheet(styles.BTN_JOG_SLIDER_STYLE)
+        btn.setAutoRepeat(True)
+        btn.setAutoRepeatDelay(250)
+        btn.setAutoRepeatInterval(10)
+        btn.clicked.connect(callback)
+        return btn
+
+    # ==========================================
+    # 連動邏輯區
+    # ==========================================
     def on_joint_slider_changed(self):
-        """這是使用者「手動」拉滑桿時觸發的，單向把數據送給 3D 畫面"""
         angles = [float(s.value()) / 100 for s in self.joint_sliders]
         if hasattr(self, 'update_3d_callback') and self.update_3d_callback:
             self.update_3d_callback(angles)
 
-    # == 連動與按鈕邏輯區 ==
     def _step_joint(self, index, sign):
-        """處理 + / - 按鈕的連發步伐，根據速度等級動態計算移動角度"""
-        
-        # 1. 讀取目前的關節速度等級 (假設你的變數叫 j_speed_level)
-        # 如果你命名的不同，請把 'j_speed_level' 換成你實際的變數名稱！
-        speed_level = getattr(self, 'j_speed_level', 2) 
-        
-        # 2. 依照等級計算步伐大小 (比照笛卡爾區的計算邏輯)
-        # 例如: Level 1 = 0.5度, Level 2 = 1.0度, Level 3 = 2.0度, Level 4 = 4.0度
-        step_angle = sign * 0.25 * (2 ** (speed_level - 1))
-        
-        # 3. 轉換為 Slider 的整數單位 (乘以 100) 並執行移動
+        step_angle = sign * 0.25 * (2 ** (self.j_speed_level - 1))
         slider = self.joint_sliders[index]
         step_val = int(step_angle * 100.0) 
-        
         new_val = slider.value() + step_val
         new_val = max(slider.minimum(), min(slider.maximum(), new_val)) 
         slider.setValue(new_val)
 
     def on_cartesian_clicked(self, base_label):
         if hasattr(self, 'cartesian_jog_callback') and self.cartesian_jog_callback:
-            # 1. 解析按鈕字串 (X, Y, Rx... 以及正負號)
             axis_str = base_label[:-1] 
             sign = 1 if base_label[-1] == '+' else -1
             is_rot = len(axis_str) > 1
             axis_arg = axis_str if is_rot else axis_str.lower()
             
-            # 2. 神經分流：判斷目前是連續還是步進模式
-            is_continuous = getattr(self, 'is_cartesian_continuous', True)
-            
-            if is_continuous:
-                # 【連續模式】依照速度等級計算微小步進量 (配合 AutoRepeat 達到平滑移動)
+            if self.is_cartesian_continuous:
                 step_val = sign * 0.5 * (2 ** (self.c_speed_level - 1))
             else:
-                # 【步進模式】直接抓取設定框的精準數值 (按一次只會觸發一次)
                 step_val = sign * self.spin_step.value()
                 
-            # 3. 取得當前座標系設定
             frame = "Tool" if self.btn_frame_toggle.isChecked() else "World"
-            
-            # 4. 統一發送給大腦神經
             self.cartesian_jog_callback(axis_arg, step_val, frame)
 
     def update_joints_from_ik(self, float_angles):
-        """這是「系統/播放大腦」要求滑桿跟上的時候觸發的"""
         for i, slider in enumerate(self.joint_sliders):
-            # 暫時封印信號，避免死循環
             slider.blockSignals(True)
             slider.setValue(int(round(float_angles[i] * 100)))
             slider.blockSignals(False)
             
             if hasattr(self, 'joint_labels') and i < len(self.joint_labels):
                 self.joint_labels[i].setText(f"{float_angles[i]:.1f}")
-
-    def decrease_j_speed(self):
-        if self.j_speed_level > 1: 
-            self.j_speed_level -= 1
-            self.update_j_speed_display()
-
-    def increase_j_speed(self):
-        if self.j_speed_level < 4: 
-            self.j_speed_level += 1
-            self.update_j_speed_display()
-
-    def update_j_speed_display(self):
-        for i, seg in enumerate(self.j_speed_segments):
-            seg.setStyleSheet(styles.SPEED_SEG_ON_STYLE if i < self.j_speed_level else styles.SPEED_SEG_OFF_STYLE) 
-
-    def decrease_c_speed(self):
-        if self.c_speed_level > 1: 
-            self.c_speed_level -= 1
-            self.update_c_speed_display()
-
-    def increase_c_speed(self):
-        if self.c_speed_level < 4: 
-            self.c_speed_level += 1
-            self.update_c_speed_display()
-
-    def update_c_speed_display(self):
-        for i, seg in enumerate(self.c_speed_segments):
-            seg.setStyleSheet(styles.SPEED_SEG_ON_STYLE if i < self.c_speed_level else styles.SPEED_SEG_OFF_STYLE)
 
     def toggle_cartesian_frame(self, checked):
         if checked:
@@ -1011,9 +912,7 @@ class JogWidget(BaseBlock):
             btn.setText(f"{prefix}{base_label}")
 
     def toggle_cartesian_mode(self, checked):
-        """切換連續 (Cont) 與步進 (Step) 模式"""
         if checked:
-            # 切換為步進 (Step) 模式
             self.btn_jog_mode.setText("Step")
             self.is_cartesian_continuous = False
             self.step_container.setVisible(True)  
@@ -1021,7 +920,6 @@ class JogWidget(BaseBlock):
             for btn, _ in self.cart_buttons:
                 btn.setAutoRepeat(False)
         else:
-            # 切換為連續 (Cont) 模式
             self.btn_jog_mode.setText("Cont")
             self.is_cartesian_continuous = True
             self.step_container.setVisible(False)
@@ -1031,33 +929,14 @@ class JogWidget(BaseBlock):
                 btn.setAutoRepeatDelay(250)
                 btn.setAutoRepeatInterval(10)
 
-    def decrease_ee_speed(self):
-        if self.ee_speed_level > 1: 
-            self.ee_speed_level -= 1
-            self.update_ee_speed_display()
-
-    def increase_ee_speed(self):
-        if self.ee_speed_level < 4: 
-            self.ee_speed_level += 1
-            self.update_ee_speed_display()
-
-    def update_ee_speed_display(self):
-        for i, seg in enumerate(self.ee_speed_segments):
-            seg.setStyleSheet(styles.SPEED_SEG_ON_STYLE if i < self.ee_speed_level else styles.SPEED_SEG_OFF_STYLE)
-import os
-from datetime import datetime
-from PySide6.QtCore import QRunnable, QThreadPool, QObject, Signal
-from PySide6.QtGui import QPixmap
-# 建議放在檔案最上方（class 外面）
 class _ScreenshotSaveSignals(QObject):
     finished = Signal(str)
     error = Signal(str)
 
 class _ScreenshotSaveTask(QRunnable):
-    """在背景執行緒做 PNG 存檔，並使用執行緒安全的 QImage 避免崩潰"""
     def __init__(self, image: QImage, filepath: str):
         super().__init__()
-        self.image = image # 👈 接收 thread-safe 的 QImage
+        self.image = image 
         self.filepath = filepath
         self.signals = _ScreenshotSaveSignals()
 
@@ -1105,12 +984,13 @@ class View3DWidget(BaseBlock):
 
         self._screenshot_pool = QThreadPool() 
         
-        
-        
         self._active_menu = None
         self._updating_btns = False 
         self.btn_translate.toggled.connect(self.on_translate_toggled)
         self.btn_rotate.toggled.connect(self.on_rotate_toggled)
+
+    def set_base_manager(self, base_manager):
+        self.robot_view.set_base_manager(base_manager)
 
     def _handle_spacebar(self):
         focus_w = QApplication.focusWidget()
@@ -1157,14 +1037,14 @@ class View3DWidget(BaseBlock):
             self.btn_rotate.setChecked(False)
 
     def on_camera_clicked(self):
-        """非阻塞截圖：主執行緒快速 grab 並轉成 QImage，背景執行緒安全寫檔"""
-        QApplication.processEvents() # 確保畫面最新
-        pixmap = self.grab() # 👈 改回 self.grab()，把 MonitorWidget 的數據一起拍下來！
-        image = pixmap.toImage() # 👈 轉換為 thread-safe 的 QImage
+        QApplication.processEvents() 
+        pixmap = self.grab() 
+        image = pixmap.toImage() 
 
         screenshot_dir = os.path.join(os.getcwd(), "screenshots")
         os.makedirs(screenshot_dir, exist_ok=True)
-        filename = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3] + ".png"
+        
+        filename = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3] + ".png"
         filepath = os.path.join(screenshot_dir, filename)
 
         task = _ScreenshotSaveTask(image, filepath)
@@ -1259,41 +1139,30 @@ class LogWidget(BaseBlock):
         self.log_console.setStyleSheet(styles.LOG_CONSOLE_STYLE)
         layout.addWidget(self.log_console)
 
-        # 綁定垃圾桶清除功能
         self.btn_clear = self.nav_bar.nav_buttons[0]
         self.btn_clear.setToolTip("Clear Log")
         self.btn_clear.clicked.connect(self.log_console.clear)
 
-        # 初始化第一道訊息
         self.append_log("[System] Parol Stream OS initialized.")
 
     def append_log(self, msg):
-        """根據字串內容自動上色分析引擎"""
-        color = "#d4d4d4" # 預設一般訊息 (灰色)
+        color = "#d4d4d4" 
 
-        # 1. 轉義 HTML 特殊字元 (避免 <STOP> 這種帶括號的指令讓文字方塊排版壞掉)
         safe_msg = str(msg).replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
         msg_upper = safe_msg.upper()
 
-        # 2. 關鍵字分析與上色 (顏色對齊 VS Code 經典深色佈景)
         if "[ERROR]" in msg_upper or "[STOP]" in msg_upper or "錯誤" in msg_upper or "FAILED" in msg_upper:
-            color = "#ff4444" # 錯誤 (紅)
-            
+            color = "#ff4444" 
         elif "[WARNING]" in msg_upper or "警告" in msg_upper or "TIMEOUT" in msg_upper:
-            color = "#e6a800" # 警告 (橘黃)
-            
+            color = "#e6a800" 
         elif "[SYSTEM]" in msg_upper or "系統" in msg_upper:
-            color = "#00a8e6" # 系統提示 (藍)
-            
+            color = "#00a8e6" 
         elif "[HW]" in msg_upper or "CONNECTED" in msg_upper or "DISCONNECTED" in msg_upper:
-            color = "#c586c0" # 硬體通訊 (紫)
-            
+            color = "#c63bbb" 
         elif "RECORDED" in msg_upper or "UPDATED" in msg_upper or "DELETED" in msg_upper or "[CODE]" in msg_upper:
-            color = "#00e6b8" # 操作成功 (科技綠)
-            
-        elif "&GT;&GT;" in safe_msg: # 對應原本的 ">>" 或 ">>>"
-            color = "#d7ba7d" # 執行/跳轉動作 (淡棕)
+            color = "#00e6b8" 
+        elif "&GT;&GT;" in safe_msg: 
+            color = "#d7ba7d" 
 
-        # 3. 輸出 HTML 格式字串
         html_msg = f'<span style="color: {color};">{safe_msg}</span>'
         self.log_console.append(html_msg)

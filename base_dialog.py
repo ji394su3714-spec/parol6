@@ -60,6 +60,7 @@ class BaseManagerDialog(QDialog):
         self.setWindowTitle("Base Frame Manager")
         self.setMinimumSize(450, 320)
         self.setStyleSheet(styles.PREFERENCES_DIALOG_STYLE)
+        self.setWindowIcon(qta.icon('mdi.view-grid-outline'))
         
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(15, 15, 15, 15)

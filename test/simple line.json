@@ -1,0 +1,98 @@
+[
+    {
+        "type": "SET_BASE",
+        "value": 0,
+        "name": "Base: Base 0 (World)",
+        "active": true
+    },
+    {
+        "type": "SET_TCP",
+        "value": 0,
+        "name": "Tool: Flange",
+        "active": true
+    },
+    {
+        "type": "LIN",
+        "name": "Point 1",
+        "joints": [
+            -0.0004,
+            10.7862,
+            41.2769,
+            -0.0003,
+            -52.061,
+            -0.0003
+        ],
+        "speed": 100.0,
+        "accel": 100.0,
+        "blend": "FINE",
+        "active": true,
+        "recorded_base_matrix": [
+            [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                0.0,
+                1.0,
+                0.0,
+                0.0
+            ],
+            [
+                0.0,
+                0.0,
+                1.0,
+                0.0
+            ],
+            [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ]
+        ]
+    },
+    {
+        "type": "LIN",
+        "name": "Point 2",
+        "joints": [
+            0.0,
+            33.85,
+            8.0,
+            0.0,
+            -41.84,
+            179.9
+        ],
+        "speed": 100.0,
+        "accel": 100.0,
+        "blend": "FINE",
+        "active": true,
+        "recorded_base_matrix": [
+            [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                0.0,
+                1.0,
+                0.0,
+                0.0
+            ],
+            [
+                0.0,
+                0.0,
+                1.0,
+                0.0
+            ],
+            [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ]
+        ]
+    }
+]

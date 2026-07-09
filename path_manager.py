@@ -27,7 +27,7 @@ class StreamingPathExecutor(QThread):
         self.serial_ref = serial_ref
         self.loop = loop 
         self._is_running = True
-        self.point_queue = queue.Queue(maxsize=300) 
+        self.point_queue = queue.Queue(maxsize=100) 
         self.producer_finished = False
         self.producer_error = False
 
@@ -36,7 +36,7 @@ class StreamingPathExecutor(QThread):
         prod_thread.start()
 
         self.log_signal.emit("[System] Compiling path, waiting for safe buffer level...")
-        while self.point_queue.qsize() < 290 and not self.producer_finished and self._is_running: 
+        while self.point_queue.qsize() < 99 and not self.producer_finished and self._is_running: 
             if self.producer_error: return
             self.msleep(10)
 
@@ -45,48 +45,51 @@ class StreamingPathExecutor(QThread):
         real_start_time = time.time()
         counter = 0
         interval = 0.010
-        gui_skip_frames = 6
+        gui_skip_frames =5
         self.update_signal.emit(list(self.start_joints))
         
         last_ik_joints = None
 
         while self._is_running:
+            # 優化 2：紀錄迴圈起始的絕對精確時間
+            loop_start = time.perf_counter() 
+            
             try:
                 item = self.point_queue.get(timeout=0.1)
                 
                 # ==========================================
-                # 🛡️ 狀態膠囊過濾網：嚴格攔截所有 dict，並強制 continue
+                # 狀態膠囊過濾網：嚴格攔截所有 dict，並強制 continue
                 # ==========================================
                 if isinstance(item, dict):
                     cmd_type = item.get("type")
-                    
                     if cmd_type == "LOG":
                         self.log_signal.emit(item["msg"])
-                        
                     elif cmd_type == "SET_TCP_CMD":
                         self.log_signal.emit(item["msg"])
-                        self.set_tcp_signal.emit(item["tool_idx"]) # 觸發 UI 換刀與箭頭重繪
-                        
+                        self.set_tcp_signal.emit(item["tool_idx"])
                     elif cmd_type == "SET_BASE_CMD":
                         self.log_signal.emit(item["msg"])
-                        self.set_base_signal.emit(item["base_idx"]) # 觸發 UI 換基座
+                        self.set_base_signal.emit(item["base_idx"])
+                    elif cmd_type == "DELAY_CMD":
+                        self.log_signal.emit(item["msg"])
+                        if self.serial_ref and self.serial_ref.is_connected:
+                            # 1. 確保 Arduino 把前面的動作全部走完，水桶徹底淨空
+                            if hasattr(self.serial_ref, 'wait_for_motion_complete'):
+                                self.serial_ref.wait_for_motion_complete(timeout=10.0)
+                        # 2. 物理鎮定休眠 (讓馬達慣性與微震動完全停止)
+                        time.sleep(item.get("value", 0.5))
                         
                     elif cmd_type == "EE_CMD":
                         self.log_signal.emit(item["msg"])
                         if self.serial_ref and self.serial_ref.is_connected:
                             if hasattr(self.serial_ref, 'wait_for_motion_complete'):
                                 self.serial_ref.wait_for_motion_complete(timeout=10.0)
-                            
                             self.serial_ref.send_command(item["cmd"])
-                            
                             if hasattr(self.serial_ref, 'wait_for_ee_done'):
                                 self.serial_ref.wait_for_ee_done(timeout=10.0)
-                                
-                    # 💡 最關鍵的一行：只要是字典膠囊，處理完絕對要跳過這個迴圈，不准往下送給手臂！
                     continue 
                 # ==========================================
 
-                # 如果不是膠囊，那就是真實的 6 軸座標，正常執行
                 ik_joints = item
                 last_ik_joints = ik_joints
                 
@@ -97,9 +100,14 @@ class StreamingPathExecutor(QThread):
                     self.serial_ref.send_joints(list(ik_joints), interval, move_mode=1)
                     self.serial_ref.wait_for_ok(timeout=3.0)
                 else:
-                    time.sleep(interval)
+                    # 優化 3：高精度補償延遲 (Busy-wait + Micro-sleep)
+                    # 徹底解決 Windows time.sleep 造成的 15.6ms 系統性頓挫
+                    target_time = loop_start + interval
+                    while time.perf_counter() < target_time:
+                        time.sleep(0.001) 
                     
                 counter += 1
+                
             except queue.Empty:
                 if self.producer_finished: 
                     if last_ik_joints is not None:
@@ -117,177 +125,185 @@ class StreamingPathExecutor(QThread):
         self.finished_signal.emit(real_total_time)
 
     def _producer_task(self):
-        current_seed = self.start_joints.copy()
-        prev_seed = self.start_joints.copy()
-        
+        current_seed = list(self.start_joints)
         pending_trajectory = None       
         pending_blend_str = 'FINE'      
-
         loop_count = 1  
 
         while self._is_running:
             if self.loop:
-                self.point_queue.put({
-                    "type": "LOG", 
-                    "msg": f">> Start executing the path for loop {loop_count}..."
-                }, block=True)
+                self.point_queue.put({"type": "LOG", "msg": f">> Start executing loop {loop_count}..."})
         
             for wp_idx, wp in enumerate(self.waypoint_list):
                 if not self._is_running: return
                 
                 move_type = wp.get("move_type", "LIN")
-                speed_factor = wp.get("speed_factor", 1.0)
-                accel_factor = wp.get("accel_factor", 1.0)
-                tcp_offset_mat = wp.get("tcp_offset_mat", np.eye(4))
+                # 新增這兩行：組合出 "型態 + 名稱" 的標籤 (例如 "[LIN] Point 3")
+                wp_name = wp.get("name", f"Point {wp_idx+1}")
+                display_label = f"[{move_type}] {wp_name}"
                 
-                curr_trajectory = []
-                msg = ""
+                # 處理不需要 IK 的輔助指令
+                if move_type in ["SET_TCP", "SET_BASE", "I/O"]:
+                    
+                    # 1. 遇到切換指令前，先將前面累積的軌跡結算並送出
+                    if pending_trajectory is not None:
+                        for ik_joints in pending_trajectory:
+                            if not self._is_running: return
+                            self.point_queue.put(ik_joints, block=True)
+                        pending_trajectory = None
+                        
+                    # 2. 處理 I/O
+                    if move_type == "I/O":
+                        ee_type = wp.get("action_type", "DIGITAL")
+                        ee_val = int(wp.get("value", 0))
+                        self.point_queue.put({
+                            "type": "EE_CMD", "cmd": f"<EE,{ee_type},{ee_val}>",
+                            "msg": f">> 執行工具動作: {ee_type} -> {ee_val}"
+                        }, block=True)
+                        
+                    # 3. 處理 SET_TCP，並自動注入 0.5s 物理鎮定延遲
+                    elif move_type == "SET_TCP":
+                        self.point_queue.put({
+                            "type": "SET_TCP_CMD", "tool_idx": int(wp.get("value", 0)),
+                            "msg": f">> 執行換刀: 切換至 [{wp.get('value')}] {wp.get('name', '')}" 
+                        }, block=True)
+                        
+                        self.point_queue.put({
+                            "type": "DELAY_CMD", "value": 0.5,
+                            #"msg": ">> [系統自動防護] TCP 切換，物理鎮定 0.5 秒"
+                        }, block=True)
+                        
+                    # 4. 處理 SET_BASE，並自動注入 0.5s 物理鎮定延遲
+                    elif move_type == "SET_BASE":
+                        self.point_queue.put({
+                            "type": "SET_BASE_CMD", "base_idx": int(wp.get("value", 0)),
+                            "msg": f">> 執行基座切換: 切換至 [{wp.get('value')}] {wp.get('name', '')}" 
+                        }, block=True)
+                        
+                        self.point_queue.put({
+                            "type": "DELAY_CMD", "value": 0.5,
+                            #"msg": ">> [系統自動防護] Base 切換，物理鎮定 0.5 秒"
+                        }, block=True)
+                        
+                    # 強制切斷連續融合
+                    pending_blend_str = 'FINE' 
+                    continue
+                
+                # 取得路徑生成器 (Generator)
+                gen, total_N, msg = None, 0, ""
                 
                 if move_type == "DELAY":
                     delay_time = wp.get("value", 0.0)
                     delay_steps = max(1, int(delay_time / 0.010))
-                    curr_trajectory = [current_seed] * delay_steps
+                    def delay_gen(seed, steps):
+                        for _ in range(steps): yield list(seed)
+                    gen = delay_gen(current_seed, delay_steps)
+                    total_N = delay_steps
                     msg = f"wait {delay_time} seconds..."
-
-                elif move_type == "SET_TCP":
-                    if pending_trajectory is not None:
-                        for ik_joints in pending_trajectory:
-                            if not self._is_running: return
-                            self.point_queue.put(ik_joints, block=True)
-                        pending_trajectory = None
-                    
-                    tool_idx = int(wp.get("value", 0))
-                    tool_name = wp.get("name", "") 
-                    
-                    self.point_queue.put({
-                        "type": "SET_TCP_CMD",
-                        "tool_idx": tool_idx,
-                        "msg": f">> 執行換刀: 切換至 [{tool_idx}] {tool_name}" 
-                    }, block=True)
-                    
-                    pending_blend_str = 'FINE' 
-                    continue
-
-                elif move_type == "SET_BASE":
-                    if pending_trajectory is not None:
-                        for ik_joints in pending_trajectory:
-                            if not self._is_running: return
-                            self.point_queue.put(ik_joints, block=True)
-                        pending_trajectory = None
-                    
-                    base_idx = int(wp.get("value", 0))
-                    base_name = wp.get("name", "") 
-                    
-                    self.point_queue.put({
-                        "type": "SET_BASE_CMD",
-                        "base_idx": base_idx,
-                        "msg": f">> 執行基座切換: 切換至 [{base_idx}] {base_name}" 
-                    }, block=True)
-                    
-                    pending_blend_str = 'FINE' 
-                    continue
-
-                elif move_type == "I/O":
-                    if pending_trajectory is not None:
-                        for ik_joints in pending_trajectory:
-                            if not self._is_running: return
-                            self.point_queue.put(ik_joints, block=True)
-                        pending_trajectory = None
-                    
-                    ee_type = wp.get("action_type", "DIGITAL")
-                    ee_val = int(wp.get("value", 0))
-                    self.point_queue.put({
-                        "type": "EE_CMD",
-                        "cmd": f"<EE,{ee_type},{ee_val}>",
-                        "msg": f">> 執行工具動作: {ee_type} -> {ee_val}"
-                    }, block=True)
-                    
-                    pending_blend_str = 'FINE' 
-                    continue
-                    
                 else:
+                    speed_factor = wp.get("speed_factor", 1.0)
+                    accel_factor = wp.get("accel_factor", 1.0)
+                    tcp_offset_mat = wp.get("tcp_offset_mat", np.eye(4))
                     target_joints = np.array(wp.get("target_joints", current_seed))
                     
                     if move_type == "PTP":
-                        exact_traj, t_tot, msg = kinematics.TrajectoryMathEngine.calculate_ptp_trajectory(
-                            current_seed, target_joints, speed_factor, accel_factor
-                        )
-                        curr_trajectory = exact_traj if exact_traj is not None else []
+                        gen, t_tot, msg, total_N = kinematics.TrajectoryMathEngine.calculate_ptp_trajectory(
+                            current_seed, target_joints, speed_factor, accel_factor)
                     elif move_type == "LIN":
-                        exact_traj, t_tot, msg = kinematics.TrajectoryMathEngine.calculate_lin_trajectory(
-                            current_seed, target_joints, tcp_offset_mat, speed_factor, accel_factor
-                        )
-                        curr_trajectory = exact_traj if exact_traj is not None else []
+                        gen, t_tot, msg, total_N = kinematics.TrajectoryMathEngine.calculate_lin_trajectory(
+                            current_seed, target_joints, tcp_offset_mat, speed_factor, accel_factor)
                     elif move_type == "CIRC":
-                        if "aux_joints" not in wp:
-                            self.error_signal.emit(f"Waypoint {wp_idx+1} failed: CIRC missing AUX")
-                            self.producer_error = True
-                            return
-                        exact_traj, t_tot, msg = kinematics.TrajectoryMathEngine.calculate_circ_trajectory(
-                            current_seed, wp["aux_joints"], target_joints, tcp_offset_mat, speed_factor, accel_factor
-                        )
-                        curr_trajectory = exact_traj if exact_traj is not None else []
-                    else:
-                        self.error_signal.emit(f"Unsupported move type {move_type}")
-                        self.producer_error = True
-                        return
-                    
-                curr_trajectory = [list(pt) for pt in curr_trajectory]
+                        gen, t_tot, msg, total_N = kinematics.TrajectoryMathEngine.calculate_circ_trajectory(
+                            current_seed, wp["aux_joints"], target_joints, tcp_offset_mat, speed_factor, accel_factor)
 
-                if len(curr_trajectory) == 0:
-                    self.error_signal.emit(f"Waypoint {wp_idx+1} failed: {msg}")
+                if gen is None:
+                    self.error_signal.emit(f"{display_label} failed: {msg}")
                     self.producer_error = True
                     return
-                    
-                if msg and msg != "SUCCESS" and not msg.startswith("wait"):
-                    self.log_signal.emit(f"Waypoint {wp_idx+1}: {msg}")
 
+                if msg and msg != "SUCCESS" and not msg.startswith("wait"):
+                    self.log_signal.emit(f"{display_label}: {msg}")
+
+                # ----------------------------------------------------
+                # 1. 提取要跟「上一個點」融合的頭部點數 (N_blend)
+                # ----------------------------------------------------
+                N_blend = 0
+                if pending_trajectory is not None and pending_blend_str != 'FINE' and move_type != 'DELAY':
+                    # 修正：pending_trajectory 本身就已經是切好的尾巴了，直接比對長度即可！
+                    N_blend = min(len(pending_trajectory), total_N)
+                
+                curr_head = []
+                try:
+                    for _ in range(N_blend):
+                        curr_head.append(next(gen))
+                except Exception as e:
+                    self.error_signal.emit(f"{display_label} failed: {e}")
+                    self.producer_error = True
+                    return
+                
+                # 執行融合並推播
                 if pending_trajectory is not None:
-                    N = 0
-                    if pending_blend_str != 'FINE' and move_type != 'DELAY':
-                        try:
-                            pct = float(pending_blend_str.replace('%', '')) / 100.0
-                            safe_pct = min(max(pct, 0.0), 1.0)
-                            N = int(min(len(pending_trajectory), len(curr_trajectory)) * safe_pct)
-                        except ValueError:
-                            pass
-                    
-                    if N > 0:
-                        M = len(pending_trajectory)
-                        arr_A = np.array(pending_trajectory[M - N : M])
-                        arr_B = np.array(curr_trajectory[:N])
+                    M = len(pending_trajectory)
+                    if N_blend > 0:
+                        arr_A = np.array(pending_trajectory[M - N_blend : M])
+                        arr_B = np.array(curr_head)
                         vertex = np.array(pending_trajectory[-1])
+                        blended_section = (arr_A + arr_B - vertex).tolist()
                         
-                        blended_section = arr_A + arr_B - vertex
-                        
-                        for ik_joints in pending_trajectory[: M - N]:
+                        for ik_joints in pending_trajectory[: M - N_blend]:
                             if not self._is_running: return
                             self.point_queue.put(ik_joints, block=True)
-                            
-                        pending_trajectory = blended_section.tolist() + curr_trajectory[N:]
-                        
+                        for ik_joints in blended_section:
+                            if not self._is_running: return
+                            self.point_queue.put(ik_joints, block=True)
                     else:
                         for ik_joints in pending_trajectory:
                             if not self._is_running: return
                             self.point_queue.put(ik_joints, block=True)
-                        pending_trajectory = curr_trajectory
-                        
-                    self.msleep(1)
-                else:
-                    pending_trajectory = curr_trajectory
 
-                pending_blend_str = wp.get('blend', 'FINE')
+                # ----------------------------------------------------
+                # 2. 計算要保留給「下一個點」融合的尾巴點數 (H_hold)
+                # ----------------------------------------------------
+                curr_blend_str = wp.get('blend', 'FINE') if move_type != 'DELAY' else 'FINE'
+                H_hold = 0
+                if curr_blend_str != 'FINE':
+                    try:
+                        curr_pct = float(curr_blend_str.replace('%', '')) / 100.0
+                        curr_pct = min(max(curr_pct, 0.0), 0.5)
+                        H_hold = int(total_N * curr_pct)
+                    except ValueError: pass
                 
-                if len(pending_trajectory) > 0:
-                    current_seed = pending_trajectory[-1]
+                H_hold = min(H_hold, total_N - N_blend)
+                stream_count = total_N - N_blend - H_hold
 
-                time.sleep(0.001)
+                # ----------------------------------------------------
+                # 3. 終極惰性求值 (Lazy Evaluation Streaming)
+                # 從生成器中抽出一個點，就算一個，然後立刻塞進 Queue！
+                # ----------------------------------------------------
+                try:
+                    for _ in range(stream_count):
+                        if not self._is_running: return
+                        pt = next(gen)
+                        self.point_queue.put(pt, block=True) # 隊列滿了就會在此完美休眠，不吃效能！
+                        current_seed = pt
+                        
+                    pending_trajectory = []
+                    for _ in range(H_hold):
+                        pt = next(gen)
+                        pending_trajectory.append(pt)
+                        current_seed = pt
+                except Exception as e:
+                    self.error_signal.emit(f"{display_label} failed: {e}")
+                    self.producer_error = True
+                    return
+                
+                pending_blend_str = curr_blend_str
 
             if not self.loop:
                 break
-                
             loop_count += 1 
             
+        # 清空最後剩餘的人質
         if pending_trajectory is not None:
             for ik_joints in pending_trajectory:
                 if not self._is_running: return
@@ -295,19 +311,20 @@ class StreamingPathExecutor(QThread):
                 
         self.producer_finished = True
 
-
 # --- 3. 總管大人 PathManager ---
 class PathManager(QObject):
     log_signal = Signal(str)
     joint_update_signal = Signal(list)
     list_update_signal = Signal()
-    file_loaded_signal = Signal(str) # 新增這行：用來廣播檔案名稱
+    file_loaded_signal = Signal(str) 
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.waypoints = []
         self.worker = None
         self.parent_widget = parent
+        self.is_modified = False
+        self.clipboard = []
         
         self.temp_aux_joints = None 
         self.serial_manager = None
@@ -320,134 +337,40 @@ class PathManager(QObject):
     def set_aux_point(self, joints):
         self.temp_aux_joints = list(joints)
         self.log_signal.emit(">> [CIRC] AUX point saved! Move to END point and press Record.")
-
-    def _get_next_point_number(self):
-        """計算下一個實體動作點位 (PTP, LIN, CIRC) 的 Point 序號"""
-        count = 0
-        for wp in self.waypoints:
-            if wp.get('type') in ['PTP', 'LIN', 'CIRC']:
-                count += 1
-        return count + 1
-
-    def record_point(self, current_joints, move_type="PTP", speed=50.0, accel=50.0):
-        aux = None
-        if self.temp_aux_joints is not None:
-            aux = [round(j, 4) for j in self.temp_aux_joints]
-            move_type = "CIRC"
-            self.temp_aux_joints = None
-
-        pt_num = self._get_next_point_number()
-        name = f"Point {pt_num}"
-        
-        T_flange_world = kinematics.forward_kinematics(current_joints)
-        
-        # 呼叫 GUI 裡的 base_manager，取得錄製當下的基座矩陣
-        recorded_base_mat = np.eye(4)
-        if hasattr(self.parent_widget, 'base_manager'):
-            recorded_base_mat = self.parent_widget.base_manager.get_active_matrix()
-        
-        data = {
-            "name": name,
-            "joints": [round(j, 4) for j in current_joints],
-            "aux_joints": aux,
-            "cartesian_flange": T_flange_world.tolist(), 
-            "recorded_base_matrix": recorded_base_mat.tolist(), 
-            "type": move_type,
-            "speed": float(speed), 
-            "accel": float(accel),
-            "blend": "FINE", 
-            "active": True,
-            "note": ""
-        }
-        self.waypoints.append(data)
-        self.list_update_signal.emit()
-        
-        msg = f"Recorded: {name} [{move_type}]"
-        if move_type == "CIRC": msg += " (with AUX point)"
-        self.log_signal.emit(msg)
+        self.is_modified = True
 
     def update_point_at_index(self, index, current_joints):
         """將目前手臂的座標，覆蓋掉指定的實體動作點位"""
         if 0 <= index < len(self.waypoints):
             wp = self.waypoints[index]
-            # 檢查是不是帶有座標的實體點位
             if wp.get('type') in ['PTP', 'LIN', 'CIRC']:
-                # 重新寫入當前座標 (四捨五入到小數點後 4 位)
                 wp['joints'] = [round(j, 4) for j in current_joints]
                 
-                # 通知 UI 與 3D 預覽線重新繪製
                 self.list_update_signal.emit()
-                
-                # 印出成功通知
                 self.log_signal.emit(f">>> UPDATED: [{wp.get('name')}] position updated to current pose.")
-            else:
-                self.log_signal.emit(f"[WARNING] 無法更新座標：{wp.get('type')} 不是實體動作點位。")
+                self.is_modified = True
 
     def insert_waypoint(self, index, waypoint_data):
         """統一的插入接口：將新點位插入到指定的 index (即原本點位的前面)"""
-        # Python 的 list.insert(index, obj) 原生就是插在該 index 的前面
         self.waypoints.insert(index, waypoint_data)
         
-        # 如果你原本的架構有 _renumber_points，可以保留呼叫
         if hasattr(self, '_renumber_points'):
             self._renumber_points()
             
         self.list_update_signal.emit()
         self.log_signal.emit(f">>> INSERTED: [{waypoint_data['type']}] at line {index + 1}")
+        self.is_modified = True
 
-    def record_delay(self, time_sec=2.0):
-        idx = len(self.waypoints) + 1
-        name = f"Wait {time_sec}s"
-        data = {
-            "name": name,
-            "type": "DELAY",
-            "value": float(time_sec), 
-            "active": True,
-            "note": ""
-        }
-        self.waypoints.append(data)
-        self.list_update_signal.emit()
-        self.log_signal.emit(f"Recorded: {name}")
-
-    def record_tool_action(self, action_dict):
-        """將夾爪動作寫入教導清單中"""
-        idx = len(self.waypoints) + 1
-        name = f"EE: {action_dict.get('note', 'Action')}"
-        data = {
-            "name": name,
-            "type": "I/O",
-            "action_type": action_dict['action_type'],
-            "value": action_dict['value'],
-            "active": True,
-            "note": action_dict.get('note', '')
-        }
-        self.waypoints.append(data)
-        self.list_update_signal.emit()
-        self.log_signal.emit(f"Recorded Tool Action: {name}")
-
-    def record_tcp_switch(self, tool_index, tool_name):
-        """錄製 TCP (刀具) 切換指令"""
-        wp = {
-            "type": "SET_TCP",
-            "value": tool_index,
-            "name": f"Tool: {tool_name}",
-            "active": True
-        }
-        self.waypoints.append(wp)
-        self.list_update_signal.emit()
-        self.log_signal.emit(f">>> RECORDED: [SET_TCP] Switched to {tool_name}")
-
-    def update_tcp_command(self, index, new_tool_idx, new_tool_name):
-        """專門用來更新已錄製的 SET_TCP 指令"""
+    def update_special_point(self, index, pt_type, new_value, new_name):
+        """專門用來更新非實體點位 (SET_TCP, SET_BASE, DELAY, IO)"""
         if 0 <= index < len(self.waypoints):
             wp = self.waypoints[index]
-            if wp.get('type') == "SET_TCP":
-                wp['value'] = new_tool_idx
-                wp['name'] = f"Tool: {new_tool_name}"
-                
-                # 發送訊號刷新 UI
+            if wp.get('type') == pt_type:
+                wp['value'] = new_value
+                wp['name'] = new_name
+                self.is_modified = True
                 self.list_update_signal.emit()
-                self.log_signal.emit(f">>> UPDATED: [SET_TCP] changed to {new_tool_name}")
+                self.log_signal.emit(f">>> UPDATED: [{pt_type}] at line {index + 1} to {new_name}")
 
     def delete_point(self, index):
         if 0 <= index < len(self.waypoints):
@@ -455,12 +378,15 @@ class PathManager(QObject):
             point_name = removed.get('name', f"Type: {removed.get('type', 'Unknown')}")
             
             self.log_signal.emit(f">>> DELETED: {point_name} (Line {index + 1})")
+            self._renumber_points()
             self.list_update_signal.emit()
+            self.is_modified = True
 
     def delete_all_points(self):
         self.waypoints.clear()
         self.list_update_signal.emit()
         self.log_signal.emit("All waypoints deleted.")
+        self.is_modified = True
 
     def update_aux_joints(self, index, joints):
         """後期編輯：更新指定點位的輔助座標"""
@@ -469,12 +395,14 @@ class PathManager(QObject):
             self.waypoints[index]['aux_joints'] = [round(j, 4) for j in joints]
             self.list_update_signal.emit()
             self.log_signal.emit(f"Updated: {self.waypoints[index]['name']} (AUX Pos Added)")
+            self.is_modified = True
 
     def toggle_point_active(self, index):
         if 0 <= index < len(self.waypoints):
             current_state = self.waypoints[index].get('active', True)
             self.waypoints[index]['active'] = not current_state
             self.list_update_signal.emit()
+            self.is_modified = True
 
     def _renumber_points(self):
         """刪除點位後重新編號 (只對實體動作點位生效)"""
@@ -484,12 +412,193 @@ class PathManager(QObject):
                 pt['name'] = f"Point {count}"
                 count += 1
 
+    # ==========================================
+    # 複製與貼上引擎
+    # ==========================================
+    def copy_points(self, indices):
+        """複製指定的點位"""
+        import copy
+        valid_indices = [i for i in indices if 0 <= i < len(self.waypoints)]
+        valid_indices.sort()
+        if not valid_indices: return
+        
+        self.clipboard = [copy.deepcopy(self.waypoints[i]) for i in valid_indices]
+        self.log_signal.emit(f"[System] Copied {len(self.clipboard)} waypoints.")
+
+    def paste_points(self, index=-1):
+        """貼上點位到指定位置"""
+        import copy
+        if not getattr(self, 'clipboard', []): return
+        
+        target_idx = index if index >= 0 else len(self.waypoints)
+        
+        for wp in self.clipboard:
+            new_wp = copy.deepcopy(wp)
+            self.waypoints.insert(target_idx, new_wp)
+            target_idx += 1
+            
+        if hasattr(self, '_renumber_points'):
+            self._renumber_points()
+            
+        self.is_modified = True
+        self.list_update_signal.emit()
+        self.log_signal.emit(f"[System] Pasted {len(self.clipboard)} waypoints at line {index + 1 if index >= 0 else 'end'}.")
+
+    # ==========================================
+    # Base Shift 空間轉換引擎
+    # ==========================================
+    def apply_batch_base_shift(self, indices, target_base_mat, target_base_name):
+        """處理選定點位的 Base Shift"""
+        valid_indices = [i for i in indices if 0 <= i < len(self.waypoints) and self.waypoints[i].get('type') in ["PTP", "LIN", "CIRC"]]
+        if not valid_indices: return
+        self._execute_base_shift(valid_indices, target_base_mat, target_base_name)
+
+    def apply_base_shift_block(self, set_base_idx, target_base_mat, target_base_name):
+        """處理整個 SET_BASE 區塊的 Base Shift"""
+        target_indices = []
+        for i in range(set_base_idx + 1, len(self.waypoints)):
+            if self.waypoints[i].get('type') == 'SET_BASE':
+                if self.waypoints[i].get('active', True):
+                    break
+                else:
+                    continue
+            if self.waypoints[i].get('type') in ["PTP", "LIN", "CIRC"]:
+                target_indices.append(i)
+                
+        if not target_indices:
+            self.log_signal.emit("[System] No motion points found in this SET_BASE block.")
+            return
+            
+        self._execute_base_shift(target_indices, target_base_mat, target_base_name)
+
+    def _execute_base_shift(self, indices, target_base_mat, target_base_name):
+        """核心共用轉換引擎"""
+        import kinematics
+        import numpy as np
+        success_count = 0
+        error_msg = ""
+        
+        for idx in indices:
+            wp = self.waypoints[idx]
+            recorded_base_mat = np.array(wp.get('recorded_base_matrix', np.eye(4)))
+            
+            if np.allclose(target_base_mat, recorded_base_mat, atol=1e-4):
+                continue
+
+            T_flange_old = np.array(wp.get('cartesian_flange', kinematics.forward_kinematics(wp['joints'])))
+            new_joints, err = kinematics.calculate_base_shift_ik(
+                T_flange_old, recorded_base_mat, target_base_mat, wp['joints']
+            )
+            
+            if new_joints is None:
+                error_msg = f"Point {idx+1} IK Failed."
+                break
+                
+            wp['joints'] = np.round(new_joints, 4).tolist()
+            wp['cartesian_flange'] = np.round(kinematics.forward_kinematics(new_joints), 4).tolist()
+
+            if wp.get('type') == 'CIRC' and 'aux_joints' in wp:
+                T_aux_old = np.array(wp.get('aux_cartesian_flange', kinematics.forward_kinematics(wp['aux_joints'])))
+                new_aux, err_aux = kinematics.calculate_base_shift_ik(
+                    T_aux_old, recorded_base_mat, target_base_mat, wp['aux_joints']
+                )
+                if new_aux is None:
+                    error_msg = f"Point {idx+1} (Aux) IK Failed."
+                    break
+                wp['aux_joints'] = np.round(new_aux, 4).tolist()
+                wp['aux_cartesian_flange'] = np.round(kinematics.forward_kinematics(new_aux), 4).tolist()
+
+            wp['recorded_base_matrix'] = np.round(target_base_mat, 4).tolist()
+            success_count += 1
+
+        if success_count > 0:
+            self.is_modified = True
+            self.list_update_signal.emit()
+
+        if error_msg:
+            self.log_signal.emit(f"[ERROR] Base Shift: {error_msg}")
+        elif success_count > 0:
+            self.log_signal.emit(f"[System] Successfully shifted {success_count} points to '{target_base_name}'.")
+        else:
+            self.log_signal.emit(f"[System] Selected points are already in '{target_base_name}'.")
+
+    def sync_all_base_shifts(self, base_manager):
+        """終極防呆：在 Save 觸發前，由上到下掃描整個路徑，確保所有點位與其上方的 SET_BASE 絕對同步"""
+        import kinematics
+        import numpy as np
+        
+        if not self.waypoints: return
+
+        current_base_mat = np.eye(4)
+        shifted_count = 0
+        error_msg = ""
+
+        for idx, wp in enumerate(self.waypoints):
+            m_type = wp.get('type')
+            
+            if m_type == 'SET_BASE':
+                if wp.get('active', True):
+                    bid = wp.get('value', 0)
+                    if bid < len(base_manager.bases):
+                        current_base_mat = base_manager.get_matrix(bid)
+                continue 
+
+            if m_type not in ["PTP", "LIN", "CIRC"]:
+                continue
+
+            recorded_base_mat = np.array(wp.get('recorded_base_matrix', np.eye(4)))
+            
+            if 'joints' in wp: wp['joints'] = np.round(wp['joints'], 4).tolist()
+            if 'cartesian_flange' in wp: wp['cartesian_flange'] = np.round(wp['cartesian_flange'], 4).tolist()
+            wp['recorded_base_matrix'] = np.round(current_base_mat, 4).tolist()
+
+            if np.allclose(current_base_mat, recorded_base_mat, atol=1e-4):
+                continue
+
+            T_flange_old = np.array(wp.get('cartesian_flange', kinematics.forward_kinematics(wp['joints'])))
+            new_joints, err = kinematics.calculate_base_shift_ik(
+                T_flange_old, recorded_base_mat, current_base_mat, wp['joints']
+            )
+            
+            if new_joints is None:
+                error_msg = f"Point {idx+1} IK Failed during Auto-Sync."
+                break
+                
+            wp['joints'] = np.round(new_joints, 4).tolist()
+            wp['cartesian_flange'] = np.round(kinematics.forward_kinematics(new_joints), 4).tolist()
+
+            if m_type == 'CIRC' and 'aux_joints' in wp:
+                T_aux_old = np.array(wp.get('aux_cartesian_flange', kinematics.forward_kinematics(wp['aux_joints'])))
+                new_aux, err_aux = kinematics.calculate_base_shift_ik(
+                    T_aux_old, recorded_base_mat, current_base_mat, wp['aux_joints']
+                )
+                if new_aux is None:
+                    error_msg = f"Point {idx+1} (Aux) IK Failed."
+                    break
+                
+                wp['aux_joints'] = np.round(new_aux, 4).tolist()
+                wp['aux_cartesian_flange'] = np.round(kinematics.forward_kinematics(new_aux), 4).tolist()
+
+            shifted_count += 1
+
+        if shifted_count > 0:
+            self.is_modified = True
+
+        if error_msg:
+            self.log_signal.emit(f"[ERROR] Save Auto-Sync: {error_msg}")
+        elif shifted_count > 0:
+            self.log_signal.emit(f"[System] Auto-synced {shifted_count} points to match their local SET_BASE before saving.")
+            self.list_update_signal.emit()
+
     def save_to_file(self):
         filename, _ = QFileDialog.getSaveFileName(self.parent_widget, "Save Path", "", "JSON Files (*.json)")
         if filename:
             try:
                 with open(filename, 'w') as f:
                     json.dump(self.waypoints, f, indent=4)
+                
+                # 檔案成功寫入硬碟，洗白標記！
+                self.is_modified = False
                 
                 base_name = os.path.basename(filename)
                 self.log_signal.emit(f"[System] UPDATED: Waypoints successfully saved to {base_name}")
@@ -507,8 +616,10 @@ class PathManager(QObject):
                 with open(filename, 'r') as f:
                     data = json.load(f)
                 
+                # 確保讀進來的是正確的陣列格式
                 if isinstance(data, list):
                     self.waypoints = data
+                    self.is_modified = False
                     self.list_update_signal.emit()
                     
                     base_name = os.path.basename(filename)
@@ -567,9 +678,7 @@ class PathManager(QObject):
                 T_flange_world_old = np.array(wp['cartesian_flange']) if 'cartesian_flange' in wp else kinematics.forward_kinematics(target_joints)
                 recorded_base_mat = np.array(wp['recorded_base_matrix']) if 'recorded_base_matrix' in wp else np.eye(4)
                 
-                # ==========================================
                 # 陣列加工空間轉移 (含 180 度死角破解)
-                # ==========================================
                 if not np.allclose(current_base_mat, recorded_base_mat, atol=1e-4):
                     T_user = np.linalg.inv(recorded_base_mat) @ T_flange_world_old
                     T_flange_world_new = current_base_mat @ T_user

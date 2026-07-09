@@ -6,12 +6,13 @@ from vispy import scene
 
 import kinematics
 
-# 關節專屬極限 (J1~J6)
+# ==========================================
+# 關節與直角空間極限設定
+# ==========================================
 MAX_JOINT_SPEEDS = np.array([175.78, 56.25, 62.17, 281.25, 281.25, 112.50])     
 MAX_JOINT_ACCELS = np.array([703.13, 225.00, 248.69, 1125.00, 1125.00, 450.00])   
 MAX_JOINT_JERKS = MAX_JOINT_ACCELS * 10.0
 
-# 直角空間極限 (LIN/CIRC 用)
 MAX_LIN_SPEED = 200.0    
 MAX_LIN_ACCEL = 500.0    
 MAX_LIN_JERK = MAX_LIN_ACCEL * 10.0    
@@ -20,23 +21,10 @@ MAX_ROT_SPEED = 100.0
 MAX_ROT_ACCEL = 200.0     
 MAX_ROT_JERK = MAX_ROT_ACCEL * 10.0     
 
-# 晶片總體算力防護網參數
-MAX_TOTAL_PULSE_SLICE = 50000
+MAX_PULSE_FREQ = 50000
 
 GEAR_RATIOS = np.array([6.4, 20.0, 18.095, 4.0, 4.0, 10.0])
 STEPS_PER_DEG = (6400.0 * GEAR_RATIOS) / 360.0
-
-
-def update_advanced_settings(lin_spd, lin_acc, rot_spd, rot_acc, slice_pulse):
-    global MAX_LIN_SPEED, MAX_LIN_ACCEL, MAX_LIN_JERK
-    global MAX_ROT_SPEED, MAX_ROT_ACCEL, MAX_ROT_JERK
-    global MAX_TOTAL_PULSE_SLICE
-    
-    MAX_LIN_SPEED, MAX_LIN_ACCEL, MAX_LIN_JERK = lin_spd, lin_acc, lin_acc * 10.0
-    MAX_ROT_SPEED, MAX_ROT_ACCEL, MAX_ROT_JERK = rot_spd, rot_acc, rot_acc * 10.0
-    MAX_TOTAL_PULSE_SLICE = slice_pulse
-
-# ==========================================
 
 # ==========================================
 # 全域機構與運算參數 (供 kinematics.py 讀取)
@@ -52,9 +40,9 @@ STL_FILES = [
     'base_link.STL', 'Link1.STL', 'Link2.STL', 'Link3.STL',
     'Link4.STL', 'Link5.STL', 'Link6.STL'
 ]
-# 根據您重新定義原點後匯出的 URDF 參數
+
 URDF_PARAMS = [
-    {'xyz': [0,  0.1105,0],        'rpy': [3.1416, 0, 0],       'axis': 'y'}, 
+    {'xyz': [0, 0.1105, 0],        'rpy': [3.1416, 0, 0],       'axis': 'y'}, 
     {'xyz': [-0.0234, 0, 0],       'rpy': [1.5708, -1.5708, 0], 'axis': 'x', 'invert': True}, 
     {'xyz': [0, 0, 0.18],          'rpy': [0, 0, 3.1416],       'axis': 'x'}, 
     {'xyz': [0, -0.0712, 0.04344], 'rpy': [3.1416, 0, -1.5708], 'axis': 'x', 'invert': True}, 
@@ -62,6 +50,9 @@ URDF_PARAMS = [
     {'xyz': [0, 0, 0.0505],        'rpy': [3.1416, 0, 0],       'axis': 'z'}  
 ]
 
+# ==========================================
+# 3D 視覺渲染主體
+# ==========================================
 class Robot3DView(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -84,16 +75,19 @@ class Robot3DView(QWidget):
 
         layout.addWidget(self.canvas.native)
 
-        # 攝影棚 3 盞燈配置
         self.LIGHTS = [
-            {'dir': np.array([-1.0,  1.0,  2.0]), 'strength': 0.30, 'two_sided': False}, # 主光源 (Key)
-            {'dir': np.array([ 1.0, -1.0,  1.0]), 'strength': 0.20, 'two_sided': True},  # 側補光 (Fill)
-            {'dir': np.array([ 0.0,  0.0, -1.0]), 'strength': 0.10, 'two_sided': True},  # 底部反光 (Bounce)
+            {'dir': np.array([-1.0,  1.0,  2.0]), 'strength': 0.30, 'two_sided': False},
+            {'dir': np.array([ 1.0, -1.0,  1.0]), 'strength': 0.20, 'two_sided': True},
+            {'dir': np.array([ 0.0,  0.0, -1.0]), 'strength': 0.10, 'two_sided': True},
         ]
-        self.AMBIENT = 0.55 # 基礎環境光
+        self.AMBIENT = 0.55 
 
         self.actors = []
         self.ee_frame_visuals = []
+
+        self.base_manager = None
+        self.base_frame_visuals = []
+        self.base_nodes = []
 
         self._assemble_statically()
 
@@ -142,12 +136,8 @@ class Robot3DView(QWidget):
         pos = np.array(segments, dtype=np.float32)
 
         self.floor_grid = scene.visuals.Line(
-            pos=pos,
-            color=(0.45, 0.45, 0.45, 1.0), 
-            connect='segments',
-            width=1,
-            antialias=True,
-            parent=self.view.scene
+            pos=pos, color=(0.45, 0.45, 0.45, 1.0), 
+            connect='segments', width=1, antialias=True, parent=self.view.scene
         )
         
         grid_tf = scene.transforms.MatrixTransform()
@@ -155,9 +145,27 @@ class Robot3DView(QWidget):
         self.floor_grid.transform = grid_tf
 
     EE_AXIS_LEN: float = 0.1
+
+    def set_base_manager(self, base_manager):
+        """外部(gui.py)注入 BaseManager"""
+        if self.base_manager is not None:
+            try:
+                self.base_manager.data_changed.disconnect(self._on_base_changed)
+            except (TypeError, RuntimeError):
+                pass
+
+        self.base_manager = base_manager
+
+        if self.base_manager is not None:
+            self.base_manager.data_changed.connect(self._on_base_changed)
+            if self.actors: 
+                self._make_base_frame(self.view.scene)
+
+    def _on_base_changed(self):
+        if self.actors:
+            self._make_base_frame(self.view.scene)
     
     def _make_ee_frame(self, parent_visual):
-        
         if hasattr(self, 'ee_frame_visuals'):
             for v in self.ee_frame_visuals:
                 v.parent = None
@@ -167,7 +175,6 @@ class Robot3DView(QWidget):
             self.tcp_node.parent = None
         self.tcp_node = scene.Node(parent=parent_visual)
 
-        # 基礎 TCP 座標線 -> Z 軸為 [0, 0, 1] 正向
         for end_pt, color in [([1, 0, 0], (0.95, 0.20, 0.20, 1.0)), 
                               ([0, 1, 0], (0.20, 0.85, 0.20, 1.0)), 
                               ([0, 0, 1], (0.20, 0.40, 0.95, 1.0))]:
@@ -190,7 +197,6 @@ class Robot3DView(QWidget):
         v_r = cone_mesh_r.vertices.astype(np.float32)
         f_r = cone_mesh_r.faces.astype(np.uint32)
 
-        # 直線箭頭
         self.gizmo_cones = []
         for ax, color, rot, pos in [
             ('x', (0.95, 0.20, 0.20, 1.0), [0, 90, 0], [0.1, 0, 0]),
@@ -208,16 +214,13 @@ class Robot3DView(QWidget):
             cone.visible = False
             self.gizmo_cones.append((ax, cone, pos))
 
-        # 繞軸旋轉圓環
         self.gizmo_rings = []
         self.gizmo_ring_cones = []
         t = np.linspace(0, 2*np.pi, 60)
         c, s, zero = np.cos(t), np.sin(t), np.zeros_like(t)
         
         ring_offsets = {
-            'x': [0.08, 0, 0],
-            'y': [0, 0.08, 0],
-            'z': [0, 0, 0.08] 
+            'x': [0.08, 0, 0], 'y': [0, 0.08, 0], 'z': [0, 0, 0.08] 
         }
         
         for ax, color, pts, rot, pos in [
@@ -242,7 +245,77 @@ class Robot3DView(QWidget):
             
             self.gizmo_ring_cones.append((ax, cone, np.array(pos) + offset))
 
-    # 進階打光引擎：根據「世界座標」算光，把顏色貼回「局部座標」
+    def _make_base_frame(self, parent_visual):
+        if self.base_manager is None:
+            return   
+
+        # ==========================================
+        # 效能優化 1：物件池 (只有第一次或數量改變時才重建 Node)
+        # ==========================================
+        if not hasattr(self, 'base_visual_groups') or len(self.base_visual_groups) != len(self.base_manager.bases):
+            if hasattr(self, 'base_visual_groups'):
+                for group in self.base_visual_groups:
+                    group['node'].parent = None
+            self.base_visual_groups = []
+
+            for idx in range(len(self.base_manager.bases)):
+                node = scene.Node(parent=parent_visual)
+                lines = []
+                for _ in range(3):
+                    lines.append(scene.visuals.Line(connect='strip', antialias=True, parent=node))
+                marker = scene.visuals.Markers(parent=node)
+                label = scene.visuals.Text("", font_size=9, parent=node, anchor_x='left', anchor_y='bottom')
+                label.pos = (0.005, 0.005, 0.005)
+                
+                self.base_visual_groups.append({
+                    'node': node, 'lines': lines, 'marker': marker, 'text': label
+                })
+
+        # ==========================================
+        # 效能優化 2：絕對效能優先，拔除 Active 顏色與粗細變換
+        # ==========================================
+        BASE_AXIS_LEN = getattr(self, 'BASE_AXIS_LEN', 0.12)
+        # 固定顏色與透明度，不再隨選擇改變
+        base_colors = [(0.95, 0.20, 0.20, 0.7), (0.20, 0.85, 0.20, 0.7), (0.20, 0.40, 0.95, 0.7)]
+
+        for idx, base in enumerate(self.base_manager.bases):
+            group = self.base_visual_groups[idx]
+            node = group['node']
+
+            if not base.get("in_box", True):
+                node.visible = False
+                continue
+            
+            node.visible = True
+
+            # 極速更新矩陣 (GPU 層級運算，0 CPU 負擔)
+            T = self.base_manager.get_matrix(idx)
+            tf = scene.transforms.MatrixTransform()
+            tf.matrix = T.T
+            node.transform = tf
+
+            # 終極防護：如果文字一樣，代表這個 Base 之前已經畫過了
+            # 因為我們不改顏色也不改粗細，直接 continue，跳過底下所有昂貴的 set_data() 重繪！
+            current_name = base.get("name", f"Base {idx}")
+            if group['text'].text == current_name:
+                continue
+
+            # 以下只有在 Base 第一次建立，或是名字被改掉時才會執行一次
+            base_end_pts = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+            for i, line in enumerate(group['lines']):
+                pts = np.array([[0.0, 0.0, 0.0], base_end_pts[i]], dtype=np.float32)
+                line.set_data(pos=pts, color=base_colors[i], width=1.5)
+                ltf = scene.transforms.MatrixTransform()
+                ltf.scale([BASE_AXIS_LEN] * 3)
+                line.transform = ltf
+
+            group['marker'].set_data(
+                pos=np.array([[0, 0, 0]], dtype=np.float32),
+                face_color=(0.7, 0.7, 0.7, 0.6), size=6
+            )
+            group['text'].text = current_name
+            group['text'].color = (1, 1, 1, 0.7)
+
     def _bake_lighting_post_transform(self, local_vertices, world_vertices, faces, base_color):
         v0 = world_vertices[faces[:, 0]]
         v1 = world_vertices[faces[:, 1]]
@@ -278,8 +351,6 @@ class Robot3DView(QWidget):
         BASE_COLOR = (0.75, 0.75, 0.75, 1.0) 
 
         parent_node = self.view.scene
-        
-        # 取得組裝完成後的「初始零度世界矩陣」
         zero_matrices = kinematics.forward_kinematics_all([0.0]*6)
 
         for i, stl_name in enumerate(STL_FILES):
@@ -293,17 +364,12 @@ class Robot3DView(QWidget):
                 vertices = np.array(box.vertices, dtype=np.float32)
                 faces    = np.array(box.faces,    dtype=np.uint32)
 
-            # --- 取出當前連桿的歸零轉換矩陣 ---
             M0 = zero_matrices[i] if i < len(zero_matrices) else np.eye(4)
-            
-            # --- 產生世界座標頂點 (僅供算光用) ---
             ones = np.ones((len(vertices), 1), dtype=np.float32)
             world_vertices = (M0 @ np.hstack([vertices, ones]).T).T[:, :3]
 
-            # --- 神奇的打光魔法：用世界座標算光，用區域座標建模！ ---
             new_verts, new_faces, vc = self._bake_lighting_post_transform(vertices, world_vertices, faces, BASE_COLOR)
 
-            # 退回 CPU Baking (shading=None)，完美保留硬邊銳利感
             mesh_visual = scene.visuals.Mesh(
                 vertices=new_verts,
                 faces=new_faces,
@@ -316,10 +382,10 @@ class Robot3DView(QWidget):
             self.actors.append(mesh_visual)
 
         self._make_ee_frame(self.actors[-1])
+        self._make_base_frame(self.view.scene)
         self.update_joints([0, 0, 0, 0, 0, 0])
 
     def update_joints(self, joint_angles, tcp_mat=None):
-        
         matrices = kinematics.forward_kinematics_all(joint_angles)
         
         for i, actor in enumerate(self.actors):
@@ -339,11 +405,9 @@ class Robot3DView(QWidget):
         self._update_gizmo_visuals()
 
     def _update_gizmo_visuals(self):
-        # 1. 軸向控制項依然由狀態機管理
         is_trans = (self._gizmo_mode == 'translate')
         is_rot = (self._gizmo_mode == 'rotate')
 
-        # 2. 圓球控制項改由獨立開關 _show_drag_sphere 管理，不再受 _gizmo_mode 影響！
         show_sphere = getattr(self, '_show_drag_sphere', False)
         is_dragging_free = getattr(self, '_is_dragging_free', False)
 
@@ -354,7 +418,6 @@ class Robot3DView(QWidget):
             self.dragger_visual.visible = False
             self.dragger_visual_active.visible = False
 
-        # 更新軸向元件顯示
         for _, cone, _ in self.gizmo_cones: cone.visible = is_trans
         for ring in self.gizmo_rings: ring.visible = is_rot
         for _, cone, _ in self.gizmo_ring_cones: cone.visible = is_rot
@@ -492,34 +555,18 @@ class Robot3DView(QWidget):
                     self.cancel_gizmo_callback()
             self._bg_pressed = False
     
+    # 乾淨的軌跡繪製邏輯
     def draw_trajectory_preview(self, points):
-        # 1. 初始化軌跡線 (如果還沒建立)
         if not hasattr(self, 'path_actor'):
             self.path_actor = scene.visuals.Line(
-                color='#00e6b8',
-                width=1.5, # 稍微加粗一點點更好看
-                antialias=True,
-                method='gl',
-                parent=self.view.scene
+                color='#00e6b8', width=1.5, antialias=True, method='gl', parent=self.view.scene
             )
-            # 讓軌跡線無條件顯示在所有模型與拖曳球的最上層
             self.path_actor.set_gl_state(depth_test=False, blend=True)
             self.show_trajectory = True 
 
-        # 2. 如果使用者選擇隱藏，或是沒有路徑點，就直接關閉顯示
         if not getattr(self, 'show_trajectory', True) or not points or len(points) < 2:
             if hasattr(self, 'path_actor'):
                 self.path_actor.visible = False
-            return
-            
-        # 3. 正常更新並顯示軌跡
-        points_array = np.array(points, dtype=np.float32)
-        self.path_actor.set_data(pos=points_array)
-        self.path_actor.visible = True
-            
-        if not points or len(points) < 2:
-            self.path_actor.set_data(pos=np.zeros((2, 3), dtype=np.float32))
-            self.path_actor.visible = False
             return
             
         points_array = np.array(points, dtype=np.float32)

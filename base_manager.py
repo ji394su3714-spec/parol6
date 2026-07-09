@@ -13,7 +13,7 @@ class BaseManager(QObject):
         self.filepath = filepath
         self.current_index = 0
         
-        # 💡 預設永遠有一個不可刪除的 World Base (世界坐標系)
+        # 預設永遠有一個不可刪除的 World Base (世界坐標系)
         self.default_base = {
             "name": "Base 0 (World)",
             "values": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],

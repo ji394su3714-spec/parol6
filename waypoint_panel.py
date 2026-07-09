@@ -1,5 +1,4 @@
 # waypoint_panel.py
-import os
 import copy 
 import numpy as np 
 from PySide6.QtWidgets import (QInputDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, 
@@ -12,7 +11,7 @@ import styles
 from widgets import BaseBlock, apply_windows_dark_titlebar
 
 # ==========================================
-# 分頁元件 (VS Code Style Tab)
+# 分頁元件 (Tab)
 # ==========================================
 class EditorTab(QFrame):
     closed = Signal(object)
@@ -20,7 +19,9 @@ class EditorTab(QFrame):
 
     def __init__(self, title="untitled.json", parent=None):
         super().__init__(parent)
-        self.waypoints_data = [] 
+        self.waypoints_data = []  # 儲存這個分頁專屬的路徑資料
+        self.is_modified = False  # 追蹤這個分頁是否被修改過
+        self.filepath = ""        # 記錄這個分頁對應的實體檔案路徑 (如果有)
         
         self.setFixedHeight(26) 
         self.title = title
@@ -82,14 +83,13 @@ class DoubleClickLabel(QLabel):
 # 單行點位專屬 Widget
 # ==========================================
 class WaypointRowWidget(QWidget):
-    def __init__(self, index, wp_data, toggle_cb, delete_cb, update_cb, update_pt_cb, insert_pt_cb, update_tcp_cb=None, insert_special_cb=None, panel=None, parent=None):
+    def __init__(self, index, wp_data, toggle_cb, delete_cb, update_cb, update_pt_cb, update_tcp_cb=None, insert_special_cb=None, panel=None, parent=None):
         super().__init__(parent)
         self.index = index
         self.wp_data = wp_data
         self.update_cb = update_cb 
         self.delete_cb = delete_cb
         self.update_pt_cb = update_pt_cb
-        self.insert_pt_cb = insert_pt_cb
         self.update_tcp_cb = update_tcp_cb
         self.insert_special_cb = insert_special_cb 
         self.panel = panel 
@@ -203,6 +203,9 @@ class WaypointRowWidget(QWidget):
         self.btn_menu.clicked.connect(self.show_row_menu)
         layout.addWidget(self.btn_menu)
 
+    # ==========================================
+    # 三點選單功能區
+    # ==========================================
     def show_row_menu(self):
         menu = QMenu(self.window()) 
         menu.setStyleSheet(styles.MENU_STYLE)
@@ -210,72 +213,68 @@ class WaypointRowWidget(QWidget):
         m_type = self.wp_data.get("type", "PTP")
         main_win = self.window()
         
-        # ==========================================
         # 1. 批量功能區 (Copy, Paste, Base Shift)
-        # ==========================================
         sel_count = len(self.panel.path_list.selectedItems())
         copy_text = f"Copy ({sel_count})" if sel_count > 1 else "Copy"
         action_copy = menu.addAction(qta.icon('mdi.content-copy', color='#00e6b8'), copy_text)
         
-        paste_count = len(getattr(self.panel, 'copied_waypoints', []))
+        clipboard = []
+        if hasattr(main_win, 'path_manager'):
+            clipboard = getattr(main_win.path_manager, 'clipboard', [])
+            
+        paste_count = len(clipboard)
         paste_text = f"Insert Copied ({paste_count})" if paste_count > 1 else "Insert Copied"
         action_paste = menu.addAction(qta.icon('mdi.content-paste', color='#00e6b8'), paste_text)
+        
         if paste_count == 0:
             action_paste.setEnabled(False)
             
-        # 👑 依據使用者要求：如果是 SET_BASE，就不顯示多餘的 Apply Shift
         action_base_shift = None
         if m_type != "SET_BASE":
             action_base_shift = menu.addAction(qta.icon('mdi.axis-arrow', color='#e6a800'), f"Apply Current Base Shift ({sel_count})" if sel_count > 1 else "Apply Current Base Shift")
             
         menu.addSeparator()
         
-        # 👑 2. 針對 SET_BASE 點位的專屬神級功能：區域同步！
+        # 2. 針對 SET_BASE 點位的專屬神級功能：區域同步
         action_shift_block = None
         if m_type == "SET_BASE":
             action_shift_block = menu.addAction(qta.icon('mdi.axis-arrow', color='#e6a800'), "Sync Base Shift to Following Points")
             menu.addSeparator()
 
-        # ==========================================
-        # 3. 動作更新與屬性編輯
-        # ==========================================
+        # 3. 動作更新與屬性編輯 (實體點位與 Delay)
+        action_update = None
+        action_edit = None
         if m_type in ["PTP", "LIN", "CIRC"]:
             action_update = menu.addAction("Update Position")
-            action_update.triggered.connect(lambda: self.update_pt_cb(self.index))
             menu.addSeparator()
         elif m_type == "DELAY":
             action_edit = menu.addAction("Edit Delay Time")
-            action_edit.triggered.connect(self._trigger_delay_edit)
-            menu.addSeparator()
-        elif m_type == "SET_TCP":
-            menu_update_tcp = menu.addMenu("Update from Tool Box")
-            box_tools = []
-            if hasattr(main_win, 'tcp_manager'):
-                mgr = main_win.tcp_manager
-                box_tools = [(i, t['name']) for i, t in enumerate(mgr.tools) if t.get('in_box', False)]
-                
-            if not box_tools:
-                action_empty = menu_update_tcp.addAction("Tool Box is Empty")
-                action_empty.setEnabled(False)
-            else:
-                for t_idx, t_name in box_tools:
-                    action = menu_update_tcp.addAction(qta.icon('mdi.wrench-outline', color='#d4d4d4'), t_name)
-                    action.triggered.connect(
-                        lambda checked=False, r_idx=self.index, tid=t_idx: self.update_tcp_cb(r_idx, tid) if self.update_tcp_cb else None
-                    )
             menu.addSeparator()
             
-        # ==========================================
-        # 4. 各類點位插入 (Insert / Update)
-        # ==========================================
-        action_insert = menu.addAction("Insert Point")
-        action_insert.triggered.connect(lambda: self.insert_pt_cb(self.index))
+        # 4. 各類點位插入與更替 (Insert / Update)
+        menu_insert_pt = menu.addMenu(qta.icon('mdi.map-marker-plus', color='#e0e0e0'), "Insert Current Position")
+        insert_pt_actions = {}
+        for pt_type in ["PTP", "LIN", "CIRC"]:
+            action = menu_insert_pt.addAction(pt_type)
+            insert_pt_actions[action] = pt_type
+            
+        # ================== TCP 智慧選單 ==================
+        # 判斷是 SET_TCP 就顯示橘色的 Update，否則顯示灰色的 Insert
+        menu_tcp_title = "Update from Tool Box" if m_type == "SET_TCP" else "Insert SET_TCP"
+        menu_tcp_icon = '#e6a800' if m_type == "SET_TCP" else '#d4d4d4'
+        menu_tcp = menu.addMenu(qta.icon('mdi.wrench-outline', color=menu_tcp_icon), menu_tcp_title)
         
-        if m_type != "SET_TCP":
-            action_insert_tcp = menu.addAction("Insert SET_TCP")
-            action_insert_tcp.triggered.connect(lambda: self._trigger_insert_special("SET_TCP"))
+        tcp_actions = {}
+        if hasattr(main_win, 'tcp_manager'):
+            for i, t in enumerate(main_win.tcp_manager.tools):
+                if t.get('in_box', False):
+                    act = menu_tcp.addAction(t['name'])
+                    tcp_actions[act] = i
+        if not tcp_actions:
+            menu_tcp.addAction("Tool Box is Empty").setEnabled(False)
             
-        # 👑 依據使用者要求：智慧變換名稱 (Update vs Insert)
+        # ================== Base 智慧選單 ==================
+        # 判斷是 SET_BASE 就顯示青色的 Update，否則顯示灰色的 Insert
         menu_base_title = "Update Base Frame" if m_type == "SET_BASE" else "Insert SET_BASE"
         menu_base_icon = '#00e6b8' if m_type == "SET_BASE" else '#d4d4d4'
         menu_base = menu.addMenu(qta.icon('mdi.view-grid-outline', color=menu_base_icon), menu_base_title)
@@ -286,10 +285,13 @@ class WaypointRowWidget(QWidget):
                 if b.get('in_box', True):
                     act = menu_base.addAction(b['name'])
                     base_actions[act] = i
-                    
+        if not base_actions:
+            menu_base.addAction("Base Box is Empty").setEnabled(False)
+            
+        # ================== 雜項插入 ==================
+        action_insert_delay = None
         if m_type != "DELAY":
-            action_insert_delay = menu.addAction("Insert DELAY")
-            action_insert_delay.triggered.connect(lambda: self._trigger_insert_special("DELAY"))
+            action_insert_delay = menu.addAction(qta.icon('mdi.timer-outline', color='#e0e0e0'), "Insert Delay")
             
         action_io = menu.addAction(qta.icon('mdi.power-plug-outline', color='#d4d4d4'), "Insert I/O")
         
@@ -305,30 +307,60 @@ class WaypointRowWidget(QWidget):
         selected = menu.exec(QCursor.pos())
         if not selected: return
         
-        if selected == action_copy:
-            self.panel.copy_waypoints() 
+        # 處理第 3 區的動作 (Update Position / Edit Delay)
+        if action_update and selected == action_update:
+            self.update_pt_cb(self.index)
+        elif action_edit and selected == action_edit:
+            self._trigger_delay_edit()
+
+        # 處理第 1 區與第 2 區 (Copy / Paste / Base Shift)
+        elif selected == action_copy:
+            indexes = [self.panel.path_list.row(item) for item in self.panel.path_list.selectedItems()]
+            self.panel.copy_requested.emit(indexes) 
         elif selected == action_paste:
-            self.panel.paste_waypoints(self.index) 
+            self.panel.paste_requested.emit(self.index) 
         elif action_base_shift and selected == action_base_shift:
-            self.panel.apply_batch_base_shift() 
+            indexes = [self.panel.path_list.row(item) for item in self.panel.path_list.selectedItems()]
+            self.panel.batch_base_shift_requested.emit(indexes) 
         elif action_shift_block and selected == action_shift_block:
-            self.panel.apply_base_shift_block(self.index) 
+            self.panel.block_base_shift_requested.emit(self.index)
+            
+        # 處理第 4 區 (Insert/Update)
+        elif selected in insert_pt_actions:
+            self.panel.record_pt_requested.emit(self.index, insert_pt_actions[selected])
+            
+        elif selected in tcp_actions:
+            tid = tcp_actions[selected]
+            if m_type == "SET_TCP":
+                # 執行覆寫更新 (Update)
+                if self.update_tcp_cb:
+                    self.update_tcp_cb(self.index, tid)
+            else:
+                # 執行全新插入 (Insert)
+                self.panel.insert_special_requested.emit(self.index, f"SET_TCP:{tid}")
+                
         elif selected in base_actions:
             bid = base_actions[selected]
             if m_type == "SET_BASE":
-                # 👑 這裡是 Update 的邏輯：覆寫目前這個 SET_BASE 點位，並發送重繪廣播！
+                # 執行覆寫更新 (Update)
                 self.wp_data['value'] = bid
                 self.wp_data['name'] = main_win.base_manager.bases[bid]['name']
                 main_win.path_manager.list_update_signal.emit()
                 if hasattr(main_win, 'log_widget'):
                     main_win.log_widget.append_log(f"[System] Updated SET_BASE at line {self.index + 1} to '{self.wp_data['name']}'.")
             else:
-                # 這裡是原本 Insert 的邏輯
+                # 執行全新插入 (Insert)
                 self.panel.insert_special_requested.emit(self.index, f"SET_BASE:{bid}")
+                
+        elif action_insert_delay and selected == action_insert_delay:
+            self.panel.insert_special_requested.emit(self.index, "DELAY")
+            
         elif selected == action_io:
             self.panel.insert_special_requested.emit(self.index, "IO")
+            
+        # 處理第 5 區 (刪除)
         elif selected == action_delete:
-            self.panel._handle_delete_key() 
+            self.panel._handle_delete_key()
 
     def _trigger_insert_special(self, pt_type):
         if self.insert_special_cb:
@@ -371,7 +403,6 @@ class WaypointPanel(BaseBlock):
     toggle_requested = Signal(int)
     delete_requested = Signal(int)
     update_pt_requested = Signal(int) 
-    insert_pt_requested = Signal(int) 
     record_pt_requested = Signal(int, str) 
     update_tcp_point_requested = Signal(int, int)
     insert_special_requested = Signal(int, str) 
@@ -379,6 +410,11 @@ class WaypointPanel(BaseBlock):
     data_changed = Signal() 
     tab_switch_requested = Signal(object) 
     tab_closed_signal = Signal(object) 
+
+    copy_requested = Signal(list)       # 傳送被選取的 index 列表
+    paste_requested = Signal(int)       # 傳送要貼上的位置
+    batch_base_shift_requested = Signal(list) # 傳送被框選的 index 列表
+    block_base_shift_requested = Signal(int)  # 傳送 SET_BASE 的 index
 
     def __init__(self, parent=None):
         nav_config = [
@@ -454,212 +490,6 @@ class WaypointPanel(BaseBlock):
         self.btn_clear.setToolTip("Clear All Waypoints")
         self._active_menu = None
         self.btn_clear.clicked.connect(self.confirm_clear_all)
-
-        # 👑 防呆機制：因為 Qt 信號的執行順序是「先綁定先執行」，
-        # 我們在這裡攔截儲存按鈕，它會在 gui.py 的儲存動作「之前」自動觸發全域同步！
-        self.btn_save.clicked.connect(self.sync_all_base_shifts)
-
-    # ==========================================
-    # 👑 陣列加工核心功能區
-    # ==========================================
-    def copy_waypoints(self):
-        main_win = self.window()
-        if not hasattr(main_win, 'path_manager'): return
-
-        selected_items = self.path_list.selectedItems()
-        indexes = [self.path_list.row(item) for item in selected_items]
-        valid_indexes = [i for i in indexes if 0 <= i < len(main_win.path_manager.waypoints)]
-        valid_indexes.sort() 
-
-        if not valid_indexes: return
-
-        self.copied_waypoints = [copy.deepcopy(main_win.path_manager.waypoints[i]) for i in valid_indexes]
-        if hasattr(main_win, 'log_widget'):
-            main_win.log_widget.append_log(f"[System] Copied {len(self.copied_waypoints)} waypoints.")
-
-    def paste_waypoints(self, index=-1):
-        if not getattr(self, 'copied_waypoints', []):
-            return
-
-        main_win = self.window()
-        if not hasattr(main_win, 'path_manager'): return
-
-        target_idx = index if index >= 0 else len(main_win.path_manager.waypoints)
-
-        main_win.path_manager.blockSignals(True)
-        curr_idx = target_idx
-        for wp in self.copied_waypoints:
-            new_wp = copy.deepcopy(wp) 
-            main_win.path_manager.insert_waypoint(curr_idx, new_wp)
-            curr_idx += 1
-        main_win.path_manager.blockSignals(False)
-        
-        main_win.path_manager.list_update_signal.emit()
-
-        if hasattr(main_win, 'log_widget'):
-            main_win.log_widget.append_log(f"[System] Pasted {len(self.copied_waypoints)} waypoints at line {target_idx + 1}")
-
-    def apply_batch_base_shift(self):
-        """(保留手動框選功能) 針對已選取的點位套用當前 UI 的 Base"""
-        main_win = self.window()
-        if not hasattr(main_win, 'base_manager') or not hasattr(main_win, 'path_manager'): return
-
-        selected_items = self.path_list.selectedItems()
-        indexes = [self.path_list.row(item) for item in selected_items]
-        valid_indices = [i for i in indexes if 0 <= i < len(main_win.path_manager.waypoints) and main_win.path_manager.waypoints[i].get('type') in ["PTP", "LIN", "CIRC"]]
-
-        if not valid_indices: return
-
-        current_base_idx = main_win.base_manager.current_index
-        target_base_mat = main_win.base_manager.get_matrix(current_base_idx)
-        target_base_name = main_win.base_manager.bases[current_base_idx]['name']
-
-        self._execute_base_shift(valid_indices, target_base_mat, target_base_name)
-
-    def apply_base_shift_block(self, set_base_idx):
-        """👑 (新功能) 從指定的 SET_BASE 點位向下掃描，自動同步整個區塊的點位"""
-        main_win = self.window()
-        if not hasattr(main_win, 'base_manager') or not hasattr(main_win, 'path_manager'): return
-        
-        wp_list = main_win.path_manager.waypoints
-        bid = wp_list[set_base_idx].get('value', 0)
-        target_base_mat = main_win.base_manager.get_matrix(bid)
-        target_base_name = main_win.base_manager.bases[bid]['name']
-        
-        # 尋找影響範圍 (直到下一個 SET_BASE 或清單結尾)
-        target_indices = []
-        for i in range(set_base_idx + 1, len(wp_list)):
-            if wp_list[i].get('type') == 'SET_BASE':
-                break
-            if wp_list[i].get('type') in ["PTP", "LIN", "CIRC"]:
-                target_indices.append(i)
-                
-        if not target_indices:
-            main_win.log_widget.append_log("[System] No motion points found in this SET_BASE block.")
-            return
-            
-        self._execute_base_shift(target_indices, target_base_mat, target_base_name)
-
-    def _execute_base_shift(self, indices, target_base_mat, target_base_name):
-        """核心共用轉換引擎 (重構版)"""
-        import kinematics 
-        main_win = self.window()
-        wp_list = main_win.path_manager.waypoints
-
-        main_win.path_manager.blockSignals(True)
-        success_count = 0
-        error_msg = ""
-        
-        for idx in indices:
-            wp = wp_list[idx]
-            recorded_base_mat = np.array(wp.get('recorded_base_matrix', np.eye(4)))
-            
-            if np.allclose(target_base_mat, recorded_base_mat, atol=1e-4):
-                continue
-
-            T_flange_old = np.array(wp.get('cartesian_flange', kinematics.forward_kinematics(wp['joints'])))
-            new_joints, err = kinematics.calculate_base_shift_ik(
-                T_flange_old, recorded_base_mat, target_base_mat, wp['joints']
-            )
-            
-            if new_joints is None:
-                error_msg = f"Point {idx+1} IK Failed."
-                break
-                
-            wp['joints'] = list(new_joints)
-            wp['cartesian_flange'] = kinematics.forward_kinematics(new_joints).tolist()
-
-            if wp.get('type') == 'CIRC' and 'aux_joints' in wp:
-                T_aux_old = np.array(wp.get('aux_cartesian_flange', kinematics.forward_kinematics(wp['aux_joints'])))
-                new_aux, err_aux = kinematics.calculate_base_shift_ik(
-                    T_aux_old, recorded_base_mat, target_base_mat, wp['aux_joints']
-                )
-                if new_aux is None:
-                    error_msg = f"Point {idx+1} (Aux) IK Failed."
-                    break
-                wp['aux_joints'] = list(new_aux)
-                wp['aux_cartesian_flange'] = kinematics.forward_kinematics(new_aux).tolist()
-
-            wp['recorded_base_matrix'] = target_base_mat.tolist()
-            success_count += 1
-
-        main_win.path_manager.blockSignals(False)
-        main_win.path_manager.list_update_signal.emit()
-
-        if error_msg:
-            main_win.log_widget.append_log(f"[ERROR] Base Shift: {error_msg}")
-        elif success_count > 0:
-            main_win.log_widget.append_log(f"[System] Successfully shifted {success_count} points to '{target_base_name}'.")
-        else:
-            main_win.log_widget.append_log(f"[System] Selected points are already in '{target_base_name}'.")
-
-    def sync_all_base_shifts(self):
-        """👑 終極防呆：在 Save 觸發前，由上到下掃描整個路徑，確保所有點位與其上方的 SET_BASE 絕對同步"""
-        import kinematics
-        main_win = self.window()
-        if not hasattr(main_win, 'base_manager') or not hasattr(main_win, 'path_manager'): return
-
-        wp_list = main_win.path_manager.waypoints
-        if not wp_list: return
-
-        current_base_mat = np.eye(4)
-        shifted_count = 0
-        error_msg = ""
-        
-        main_win.path_manager.blockSignals(True)
-
-        for idx, wp in enumerate(wp_list):
-            m_type = wp.get('type')
-            
-            # 遇到 SET_BASE 就更換追蹤的基準矩陣
-            if m_type == 'SET_BASE':
-                bid = wp.get('value', 0)
-                if bid < len(main_win.base_manager.bases):
-                    current_base_mat = main_win.base_manager.get_matrix(bid)
-                continue
-
-            if m_type not in ["PTP", "LIN", "CIRC"]:
-                continue
-
-            recorded_base_mat = np.array(wp.get('recorded_base_matrix', np.eye(4)))
-            
-            if np.allclose(current_base_mat, recorded_base_mat, atol=1e-4):
-                continue
-
-            # 發現沒有對齊的點，立刻執行神級同步
-            T_flange_old = np.array(wp.get('cartesian_flange', kinematics.forward_kinematics(wp['joints'])))
-            new_joints, err = kinematics.calculate_base_shift_ik(
-                T_flange_old, recorded_base_mat, current_base_mat, wp['joints']
-            )
-            
-            if new_joints is None:
-                error_msg = f"Point {idx+1} IK Failed during Auto-Sync."
-                break
-                
-            wp['joints'] = list(new_joints)
-            wp['cartesian_flange'] = kinematics.forward_kinematics(new_joints).tolist()
-
-            if m_type == 'CIRC' and 'aux_joints' in wp:
-                T_aux_old = np.array(wp.get('aux_cartesian_flange', kinematics.forward_kinematics(wp['aux_joints'])))
-                new_aux, err_aux = kinematics.calculate_base_shift_ik(
-                    T_aux_old, recorded_base_mat, current_base_mat, wp['aux_joints']
-                )
-                if new_aux is None:
-                    error_msg = f"Point {idx+1} (Aux) IK Failed."
-                    break
-                wp['aux_joints'] = list(new_aux)
-                wp['aux_cartesian_flange'] = kinematics.forward_kinematics(new_aux).tolist()
-
-            wp['recorded_base_matrix'] = current_base_mat.tolist()
-            shifted_count += 1
-
-        main_win.path_manager.blockSignals(False)
-        
-        if error_msg:
-            main_win.log_widget.append_log(f"[ERROR] Save Auto-Sync: {error_msg}")
-        elif shifted_count > 0:
-            main_win.log_widget.append_log(f"[System] Auto-synced {shifted_count} points to match their local SET_BASE before saving.")
-            main_win.path_manager.list_update_signal.emit()
 
     # ==========================================
     # 其他列表事件與 UI 更新
@@ -741,9 +571,28 @@ class WaypointPanel(BaseBlock):
         self.tabs_layout.addWidget(tab)
         self.request_tab_switch(tab)
 
-    def request_tab_switch(self, tab):
-        if tab != self.active_tab:
-            self.tab_switch_requested.emit(tab)
+    def request_tab_switch(self, new_tab):
+        if new_tab != self.active_tab:
+            main_win = self.window()
+            
+            # 👑 1. 如果有舊分頁 (目前的 active_tab)，先把大腦裡的資料備份進去
+            if self.active_tab and hasattr(main_win, 'path_manager'):
+                self.active_tab.waypoints_data = copy.deepcopy(main_win.path_manager.waypoints)
+                self.active_tab.is_modified = main_win.path_manager.is_modified
+            
+            # 👑 2. 進行 UI 上的切換
+            self.set_active_tab_visuals(new_tab)
+            
+            # 👑 3. 把新分頁的資料倒進大腦裡
+            if hasattr(main_win, 'path_manager'):
+                # 倒資料前先鎖住信號，避免觸發不必要的 UI 刷新 (待會再一次刷)
+                main_win.path_manager.blockSignals(True) 
+                main_win.path_manager.waypoints = copy.deepcopy(new_tab.waypoints_data)
+                main_win.path_manager.is_modified = new_tab.is_modified
+                main_win.path_manager.blockSignals(False)
+            
+            # 👑 4. 呼叫外界 (gui.py) 進行完整的 UI 連動更新 (3D畫面、清單)
+            self.tab_switch_requested.emit(new_tab)
 
     def set_active_tab_visuals(self, tab):
         for t in self.tabs:
@@ -752,19 +601,24 @@ class WaypointPanel(BaseBlock):
         self._update_theme()
 
     def close_tab(self, tab):
+        """第一階段：只發送「請求關閉」訊號，不再自己動手"""
         self.tab_closed_signal.emit(tab)
-        self.tabs.remove(tab)
-        self.tabs_layout.removeWidget(tab)
-        tab.deleteLater()
-        
-        if tab == self.active_tab:
-            self.active_tab = None
-            if self.tabs:
-                self.request_tab_switch(self.tabs[-1])
+
+    def force_close_tab(self, tab):
+        """第二階段：接收主程式 (gui.py) 的命令，真正移除 UI"""
+        if tab in self.tabs:
+            self.tabs.remove(tab)
+            self.tabs_layout.removeWidget(tab)
+            tab.deleteLater()
+            
+            if tab == self.active_tab:
+                self.active_tab = None
+                if self.tabs:
+                    self.request_tab_switch(self.tabs[-1])
+                else:
+                    self._update_theme()
             else:
                 self._update_theme()
-        else:
-            self._update_theme()
 
     def _update_theme(self):
         if not self.tabs:
@@ -806,7 +660,6 @@ class WaypointPanel(BaseBlock):
                 self.delete_requested.emit, 
                 self.data_changed.emit, 
                 self.update_pt_requested.emit, 
-                self.insert_pt_requested.emit,
                 self.update_tcp_point_requested.emit,
                 self.insert_special_requested.emit,
                 self 
@@ -845,13 +698,19 @@ class WaypointPanel(BaseBlock):
         if target_idx < 0: 
             target_idx = 0
             
-        paste_count = len(getattr(self, 'copied_waypoints', []))
+        # 👑 修正：改向大腦 (PathManager) 讀取剪貼簿狀態
+        main_win = self.window()
+        clipboard = []
+        if hasattr(main_win, 'path_manager'):
+            clipboard = getattr(main_win.path_manager, 'clipboard', [])
+            
+        paste_count = len(clipboard)
         paste_text = f"Paste Copied ({paste_count})" if paste_count > 1 else "Paste Copied"
         action_paste = menu.addAction(qta.icon('mdi.content-paste', color='#00e6b8'), paste_text)
         action_paste.setEnabled(paste_count > 0)
         menu.addSeparator()
 
-        menu_pt = menu.addMenu(qta.icon('mdi.map-marker-plus', color='#00e6b8'), "Record Current Position")
+        menu_pt = menu.addMenu(qta.icon('mdi.map-marker-plus', color='#d4d4d4'), "Record Current Position")
         pt_actions = {} 
         for m_type in ["PTP", "LIN", "CIRC"]:
             action = menu_pt.addAction(m_type)
@@ -862,7 +721,7 @@ class WaypointPanel(BaseBlock):
         action_delay = menu.addAction(qta.icon('mdi.timer-outline', color='#e0e0e0'), "Append Delay")
         action_io = menu.addAction(qta.icon('mdi.power-plug-outline', color='#e0e0e0'), "Append I/O")
         
-        menu_tcp = menu.addMenu(qta.icon('mdi.toolbox', color='#00e6b8'), "Append SET_TCP")
+        menu_tcp = menu.addMenu(qta.icon('mdi.tools', color='#e6a800'), "Append SET_TCP")
         box_tools = []
         main_win = self.window()
         if hasattr(main_win, 'tcp_manager'):
@@ -878,7 +737,7 @@ class WaypointPanel(BaseBlock):
                 action = menu_tcp.addAction(qta.icon('mdi.wrench-outline', color='#d4d4d4'), t_name)
                 tcp_actions[action] = t_idx 
 
-        menu_base = menu.addMenu(qta.icon('mdi.view-grid-outline', color='#00e6b8'), "Append SET_BASE")
+        menu_base = menu.addMenu(qta.icon('mdi.view-grid-outline', color='#00a8e6'), "Append SET_BASE")
         box_bases = []
         if hasattr(main_win, 'base_manager'):
             bmgr = main_win.base_manager
@@ -902,7 +761,7 @@ class WaypointPanel(BaseBlock):
             return
             
         if selected_action == action_paste:
-            self.paste_waypoints(-1) 
+            self.paste_requested.emit(-1)
         elif selected_action in pt_actions:
             self.record_pt_requested.emit(target_idx, pt_actions[selected_action])
         elif selected_action == action_delay:
@@ -921,7 +780,11 @@ class WaypointPanel(BaseBlock):
             return
             
         model_idx = self.path_list.model().index(index, 0)
+        
+        # 👑 加上阻斷器：純粹改變 UI 選取狀態，絕對不發射 currentRowChanged 信號！
+        self.path_list.blockSignals(True)
         self.path_list.selectionModel().setCurrentIndex(
             model_idx, 
             QItemSelectionModel.SelectionFlag.ClearAndSelect
         )
+        self.path_list.blockSignals(False)

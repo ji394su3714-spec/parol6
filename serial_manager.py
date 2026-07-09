@@ -26,7 +26,7 @@ class SerialManager(QObject):
         self.motion_done_event = threading.Event()
         self.ok_semaphore = threading.Semaphore(50) # 允許最多 50 個 OK 信號在管道中等待，防止過度積壓
         
-        # 🌟 新增：夾爪專用的完成事件鎖
+        # 新增：夾爪專用的完成事件鎖
         self.ee_done_event = threading.Event()
 
     def list_ports(self):
@@ -52,7 +52,7 @@ class SerialManager(QObject):
             
             # 連線時清空旗標 
             self.motion_done_event.clear()  
-            self.ee_done_event.clear() # 🌟 清空夾爪旗標
+            self.ee_done_event.clear() # 清空夾爪旗標
             
             self.read_thread = threading.Thread(target=self._read_loop, daemon=True)
             self.read_thread.start()
@@ -156,7 +156,7 @@ class SerialManager(QObject):
                             self.ok_semaphore.release()
                             continue
                             
-                        # 🌟 新增：攔截夾爪專屬的完成暗號
+                        # 攔截夾爪專屬的完成暗號
                         if line == "<EE_DONE>":
                             self.ee_done_event.set()
                             continue
@@ -185,7 +185,7 @@ class SerialManager(QObject):
         if not self.is_connected: return False
         return self.ok_semaphore.acquire(timeout=timeout)
         
-    # 🌟 新增：專門讓大腦等待夾爪完成的方法
+    # 專門讓大腦等待夾爪完成的方法
     def wait_for_ee_done(self, timeout=10.0):
         """ 等待 Arduino 回傳 <EE_DONE>，具有超時保護 """
         if not self.is_connected: return False

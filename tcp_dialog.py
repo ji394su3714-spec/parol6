@@ -52,6 +52,7 @@ class TCPManagerDialog(QDialog):
         self.setWindowTitle("TCP / Tool Manager")
         self.setMinimumSize(450, 300)
         self.setStyleSheet(styles.PREFERENCES_DIALOG_STYLE)
+        self.setWindowIcon(qta.icon('mdi.tools'))
         
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(15, 15, 15, 15)
