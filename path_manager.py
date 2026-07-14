@@ -188,8 +188,59 @@ class StreamingPathExecutor(QThread):
                     # 強制切斷連續融合
                     pending_blend_str = 'FINE' 
                     continue
-                
-                # 取得路徑生成器 (Generator)
+
+                # ===================================================
+                # 👑 2. 全新引擎：五次 B-樣條 (Look-ahead 貪吃蛇邏輯)
+                # ===================================================
+                if move_type == "SPLINE":
+                    spline_buffer.append(wp)
+                    is_last = (wp_idx == len(self.waypoint_list) - 1)
+                    next_is_spline = not is_last and (self.waypoint_list[wp_idx+1].get("move_type") == "SPLINE")
+
+                    if next_is_spline:
+                        continue # 💡 繼續吃點，不急著進入運算！
+
+                    # 收集完畢，準備計算！
+                    # 遇到 Spline 區塊前，強制將前面的尾巴結算 (Spline 不需要舊版疊加融合)
+                    if pending_trajectory is not None:
+                        for ik_joints in pending_trajectory:
+                            if not self._is_running: return
+                            self.point_queue.put(ik_joints, block=True)
+                        pending_trajectory = None
+
+                    # 呼叫五次 B-樣條數學引擎
+                    gen, t_tot, msg, total_N = kinematics.TrajectoryMathEngine.calculate_spline_trajectory(
+                        current_seed, spline_buffer, interval=0.010
+                    )
+                    spline_buffer = [] # 清空肚子，等待下一批
+                    
+                    if gen is None:
+                        self.error_signal.emit(f"[SPLINE Block] failed: {msg}")
+                        self.producer_error = True
+                        return
+
+                    if msg and msg != "SUCCESS":
+                        self.log_signal.emit(msg)
+                        
+                    # 直接將完美平滑的曲線推播給發送佇列 (Bypass 掉舊版的 blend 區塊)
+                    try:
+                        for _ in range(total_N):
+                            if not self._is_running: return
+                            pt = next(gen)
+                            self.point_queue.put(pt, block=True)
+                            current_seed = pt
+                    except Exception as e:
+                        self.error_signal.emit(f"[SPLINE Block] IK Error: {e}")
+                        self.producer_error = True
+                        return
+                    
+                    pending_blend_str = 'FINE' # Spline 跑完後，強制煞車等待下一個指令
+                    continue 
+                # ===================================================
+
+                # ===================================================
+                # 3. 處理傳統的 PTP, LIN, CIRC, DELAY
+                # ===================================================
                 gen, total_N, msg = None, 0, ""
                 
                 if move_type == "DELAY":
@@ -303,7 +354,6 @@ class StreamingPathExecutor(QThread):
                 break
             loop_count += 1 
             
-        # 清空最後剩餘的人質
         if pending_trajectory is not None:
             for ik_joints in pending_trajectory:
                 if not self._is_running: return
