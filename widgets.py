@@ -114,6 +114,7 @@ class EditableValueLabel(QLineEdit):
     def __init__(self, default_text="0.00", parent=None):
         super().__init__(default_text, parent)
         self.slider = None
+        self.on_commit_cb = None  
         self.setFixedHeight(12) 
         self.setFixedWidth(50) 
         self.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
@@ -141,8 +142,10 @@ class EditableValueLabel(QLineEdit):
             val = float(self.text())
             if self.slider:
                 self.slider.setValue(int(val * 100.0))
+            if self.on_commit_cb:  
+                self.on_commit_cb()
         except ValueError:
-            pass 
+            pass
         self.set_label_mode()
 
     def focusOutEvent(self, event):
@@ -207,7 +210,6 @@ class FloatingNavBar(QFrame):
             if split_chevron:
                 container = QFrame(self)
                 container.setStyleSheet("background: transparent; border: none;")
-                
                 h_layout = QHBoxLayout(container)
                 h_layout.setContentsMargins(0, 0, 0, 0)
                 h_layout.setSpacing(0) 
@@ -236,12 +238,8 @@ class FloatingNavBar(QFrame):
                 layout.addWidget(btn)
                 self.nav_buttons.append(btn)
 
-# ==========================================
-# 共用 UI 元件 (DRY 重構新增)
-# ==========================================
 class SpeedControlWidget(QFrame):
-    """獨立的速度檔位控制器 (將加減速按鈕與燈號封裝成單一元件)"""
-    def __init__(self, parent=None, initial_level=2, max_level=4):
+    def __init__(self, parent=None, initial_level=4, max_level=4):
         super().__init__(parent)
         self.level = initial_level
         self.max_level = max_level
@@ -275,7 +273,6 @@ class SpeedControlWidget(QFrame):
         self.btn_plus.setStyleSheet(styles.SPEED_PLUS_STYLE)
         self.btn_plus.clicked.connect(self.increase)
         layout.addWidget(self.btn_plus)
-
         self.update_display()
 
     def decrease(self):
@@ -300,10 +297,8 @@ class BaseBlock(QFrame):
         super().__init__(parent)
         self.setObjectName("BlockFrame")
         self.setStyleSheet(styles.BLOCK_STYLE)
-        
         if nav_config is None:
             nav_config = [{'icon': 'mdi.dots-horizontal'}]
-            
         self.nav_bar = FloatingNavBar(nav_config, self)
         
     def resizeEvent(self, event: QResizeEvent):
@@ -567,6 +562,9 @@ class MonitorWidget(QFrame):
     def copy_joints_to_clipboard(self):
         if hasattr(self, 'current_joints_str'): QApplication.clipboard().setText(self.current_joints_str)
 
+# ==========================================
+# 重構清理版 JogWidget (全獨立時鐘連發架構)
+# ==========================================
 class JogWidget(BaseBlock):
     def __init__(self, parent=None):
         nav_config = [
@@ -578,38 +576,76 @@ class JogWidget(BaseBlock):
         super().__init__(parent=parent, nav_config=nav_config)
         self.setMinimumWidth(260)
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        main_layout = QVBoxLayout(self)
-        main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        def create_separator():
-            sep_layout = QHBoxLayout()
-            sep_layout.setContentsMargins(15, 5, 15, 5) 
-            line = QFrame()
-            line.setFrameShape(QFrame.Shape.HLine)
-            line.setStyleSheet(styles.SEPARATOR_STYLE) 
-            sep_layout.addWidget(line)
-            return sep_layout
+        # 初始化三大獨立心跳時鐘 (20Hz = 50ms)
+        self._init_timers()
+        
+        # 建立 UI 區塊
+        self._setup_joint_ui()
+        self._setup_cartesian_ui()
+        self._setup_gripper_ui()
 
-        # ==========================================
-        # Joint 區
-        # ==========================================
-        joint_title_row = QHBoxLayout()
-        joint_title_row.setContentsMargins(0, 0, 10, 5)
-        title_joint = QLabel("Joint Jogging")
-        title_joint.setFont(styles.FONT_TITLE)
-        joint_title_row.addWidget(title_joint)
-        joint_title_row.addStretch(1)
+    def _init_timers(self):
+        # Joint 虛擬時鐘 (只更新 3D 畫面，實體已由 MCU 接管連續轉動)
+        self.joint_jog_timer = QTimer()
+        self.joint_jog_timer.timeout.connect(self._update_joint_simulation)
+        self.active_joint_axis = -1
+        self.active_joint_sign = 0
 
-        # 使用 DRY 重構後的速度控制器
+        # Cartesian 實體連發時鐘 (Python 持續算 IK 並發送 PTP 點位給 MCU)
+        self.cart_jog_timer = QTimer()
+        self.cart_jog_timer.timeout.connect(self._cartesian_timer_tick)
+        self.active_cart_axis = None
+        
+        # Gripper 實體連發時鐘
+        self.gripper_jog_timer = QTimer()
+        self.gripper_jog_timer.timeout.connect(self._gripper_timer_tick)
+        self.active_gripper_sign = 0
+
+    def _create_separator(self):
+        sep_layout = QHBoxLayout()
+        sep_layout.setContentsMargins(15, 5, 15, 5) 
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setStyleSheet(styles.SEPARATOR_STYLE) 
+        sep_layout.addWidget(line)
+        self.main_layout.addLayout(sep_layout)
+
+    def _create_header(self, title_text, speed_ctrl):
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 10, 5)
+        title = QLabel(title_text)
+        title.setFont(styles.FONT_TITLE)
+        row.addWidget(title)
+        row.addStretch(1)
+        row.addWidget(speed_ctrl)
+        
+        if title_text != "Cartesian Jogging":
+            row.addSpacing(10)
+            btn_add = QPushButton("+")
+            btn_add.setFixedSize(22, 22)
+            btn_add.setStyleSheet(styles.BTN_ACTION_STYLE)
+            row.addWidget(btn_add)
+        
+        self.main_layout.addLayout(row)
+
+    def _create_jog_btn(self, icon_name):
+        """純按鈕建立 (無 autoRepeat，交給外部接 pressed/released 事件)"""
+        btn = QPushButton(qta.icon(icon_name, color='#ffffff'), "")
+        btn.setIconSize(QSize(16, 16))
+        btn.setFixedSize(22, 22)
+        btn.setStyleSheet(styles.BTN_JOG_SLIDER_STYLE)
+        return btn
+
+    # ---------------------------------------------------------
+    # UI 建立區塊
+    # ---------------------------------------------------------
+    def _setup_joint_ui(self):
         self.j_speed_ctrl = SpeedControlWidget()
-        joint_title_row.addWidget(self.j_speed_ctrl)
-        joint_title_row.addSpacing(10)
-
-        btn_add_joint = QPushButton("+")
-        btn_add_joint.setFixedSize(22, 22)
-        btn_add_joint.setStyleSheet(styles.BTN_ACTION_STYLE)
-        joint_title_row.addWidget(btn_add_joint)
-        main_layout.addLayout(joint_title_row)
+        self._create_header("Joint Jogging", self.j_speed_ctrl)
 
         upper_layout = QHBoxLayout()
         upper_layout.setContentsMargins(10, 0, 10, 0)
@@ -626,7 +662,6 @@ class JogWidget(BaseBlock):
             label_row = QHBoxLayout()
             label_row.setContentsMargins(0, 0, 0, 0)
             lbl = QLabel(f"Joint {i}")
-            lbl.setObjectName("JointLabel") 
             lbl.setFixedHeight(12)
             lbl.setAlignment(Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft)
             label_row.addWidget(lbl, 1)
@@ -648,15 +683,23 @@ class JogWidget(BaseBlock):
             slider.setStyleSheet(styles.SLIDER_JOINT_STYLE)
             self.joint_sliders.append(slider)
             val_lbl.slider = slider
+            
+            # 拖動更新 3D / 放開更新實機
             slider.valueChanged.connect(self.on_joint_slider_changed)
             slider.valueChanged.connect(lambda val, label=val_lbl: label.setText(f"{val/100:.1f}"))
+            slider.sliderReleased.connect(self.on_joint_slider_released)
+            val_lbl.on_commit_cb = self.on_joint_slider_released
 
-            # 使用 DRY 共用按鈕創建函式
-            btn_minus = self._create_jog_btn('mdi.transfer-left', lambda *args, idx=i-1: self._step_joint(idx, -1))
+            # 綁定 pressed 與 released 到自建連發引擎
+            btn_minus = self._create_jog_btn('mdi.transfer-left')
+            btn_minus.pressed.connect(lambda *args, idx=i-1: self._start_joint_jog(idx, -1))
+            btn_minus.released.connect(lambda *args, idx=i-1: self._stop_joint_jog(idx))
             row.addWidget(btn_minus)
             row.addWidget(slider)
 
-            btn_plus = self._create_jog_btn('mdi.transfer-right', lambda *args, idx=i-1: self._step_joint(idx, 1))
+            btn_plus = self._create_jog_btn('mdi.transfer-right')
+            btn_plus.pressed.connect(lambda *args, idx=i-1: self._start_joint_jog(idx, 1))
+            btn_plus.released.connect(lambda *args, idx=i-1: self._stop_joint_jog(idx))
             row.addWidget(btn_plus)
 
             row.insertSpacerItem(1, QSpacerItem(5, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum))
@@ -666,25 +709,13 @@ class JogWidget(BaseBlock):
             jog_area.addLayout(joint_container)
 
         upper_layout.addLayout(jog_area)
-        main_layout.addLayout(upper_layout)
-        main_layout.addLayout(create_separator())
+        self.main_layout.addLayout(upper_layout)
+        self._create_separator()
 
-        # ==========================================
-        # Cartesian 區
-        # ==========================================
-        cart_title_row = QHBoxLayout()
-        cart_title_row.setContentsMargins(0, 0, 10, 5)
-        title_cart = QLabel("Cartesian Jogging")
-        title_cart.setFont(styles.FONT_TITLE)
-        cart_title_row.addWidget(title_cart)
-        cart_title_row.addStretch(1)
-
-        self.is_cartesian_continuous = True
-        
-        # 使用 DRY 重構後的速度控制器
+    def _setup_cartesian_ui(self):
         self.c_speed_ctrl = SpeedControlWidget()
-        cart_title_row.addWidget(self.c_speed_ctrl)
-        main_layout.addLayout(cart_title_row)
+        self._create_header("Cartesian Jogging", self.c_speed_ctrl)
+        self.is_cartesian_continuous = True
 
         cart_main_layout = QHBoxLayout()
         cart_main_layout.setContentsMargins(0, 0, 10, 5)
@@ -748,37 +779,21 @@ class JogWidget(BaseBlock):
                 btn.setFixedHeight(32)
                 btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
                 btn.setStyleSheet(styles.BTN_CARTESIAN_STYLE)
-                btn.setAutoRepeat(True)
-                btn.setAutoRepeatDelay(250)
-                btn.setAutoRepeatInterval(10)
-                btn.clicked.connect(lambda checked=False, bl=base_label: self.on_cartesian_clicked(bl))
+                
+                # 加入 *args 防護罩
+                btn.pressed.connect(lambda *args, bl=base_label: self._start_cartesian_jog(bl))
+                btn.released.connect(lambda *args: self._stop_cartesian_jog())
+                
                 cart_grid.addWidget(btn, row_idx, col_idx)
                 self.cart_buttons.append((btn, base_label))
 
         cart_main_layout.addLayout(cart_grid)
-        main_layout.addLayout(cart_main_layout)
-        main_layout.addLayout(create_separator())
+        self.main_layout.addLayout(cart_main_layout)
+        self._create_separator()
 
-        # ==========================================
-        # Gripper 區
-        # ==========================================
-        ee_title_row = QHBoxLayout()
-        ee_title_row.setContentsMargins(0, 0, 10, 0) 
-        title_ee = QLabel("End Effector")
-        title_ee.setFont(styles.FONT_TITLE)
-        ee_title_row.addWidget(title_ee)
-        ee_title_row.addStretch(1)
-
-        # 使用 DRY 重構後的速度控制器
+    def _setup_gripper_ui(self):
         self.ee_speed_ctrl = SpeedControlWidget()
-        ee_title_row.addWidget(self.ee_speed_ctrl)
-        ee_title_row.addSpacing(10)
-
-        btn_add_gripper = QPushButton("+")
-        btn_add_gripper.setFixedSize(22, 22)
-        btn_add_gripper.setStyleSheet(styles.BTN_ACTION_STYLE)
-        ee_title_row.addWidget(btn_add_gripper)
-        main_layout.addLayout(ee_title_row)
+        self._create_header("End Effector", self.ee_speed_ctrl)
 
         lower_layout = QHBoxLayout()
         lower_layout.setContentsMargins(0, 0, 10, 5)
@@ -809,17 +824,22 @@ class JogWidget(BaseBlock):
         g_slider_row.setContentsMargins(0, 0, 0, 0)
         g_slider_row.setSpacing(10)
 
-        # 使用 DRY 共用按鈕創建函式
-        g_btn_minus = self._create_jog_btn('mdi.transfer-left', lambda checked=False: self.g_slider.setValue(self.g_slider.value() - 1))
-        g_slider_row.addWidget(g_btn_minus)
-
         self.g_slider = QSlider(Qt.Orientation.Horizontal) 
         self.g_slider.setRange(0, 100)
         self.g_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.g_slider.setStyleSheet(styles.SLIDER_GRIPPER_STYLE)
+        self.g_slider.sliderReleased.connect(self.on_gripper_slider_released)
+        self.g_slider.valueChanged.connect(lambda val, label=g_val_lbl: label.setText(f"{val} %"))
+
+        g_btn_minus = self._create_jog_btn('mdi.transfer-left')
+        g_btn_minus.pressed.connect(lambda *args: self._start_gripper_jog(-1))
+        g_btn_minus.released.connect(lambda *args: self._stop_gripper_jog())
+        g_slider_row.addWidget(g_btn_minus)
         g_slider_row.addWidget(self.g_slider)
 
-        g_btn_plus = self._create_jog_btn('mdi.transfer-right', lambda checked=False: self.g_slider.setValue(self.g_slider.value() + 1))
+        g_btn_plus = self._create_jog_btn('mdi.transfer-right')
+        g_btn_plus.pressed.connect(lambda *args: self._start_gripper_jog(1))
+        g_btn_plus.released.connect(lambda *args: self._stop_gripper_jog())
         g_slider_row.addWidget(g_btn_plus)
 
         g_slider_row.insertSpacerItem(1, QSpacerItem(5, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum))
@@ -827,108 +847,136 @@ class JogWidget(BaseBlock):
 
         gripper_area.addLayout(g_slider_row)
         lower_layout.addLayout(gripper_area)
-        
-        self.g_slider.valueChanged.connect(lambda val, label=g_val_lbl: label.setText(f"{val} %"))
-        main_layout.addLayout(lower_layout) 
+        self.main_layout.addLayout(lower_layout) 
 
-    # ==========================================
-    # 屬性代理 (保證與 gui.py 完美相容)
-    # ==========================================
+    # ---------------------------------------------------------
+    # 屬性與狀態同步
+    # ---------------------------------------------------------
     @property
-    def j_speed_level(self):
-        return self.j_speed_ctrl.level
-
+    def j_speed_level(self): return self.j_speed_ctrl.level
     @property
-    def c_speed_level(self):
-        return self.c_speed_ctrl.level
-
+    def c_speed_level(self): return self.c_speed_ctrl.level
     @property
-    def ee_speed_level(self):
-        return self.ee_speed_ctrl.level
-
-    # ==========================================
-    # 共用 UI 創建函式
-    # ==========================================
-    def _create_jog_btn(self, icon_name, callback):
-        """將重複的手動點動 (Jog) 按鈕邏輯獨立抽取"""
-        btn = QPushButton(qta.icon(icon_name, color='#ffffff'), "")
-        btn.setIconSize(QSize(16, 16))
-        btn.setFixedSize(22, 22)
-        btn.setStyleSheet(styles.BTN_JOG_SLIDER_STYLE)
-        btn.setAutoRepeat(True)
-        btn.setAutoRepeatDelay(250)
-        btn.setAutoRepeatInterval(10)
-        btn.clicked.connect(callback)
-        return btn
-
-    # ==========================================
-    # 連動邏輯區
-    # ==========================================
-    def on_joint_slider_changed(self):
-        angles = [float(s.value()) / 100 for s in self.joint_sliders]
-        if hasattr(self, 'update_3d_callback') and self.update_3d_callback:
-            self.update_3d_callback(angles)
-
-    def _step_joint(self, index, sign):
-        step_angle = sign * 0.25 * (2 ** (self.j_speed_level - 1))
-        slider = self.joint_sliders[index]
-        step_val = int(step_angle * 100.0) 
-        new_val = slider.value() + step_val
-        new_val = max(slider.minimum(), min(slider.maximum(), new_val)) 
-        slider.setValue(new_val)
-
-    def on_cartesian_clicked(self, base_label):
-        if hasattr(self, 'cartesian_jog_callback') and self.cartesian_jog_callback:
-            axis_str = base_label[:-1] 
-            sign = 1 if base_label[-1] == '+' else -1
-            is_rot = len(axis_str) > 1
-            axis_arg = axis_str if is_rot else axis_str.lower()
-            
-            if self.is_cartesian_continuous:
-                step_val = sign * 0.5 * (2 ** (self.c_speed_level - 1))
-            else:
-                step_val = sign * self.spin_step.value()
-                
-            frame = "Tool" if self.btn_frame_toggle.isChecked() else "World"
-            self.cartesian_jog_callback(axis_arg, step_val, frame)
+    def ee_speed_level(self): return self.ee_speed_ctrl.level
 
     def update_joints_from_ik(self, float_angles):
         for i, slider in enumerate(self.joint_sliders):
             slider.blockSignals(True)
             slider.setValue(int(round(float_angles[i] * 100)))
             slider.blockSignals(False)
-            
             if hasattr(self, 'joint_labels') and i < len(self.joint_labels):
                 self.joint_labels[i].setText(f"{float_angles[i]:.1f}")
 
     def toggle_cartesian_frame(self, checked):
-        if checked:
-            self.btn_frame_toggle.setText("TRF")
-            prefix = "T"
-        else:
-            self.btn_frame_toggle.setText("WRF")
-            prefix = "W"
+        prefix = "T" if checked else "W"
+        self.btn_frame_toggle.setText("TRF" if checked else "WRF")
         for btn, base_label in self.cart_buttons:
             btn.setText(f"{prefix}{base_label}")
 
     def toggle_cartesian_mode(self, checked):
-        if checked:
-            self.btn_jog_mode.setText("Step")
-            self.is_cartesian_continuous = False
-            self.step_container.setVisible(True)  
-            
-            for btn, _ in self.cart_buttons:
-                btn.setAutoRepeat(False)
-        else:
-            self.btn_jog_mode.setText("Cont")
-            self.is_cartesian_continuous = True
-            self.step_container.setVisible(False)
-            
-            for btn, _ in self.cart_buttons:
-                btn.setAutoRepeat(True)
-                btn.setAutoRepeatDelay(250)
-                btn.setAutoRepeatInterval(10)
+        self.is_cartesian_continuous = not checked
+        self.btn_jog_mode.setText("Step" if checked else "Cont")
+        self.step_container.setVisible(checked)
 
+    # ---------------------------------------------------------
+    # 連動邏輯：Joint (Mode 2 MCU 連續寸動)
+    # ---------------------------------------------------------
+    def on_joint_slider_changed(self):
+        """拖動 Slider 時，只負責更新 3D 畫面"""
+        angles = [float(s.value()) / 100 for s in self.joint_sliders]
+        if hasattr(self, 'update_3d_callback') and self.update_3d_callback:
+            self.update_3d_callback(angles)
+            
+    def on_joint_slider_released(self):
+        """鬆開 Slider 或輸入數值時，送出 PTP 指令給實機"""
+        angles = [float(s.value()) / 100 for s in self.joint_sliders]
+        if hasattr(self, 'send_jog_callback') and self.send_jog_callback:
+            self.send_jog_callback(angles)
+
+    def _start_joint_jog(self, index, sign):
+        """按下按鈕：通知 MCU 接管轉動，並啟動 3D 動畫時鐘"""
+        self.active_joint_axis = index
+        self.active_joint_sign = sign
+        if hasattr(self, 'continuous_jog_callback'):
+            speed_factor = self.j_speed_level * 0.25
+            self.continuous_jog_callback(index, sign, speed_factor)
+        self.joint_jog_timer.start(50)
+
+    def _stop_joint_jog(self, index):
+        """鬆開按鈕：通知 MCU 煞車，並停止 3D 動畫時鐘"""
+        self.joint_jog_timer.stop()
+        self.active_joint_axis = -1
+        self.active_joint_sign = 0
+        if hasattr(self, 'continuous_jog_callback'):
+            self.continuous_jog_callback(index, 0, 0.0)
+
+    def _update_joint_simulation(self):
+        """3D 動畫時鐘：不發送任何封包，單純讓畫面手臂跟著動"""
+        if self.active_joint_axis == -1: return
+        safe_max_deg_per_sec = [40.0, 18.0, 20.0, 80.0, 80.0, 42.0]
+        speed_factor = self.j_speed_level * 0.25
+        step_angle = self.active_joint_sign * (safe_max_deg_per_sec[self.active_joint_axis] * speed_factor) / 20.0
+        
+        slider = self.joint_sliders[self.active_joint_axis]
+        new_val = slider.value() + int(step_angle * 100.0)
+        new_val = max(slider.minimum(), min(slider.maximum(), new_val)) 
+        slider.setValue(new_val)
+
+    # ---------------------------------------------------------
+    # 連動邏輯：Cartesian (Python IK 持續派發點位)
+    # ---------------------------------------------------------
+    def _start_cartesian_jog(self, base_label):
+        self.active_cart_axis = base_label
+        self._cartesian_timer_tick() # 按下瞬間先觸發一次步進
+        if self.is_cartesian_continuous:
+            self.cart_jog_timer.start(50) # 20Hz 發送頻率
+
+    def _stop_cartesian_jog(self):
+        self.cart_jog_timer.stop()
+        self.active_cart_axis = None
+
+    def _cartesian_timer_tick(self):
+        if not self.active_cart_axis: return
+        if hasattr(self, 'cartesian_jog_callback') and self.cartesian_jog_callback:
+            axis_str = self.active_cart_axis[:-1] 
+            sign = 1 if self.active_cart_axis[-1] == '+' else -1
+            is_rot = len(axis_str) > 1
+            axis_arg = axis_str if is_rot else axis_str.lower()
+            
+            if self.is_cartesian_continuous:
+                step_val = sign * 0.25 * (2 ** (self.c_speed_level - 1))
+            else:
+                step_val = sign * self.spin_step.value()
+                
+            frame = "Tool" if self.btn_frame_toggle.isChecked() else "World"
+            self.cartesian_jog_callback(axis_arg, step_val, frame)
+
+    # ---------------------------------------------------------
+    # 連動邏輯：Gripper
+    # ---------------------------------------------------------
+    def on_gripper_slider_released(self):
+        if hasattr(self, 'send_gripper_callback') and self.send_gripper_callback:
+            self.send_gripper_callback(self.g_slider.value())
+
+    def _start_gripper_jog(self, sign):
+        self.active_gripper_sign = sign
+        self._gripper_timer_tick() 
+        self.gripper_jog_timer.start(50)
+
+    def _stop_gripper_jog(self):
+        self.gripper_jog_timer.stop()
+        self.active_gripper_sign = 0
+
+    def _gripper_timer_tick(self):
+        if self.active_gripper_sign == 0: return
+        new_val = self.g_slider.value() + self.active_gripper_sign * 5
+        new_val = max(self.g_slider.minimum(), min(self.g_slider.maximum(), new_val))
+        self.g_slider.setValue(new_val)
+        self.on_gripper_slider_released() # 夾爪允許密集發送 PWM
+
+# ==========================================
+# View3DWidget & LogWidget
+# ==========================================
 class _ScreenshotSaveSignals(QObject):
     finished = Signal(str)
     error = Signal(str)
@@ -950,9 +998,6 @@ class _ScreenshotSaveTask(QRunnable):
         except Exception as e:
             self.signals.error.emit(str(e))
 
-# ==========================================
-# View3DWidget
-# ==========================================
 class View3DWidget(BaseBlock):    
     def __init__(self, parent=None):
         nav_config = [
@@ -997,16 +1042,13 @@ class View3DWidget(BaseBlock):
         if focus_w:
             if focus_w.inherits("QLineEdit") or focus_w.inherits("QAbstractSpinBox") or focus_w.inherits("QTextEdit"):
                 return
-
         local_pos = self.mapFromGlobal(QCursor.pos())
         if not self.rect().contains(local_pos):
             return 
-
         if getattr(self, '_active_menu', None) is not None:
             self._active_menu.close()
             self._active_menu = None
             return
-
         self.show_context_menu(pos=None)
 
     def on_translate_toggled(self, checked):
@@ -1040,23 +1082,18 @@ class View3DWidget(BaseBlock):
         QApplication.processEvents() 
         pixmap = self.grab() 
         image = pixmap.toImage() 
-
         screenshot_dir = os.path.join(os.getcwd(), "screenshots")
         os.makedirs(screenshot_dir, exist_ok=True)
-        
         filename = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3] + ".png"
         filepath = os.path.join(screenshot_dir, filename)
-
         task = _ScreenshotSaveTask(image, filepath)
         task.signals.error.connect(lambda msg: print(f"[截圖錯誤] {msg}"))
         self._screenshot_pool.start(task)
-
         self._flash_camera_icon('#00e6b8', duration=80)
 
     def _flash_camera_icon(self, color: str, duration: int = 80):
         if not hasattr(self, '_camera_btn_original_style'):
             self._camera_btn_original_style = self.btn_camera.styleSheet()
-
         self.btn_camera.setStyleSheet(
             f"QToolButton {{ background-color: {color} !important; border-radius: 4px; }}"
         )
@@ -1067,20 +1104,16 @@ class View3DWidget(BaseBlock):
 
     def show_context_menu(self, pos=None):        
         menu_pos = QCursor.pos()
-        
         menu = QMenu(self.window())
         self._active_menu = menu
         menu.setStyleSheet(styles.MENU_STYLE)
         menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         
         action_reset = QAction(qta.icon('mdi.camera-retake', color='#e0e0e0'), "Reset Camera", self)
-        
         grid_visible = self.robot_view.floor_grid.visible
         action_grid = QAction(qta.icon('mdi.grid', color='#e0e0e0'), "Hide Grid" if grid_visible else "Show Grid", self)
-        
         is_drag_active = getattr(self.robot_view, '_show_drag_sphere', False)
         action_toggle_drag = QAction(qta.icon('mdi.cursor-move', color='#e0e0e0'), "Disable Drag Sphere" if is_drag_active else "Enable Drag Sphere", self)
-        
         path_visible = getattr(self.robot_view, 'show_trajectory', True)
         action_path = QAction(qta.icon('mdi.vector-polyline', color='#e0e0e0'), "Hide Trajectory" if path_visible else "Show Trajectory", self)
         
@@ -1095,25 +1128,21 @@ class View3DWidget(BaseBlock):
         finally:
             self._active_menu = None
             
-        if not selected_action:
-            return
+        if not selected_action: return
         
         if selected_action == action_reset:
             self.robot_view.view.camera.center = (0, 0, 0.15)
             self.robot_view.view.camera.elevation = 30
             self.robot_view.view.camera.azimuth = -225
             self.robot_view.view.camera.distance = 2.5
-            
         elif selected_action == action_grid:
             new_state = not grid_visible
             self.robot_view.floor_grid.visible = new_state
             self.robot_view.floor.visible = new_state 
             self.robot_view.canvas.update()
-            
         elif selected_action == action_toggle_drag:
             self.robot_view._show_drag_sphere = not is_drag_active
             self.robot_view._update_gizmo_visuals()
-            
         elif selected_action == action_path:
             self.robot_view.show_trajectory = not path_visible
             if hasattr(self.robot_view, 'path_actor'):
@@ -1147,7 +1176,6 @@ class LogWidget(BaseBlock):
 
     def append_log(self, msg):
         color = "#d4d4d4" 
-
         safe_msg = str(msg).replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
         msg_upper = safe_msg.upper()
 

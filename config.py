@@ -426,6 +426,30 @@ class Robot3DView(QWidget):
     def on_mouse_press(self, event):
         if event.button != 1: return
         
+        # ==========================================
+        # 👑 新增：如果開啟了擷取模式 (Picking Mode)，發射 3D 射線
+        # ==========================================
+        if getattr(self, '_picking_mode', False) and hasattr(self, 'raycast_callback') and self.raycast_callback:
+            # 借用完美對齊世界零點的 floor_grid 來取得螢幕與 3D 世界的轉換矩陣
+            trans = self.floor_grid.get_transform('canvas', 'visual')
+            
+            # 將 2D 螢幕座標投影到 3D 空間的「近平面(-1)」與「遠平面(1)」
+            p_near = trans.map([event.pos[0], event.pos[1], -1.0])
+            p_far  = trans.map([event.pos[0], event.pos[1],  1.0])
+            
+            # 齊次座標 (Homogeneous coordinates) 轉換
+            p_near = p_near[:3] / p_near[3]
+            p_far  = p_far[:3] / p_far[3]
+            
+            # 計算射線方向向量
+            ray_dir = p_far - p_near
+            ray_dir /= np.linalg.norm(ray_dir)
+            
+            # 將世界座標的起點與方向傳給外部處理
+            self.raycast_callback(p_near, ray_dir)
+            event.handled = True # 攔截點擊，不讓攝影機旋轉
+            return
+
         tr = self.dragger_visual.get_transform('visual', 'document')
         origin_doc = tr.map([0,0,0])
         if origin_doc[3] == 0: return
@@ -467,8 +491,19 @@ class Robot3DView(QWidget):
             self._bg_press_pos = event.pos
 
     def on_mouse_move(self, event):
-        if not self._active_drag_axis: return
 
+        # 👑 新增：如果開啟了擷取模式，滑鼠移動時持續發射 Hover 射線
+        if getattr(self, '_picking_mode', False) and hasattr(self, 'raycast_hover_callback') and self.raycast_hover_callback:
+            trans = self.floor_grid.get_transform('canvas', 'visual')
+            p_near = trans.map([event.pos[0], event.pos[1], -1.0])
+            p_far  = trans.map([event.pos[0], event.pos[1],  1.0])
+            p_near = p_near[:3] / p_near[3]
+            p_far  = p_far[:3] / p_far[3]
+            ray_dir = p_far - p_near
+            ray_dir /= np.linalg.norm(ray_dir)
+            self.raycast_hover_callback(p_near, ray_dir)
+            # 注意這裡不要 event.handled = True，以免干擾底層事件
+        if not self._active_drag_axis: return
         if self._active_drag_axis == 'free':
             if hasattr(self, 'drag_callback') and self.drag_callback:
                 tr_inv = self.floor_grid.get_transform('document', 'visual')

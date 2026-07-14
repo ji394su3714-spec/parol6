@@ -128,12 +128,22 @@ class RobotControllerGUI(QMainWindow):
         self.render_timer.start(16) 
 
         # 綁定 JogWidget 的各項神經
-        self.jog_widget.update_3d_callback = self.handle_joint_jog
+        self.jog_widget.update_3d_callback = self.preview_joint_jog 
+        self.jog_widget.send_jog_callback = self.send_joint_jog     
         self.jog_widget.cartesian_jog_callback = self.handle_cartesian_jog
-        self.jog_widget.g_slider.valueChanged.connect(self.handle_gripper_jog)
+        self.jog_widget.continuous_jog_callback = self.handle_continuous_joint_jog
+
+        # 夾爪改為綁定 send_gripper_callback
+        self.jog_widget.send_gripper_callback = self.handle_gripper_jog
+        
+        # 夾爪 Toggle 按鈕連動
         self.jog_widget.gripper_btn.toggled.connect(
             lambda checked: self.jog_widget.g_slider.setValue(100 if checked else 0)
         )
+        self.jog_widget.gripper_btn.toggled.connect(
+            lambda checked: self.handle_gripper_jog(100 if checked else 0)
+        )
+        
         self.jog_widget.on_joint_slider_changed()
         
         self.view3d_widget.robot_view.drag_callback = self.handle_tcp_drag
@@ -209,17 +219,28 @@ class RobotControllerGUI(QMainWindow):
     # ==========================================
     def get_jog_speed_factor(self, level):
         """將 UI 的 1~4 檔位轉換為速度比例"""
-        mapping = {1: 0.1, 2: 0.25, 3: 0.5, 4: 1.0}
-        return mapping.get(level, 0.25)
+        mapping = {1: 0.25, 2: 0.5, 3: 0.75, 4: 1.0}
+        return mapping.get(level, 1.0)
 
-    def handle_joint_jog(self, angles):
-        """處理關節寸動：更新 3D 並發送實機訊號"""
+    def preview_joint_jog(self, angles):
+        """處理關節寸動 (拖動中)：只更新 3D 畫面不發送，避免塞爆 MCU"""
+        self.current_float_joints = list(angles)
+        self.pending_3d_update = True
+
+    def send_joint_jog(self, angles):
+        """處理關節寸動 (放開滑鼠/按鍵點擊)：更新 3D 並發送實機訊號"""
         self.current_float_joints = list(angles)
         self.pending_3d_update = True
         
         if hasattr(self, 'serial_manager') and self.serial_manager.is_connected:
             spd_factor = self.get_jog_speed_factor(self.jog_widget.j_speed_level)
             self.serial_manager.send_joints(angles, speed_factor=spd_factor, move_mode=0)
+
+    def handle_continuous_joint_jog(self, axis, direction, speed_factor):
+        """通知 MCU 進入 Mode 2：交出控制權，由硬體接管連續旋轉"""
+        if hasattr(self, 'serial_manager') and self.serial_manager.is_connected:
+            cmd = f"<{axis},{direction},0,0,0,0,{speed_factor:.2f},2>\n"
+            self.serial_manager.send_command(cmd)
 
     def handle_gripper_jog(self, val):
         """處理夾爪作動"""
@@ -562,7 +583,10 @@ class RobotControllerGUI(QMainWindow):
         if is_connected:
             self.top_bar.btn_connect.setIcon(qta.icon('mdi.connection', color='#c63bbb'))
             self.top_bar.btn_connect.setToolTip("Disconnect")
-            self.serial_manager.send_joints(self.current_float_joints)
+                        
+            # 改為印出安全提示，提醒操作者手動對齊姿態
+            if hasattr(self, 'log_widget'):
+                self.log_widget.append_log("[HW] 已連線：實機保持靜默。請執行原點復歸Homing")
         else:
             self.top_bar.btn_connect.setIcon(qta.icon('mdi.connection', color='#e0e0e0'))
             self.top_bar.btn_connect.setToolTip("Connect to Serial Port")
@@ -717,13 +741,13 @@ class RobotControllerGUI(QMainWindow):
         
         # 3. 自動切換大腦狀態以符合歷史軌跡
         if self.tcp_manager.current_index != target_tool_idx:
-            # 👑 加上阻斷器：靜默切換，避免觸發全域 data_changed 導致軌跡重算
+            # 加上阻斷器：靜默切換，避免觸發全域 data_changed 導致軌跡重算
             self.tcp_manager.blockSignals(True)
             self.tcp_manager.set_current_index(target_tool_idx)
             self.tcp_manager.blockSignals(False)
             
         if hasattr(self, 'base_manager') and self.base_manager.current_index != target_base_idx:
-            # 👑 加上阻斷器：靜默切換
+            # 加上阻斷器：靜默切換
             self.base_manager.blockSignals(True)
             self.base_manager.set_current_index(target_base_idx)
             self.base_manager.blockSignals(False)
@@ -748,11 +772,13 @@ class RobotControllerGUI(QMainWindow):
 
     def toggle_execution(self, checked):
         if checked:
-            valid_types = ["PTP", "LIN", "CIRC", "DELAY", "GRIPPER", "I/O", "LOOP_START", "LOOP_END", "SET_TCP", "SET_BASE"]
+            valid_types = ["PTP", "LIN", "CIRC", "DELAY", "GRIPPER", "I/O", "LOOP_START", "LOOP_END", "SET_TCP", "SET_BASE", "CAM_PATH"]
+            
             active_points = [
                 pt for pt in self.path_manager.waypoints 
                 if pt.get('active', True) and pt.get('type') in valid_types
             ]
+            
             if len(active_points) == 0:
                 self.log_widget.append_log("[System] 警告: 沒有可執行的點位。")
                 self._reset_play_ui() # 呼叫共用函式

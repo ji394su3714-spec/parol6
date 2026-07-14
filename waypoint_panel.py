@@ -19,9 +19,9 @@ class EditorTab(QFrame):
 
     def __init__(self, title="untitled.json", parent=None):
         super().__init__(parent)
-        self.waypoints_data = []  # 儲存這個分頁專屬的路徑資料
-        self.is_modified = False  # 追蹤這個分頁是否被修改過
-        self.filepath = ""        # 記錄這個分頁對應的實體檔案路徑 (如果有)
+        self.waypoints_data = []  
+        self.is_modified = False  
+        self.filepath = ""        
         
         self.setFixedHeight(26) 
         self.title = title
@@ -104,9 +104,11 @@ class WaypointRowWidget(QWidget):
         text_color = "#cccccc" if active else "#666666"
         if active and m_type in ["LOOP_START", "LOOP_END"]: text_color = "#d7ba7d"
         if active and m_type in ["COMMENT", "RAW_CODE"]: text_color = "#6a9955"
-
         if active and m_type == "SET_TCP": text_color = "#e6a800"
         if active and m_type == "SET_BASE": text_color = "#00a8e6" 
+        
+        # 新增：CAM 軌跡包的專屬高級顏色 (紫羅蘭色)
+        if active and m_type == "CAM_PATH": text_color = "#8A2BE2"
 
         self.font_style = f"color: {text_color}; {styles.WAYPOINT_FONT_BASE}"
         self.clickable_style = self.font_style
@@ -121,9 +123,11 @@ class WaypointRowWidget(QWidget):
             self.lbl_type = DoubleClickLabel(m_type, ["PTP", "LIN", "CIRC"], self._change_type)
             self.lbl_type.setStyleSheet(self.clickable_style)
         else:
-            self.lbl_type = QLabel(m_type)
+            display_type = "CAM" if m_type == "CAM_PATH" else m_type
+            self.lbl_type = QLabel(display_type)
             self.lbl_type.setStyleSheet(self.font_style)
-        self.lbl_type.setFixedWidth(50)
+            
+        self.lbl_type.setFixedWidth(50) 
         layout.addWidget(self.lbl_type)
 
         lbl_info = QLabel()
@@ -154,6 +158,13 @@ class WaypointRowWidget(QWidget):
             lbl_info.setText(f"[{wp_data.get('value')}] {wp_data.get('name')}")
         elif m_type in ["COMMENT", "RAW_CODE", "LOOP_START", "LOOP_END"]:
             lbl_info.setText(f"// {wp_data.get('value', '')}")
+            
+        # 新增：CAM 軌跡專屬的簡潔名稱顯示
+        elif m_type == "CAM_PATH":
+            pt_count = wp_data.get("point_count", 0)
+            # 例如: 切孔路徑_001 (60 pts)
+            lbl_info.setText(f"{wp_data.get('name', 'CAM Path')} ({pt_count} pts)")
+            
         else:
             lbl_info.setText(wp_data.get('name', f'Point {index+1}'))
             
@@ -172,8 +183,9 @@ class WaypointRowWidget(QWidget):
             self.lbl_acc.setStyleSheet(self.clickable_style)
             self.lbl_acc.setFixedWidth(50)
 
+        # 將 CAM_PATH 加入不顯示參數框的名單中
         NO_PARAM_TYPES = ["DELAY", "GRIPPER", "I/O", "SET_TCP", "SET_BASE", 
-                          "COMMENT", "RAW_CODE", "LOOP_START", "LOOP_END"] 
+                          "COMMENT", "RAW_CODE", "LOOP_START", "LOOP_END", "CAM_PATH"] 
         if m_type in NO_PARAM_TYPES:
             self.lbl_blend.setVisible(False)
             self.lbl_spd.setVisible(False)
@@ -213,7 +225,6 @@ class WaypointRowWidget(QWidget):
         m_type = self.wp_data.get("type", "PTP")
         main_win = self.window()
         
-        # 1. 批量功能區 (Copy, Paste, Base Shift)
         sel_count = len(self.panel.path_list.selectedItems())
         copy_text = f"Copy ({sel_count})" if sel_count > 1 else "Copy"
         action_copy = menu.addAction(qta.icon('mdi.content-copy', color='#00e6b8'), copy_text)
@@ -230,18 +241,16 @@ class WaypointRowWidget(QWidget):
             action_paste.setEnabled(False)
             
         action_base_shift = None
-        if m_type != "SET_BASE":
+        if m_type not in ["SET_BASE", "CAM_PATH"]:
             action_base_shift = menu.addAction(qta.icon('mdi.axis-arrow', color='#e6a800'), f"Apply Current Base Shift ({sel_count})" if sel_count > 1 else "Apply Current Base Shift")
             
         menu.addSeparator()
         
-        # 2. 針對 SET_BASE 點位的專屬神級功能：區域同步
         action_shift_block = None
         if m_type == "SET_BASE":
             action_shift_block = menu.addAction(qta.icon('mdi.axis-arrow', color='#e6a800'), "Sync Base Shift to Following Points")
             menu.addSeparator()
 
-        # 3. 動作更新與屬性編輯 (實體點位與 Delay)
         action_update = None
         action_edit = None
         if m_type in ["PTP", "LIN", "CIRC"]:
@@ -250,16 +259,13 @@ class WaypointRowWidget(QWidget):
         elif m_type == "DELAY":
             action_edit = menu.addAction("Edit Delay Time")
             menu.addSeparator()
-            
-        # 4. 各類點位插入與更替 (Insert / Update)
+                        
         menu_insert_pt = menu.addMenu(qta.icon('mdi.map-marker-plus', color='#e0e0e0'), "Insert Current Position")
         insert_pt_actions = {}
         for pt_type in ["PTP", "LIN", "CIRC"]:
             action = menu_insert_pt.addAction(pt_type)
             insert_pt_actions[action] = pt_type
             
-        # ================== TCP 智慧選單 ==================
-        # 判斷是 SET_TCP 就顯示橘色的 Update，否則顯示灰色的 Insert
         menu_tcp_title = "Update from Tool Box" if m_type == "SET_TCP" else "Insert SET_TCP"
         menu_tcp_icon = '#e6a800' if m_type == "SET_TCP" else '#d4d4d4'
         menu_tcp = menu.addMenu(qta.icon('mdi.wrench-outline', color=menu_tcp_icon), menu_tcp_title)
@@ -273,8 +279,6 @@ class WaypointRowWidget(QWidget):
         if not tcp_actions:
             menu_tcp.addAction("Tool Box is Empty").setEnabled(False)
             
-        # ================== Base 智慧選單 ==================
-        # 判斷是 SET_BASE 就顯示青色的 Update，否則顯示灰色的 Insert
         menu_base_title = "Update Base Frame" if m_type == "SET_BASE" else "Insert SET_BASE"
         menu_base_icon = '#00e6b8' if m_type == "SET_BASE" else '#d4d4d4'
         menu_base = menu.addMenu(qta.icon('mdi.view-grid-outline', color=menu_base_icon), menu_base_title)
@@ -288,7 +292,6 @@ class WaypointRowWidget(QWidget):
         if not base_actions:
             menu_base.addAction("Base Box is Empty").setEnabled(False)
             
-        # ================== 雜項插入 ==================
         action_insert_delay = None
         if m_type != "DELAY":
             action_insert_delay = menu.addAction(qta.icon('mdi.timer-outline', color='#e0e0e0'), "Insert Delay")
@@ -297,7 +300,6 @@ class WaypointRowWidget(QWidget):
         
         menu.addSeparator()
         
-        # 5. 批量刪除按鈕
         del_text = f"Delete ({sel_count})" if sel_count > 1 else "Delete"
         action_delete = menu.addAction(qta.icon('mdi.trash-can-outline', color='#ff4d4d'), del_text)
         
@@ -307,13 +309,11 @@ class WaypointRowWidget(QWidget):
         selected = menu.exec(QCursor.pos())
         if not selected: return
         
-        # 處理第 3 區的動作 (Update Position / Edit Delay)
         if action_update and selected == action_update:
             self.update_pt_cb(self.index)
         elif action_edit and selected == action_edit:
             self._trigger_delay_edit()
 
-        # 處理第 1 區與第 2 區 (Copy / Paste / Base Shift)
         elif selected == action_copy:
             indexes = [self.panel.path_list.row(item) for item in self.panel.path_list.selectedItems()]
             self.panel.copy_requested.emit(indexes) 
@@ -325,31 +325,26 @@ class WaypointRowWidget(QWidget):
         elif action_shift_block and selected == action_shift_block:
             self.panel.block_base_shift_requested.emit(self.index)
             
-        # 處理第 4 區 (Insert/Update)
         elif selected in insert_pt_actions:
             self.panel.record_pt_requested.emit(self.index, insert_pt_actions[selected])
             
         elif selected in tcp_actions:
             tid = tcp_actions[selected]
             if m_type == "SET_TCP":
-                # 執行覆寫更新 (Update)
                 if self.update_tcp_cb:
                     self.update_tcp_cb(self.index, tid)
             else:
-                # 執行全新插入 (Insert)
                 self.panel.insert_special_requested.emit(self.index, f"SET_TCP:{tid}")
                 
         elif selected in base_actions:
             bid = base_actions[selected]
             if m_type == "SET_BASE":
-                # 執行覆寫更新 (Update)
                 self.wp_data['value'] = bid
                 self.wp_data['name'] = main_win.base_manager.bases[bid]['name']
                 main_win.path_manager.list_update_signal.emit()
                 if hasattr(main_win, 'log_widget'):
                     main_win.log_widget.append_log(f"[System] Updated SET_BASE at line {self.index + 1} to '{self.wp_data['name']}'.")
             else:
-                # 執行全新插入 (Insert)
                 self.panel.insert_special_requested.emit(self.index, f"SET_BASE:{bid}")
                 
         elif action_insert_delay and selected == action_insert_delay:
@@ -358,7 +353,6 @@ class WaypointRowWidget(QWidget):
         elif selected == action_io:
             self.panel.insert_special_requested.emit(self.index, "IO")
             
-        # 處理第 5 區 (刪除)
         elif selected == action_delete:
             self.panel._handle_delete_key()
 
@@ -411,10 +405,10 @@ class WaypointPanel(BaseBlock):
     tab_switch_requested = Signal(object) 
     tab_closed_signal = Signal(object) 
 
-    copy_requested = Signal(list)       # 傳送被選取的 index 列表
-    paste_requested = Signal(int)       # 傳送要貼上的位置
-    batch_base_shift_requested = Signal(list) # 傳送被框選的 index 列表
-    block_base_shift_requested = Signal(int)  # 傳送 SET_BASE 的 index
+    copy_requested = Signal(list)       
+    paste_requested = Signal(int)       
+    batch_base_shift_requested = Signal(list) 
+    block_base_shift_requested = Signal(int)  
 
     def __init__(self, parent=None):
         nav_config = [
@@ -575,23 +569,18 @@ class WaypointPanel(BaseBlock):
         if new_tab != self.active_tab:
             main_win = self.window()
             
-            # 👑 1. 如果有舊分頁 (目前的 active_tab)，先把大腦裡的資料備份進去
             if self.active_tab and hasattr(main_win, 'path_manager'):
                 self.active_tab.waypoints_data = copy.deepcopy(main_win.path_manager.waypoints)
                 self.active_tab.is_modified = main_win.path_manager.is_modified
             
-            # 👑 2. 進行 UI 上的切換
             self.set_active_tab_visuals(new_tab)
             
-            # 👑 3. 把新分頁的資料倒進大腦裡
             if hasattr(main_win, 'path_manager'):
-                # 倒資料前先鎖住信號，避免觸發不必要的 UI 刷新 (待會再一次刷)
                 main_win.path_manager.blockSignals(True) 
                 main_win.path_manager.waypoints = copy.deepcopy(new_tab.waypoints_data)
                 main_win.path_manager.is_modified = new_tab.is_modified
                 main_win.path_manager.blockSignals(False)
             
-            # 👑 4. 呼叫外界 (gui.py) 進行完整的 UI 連動更新 (3D畫面、清單)
             self.tab_switch_requested.emit(new_tab)
 
     def set_active_tab_visuals(self, tab):
@@ -601,11 +590,9 @@ class WaypointPanel(BaseBlock):
         self._update_theme()
 
     def close_tab(self, tab):
-        """第一階段：只發送「請求關閉」訊號，不再自己動手"""
         self.tab_closed_signal.emit(tab)
 
     def force_close_tab(self, tab):
-        """第二階段：接收主程式 (gui.py) 的命令，真正移除 UI"""
         if tab in self.tabs:
             self.tabs.remove(tab)
             self.tabs_layout.removeWidget(tab)
@@ -698,7 +685,6 @@ class WaypointPanel(BaseBlock):
         if target_idx < 0: 
             target_idx = 0
             
-        # 👑 修正：改向大腦 (PathManager) 讀取剪貼簿狀態
         main_win = self.window()
         clipboard = []
         if hasattr(main_win, 'path_manager'):
@@ -781,7 +767,6 @@ class WaypointPanel(BaseBlock):
             
         model_idx = self.path_list.model().index(index, 0)
         
-        # 👑 加上阻斷器：純粹改變 UI 選取狀態，絕對不發射 currentRowChanged 信號！
         self.path_list.blockSignals(True)
         self.path_list.selectionModel().setCurrentIndex(
             model_idx, 

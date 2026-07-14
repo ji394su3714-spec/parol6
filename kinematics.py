@@ -4,6 +4,7 @@ import warnings
 import numpy as np
 from scipy.spatial.transform import Rotation as R, Slerp
 from scipy.signal import savgol_filter
+from scipy.interpolate import make_interp_spline  # 👑 新增：B-樣條數學引擎
 
 import config
 from motion_profile import SCurveProfile 
@@ -786,3 +787,125 @@ class TrajectoryMathEngine:
             msg = f"[CIRC] Safe Auto-Scale: Speed reduced to {(1.0/scale_down):.2f}X to protect joints."
             
         return circ_generator(), final_profile.T_total, msg, N
+    
+    @staticmethod
+    def calculate_spline_trajectory(start_joints, spline_waypoints, interval=0.010):
+        """
+        終極完全體：笛卡爾 XYZ 五次樣條 + SO(3) 四元數旋轉樣條
+        搭配 CAM 端的完美數學法線，實現 0 雜訊、0 甩尾、100% 貼合圓管的工業級切割！
+        """
+        from scipy.spatial.transform import Rotation as R, RotationSpline
+
+        if not spline_waypoints:
+            def empty_gen(): yield list(start_joints)
+            return empty_gen(), 0.0, "Empty SPLINE array", 0
+
+        # 1. 取得 TCP 偏移矩陣
+        tcp_mat = spline_waypoints[0].get('tcp_offset_mat', np.eye(4))
+        inv_tcp_mat = np.linalg.inv(tcp_mat)
+
+        t_arr = [0.0]
+        xyz_pts = []
+        rot_matrices = []
+
+        # 初始點 (從關節推算回真實 TCP)
+        T_start_flange = forward_kinematics(start_joints)
+        T_start_tcp = T_start_flange @ tcp_mat
+        
+        prev_pos = T_start_tcp[:3, 3]
+        prev_rot = T_start_tcp[:3, :3]
+        
+        xyz_pts.append(prev_pos)
+        rot_matrices.append(prev_rot)
+        
+        current_t = 0.0
+        
+        # 2. 空間距離與時間規劃
+        for wp in spline_waypoints:
+            target_joints = wp['target_joints']
+            speed_factor = wp.get('speed_factor', 1.0)
+            
+            T_target_flange = forward_kinematics(target_joints)
+            T_target_tcp = T_target_flange @ tcp_mat
+            
+            curr_pos = T_target_tcp[:3, 3]
+            curr_rot = T_target_tcp[:3, :3]
+            
+            # 物理位移
+            dist_mm = np.linalg.norm(curr_pos - prev_pos) * 1000.0
+            
+            # 使用四元數計算真實旋轉角度差
+            rot_diff = R.from_matrix(prev_rot.T @ curr_rot).magnitude()
+            dist_deg = np.degrees(rot_diff)
+            
+            v_lin = config.MAX_LIN_SPEED * speed_factor if config.MAX_LIN_SPEED > 0 else 1e-6
+            v_rot = config.MAX_ROT_SPEED * speed_factor if config.MAX_ROT_SPEED > 0 else 1e-6
+            
+            dt = max(dist_mm / v_lin, dist_deg / v_rot)
+            if dt < 0.005: 
+                dt = 0.005
+                
+            current_t += dt
+            t_arr.append(current_t)
+            xyz_pts.append(curr_pos)
+            rot_matrices.append(curr_rot)
+            
+            prev_pos = curr_pos
+            prev_rot = curr_rot
+
+        t_arr = np.array(t_arr)
+        xyz_pts = np.array(xyz_pts)
+
+        # 3. 座標 XYZ 使用 5 次 B-樣條
+        num_points = len(t_arr)
+        k = 5 if num_points > 5 else num_points - 1
+        if k < 1: k = 1
+        spline_xyz = make_interp_spline(t_arr, xyz_pts, k=k)
+
+        # 4. 旋轉姿態使用專屬的 RotationSpline (SO3 四元數連續插值)
+        # 徹底免疫尤拉角萬向節死鎖 (Gimbal Lock) 導致的空間大甩尾
+        rotations = R.from_matrix(rot_matrices)
+        spline_rot = RotationSpline(t_arr, rotations)
+
+        # 5. 時間軸採樣
+        t_steps = np.arange(interval, t_arr[-1], interval)
+        if len(t_steps) == 0 or t_steps[-1] < t_arr[-1]:
+            t_steps = np.append(t_steps, t_arr[-1])
+
+        N = len(t_steps)
+        sampled_xyz = spline_xyz(t_steps)
+        sampled_rot = spline_rot(t_steps).as_matrix()
+
+        # 6. 惰性生成器：將完美平滑的笛卡爾點位逆推回關節
+        def spline_generator():
+            seed = start_joints
+            
+            # 核心防護網：強制展開關節角度，防止馬達從 179 度退回 -179 度時發生 360 度折返跑！
+            def unwrap_joints(current, previous):
+                unwrapped = []
+                for c, p in zip(current, previous):
+                    diff = (c - p + 180) % 360 - 180
+                    unwrapped.append(p + diff)
+                return unwrapped
+
+            for i in range(N):
+                T_target_tcp = np.eye(4)
+                T_target_tcp[:3, :3] = sampled_rot[i]
+                T_target_tcp[:3, 3] = sampled_xyz[i]
+                
+                # 扣除 TCP 轉換為法蘭盤目標
+                T_target_flange = T_target_tcp @ inv_tcp_mat
+                
+                # IK 逆推
+                ik_res, ik_err = _core_inverse_kinematics(T_target_flange, seed)
+                if ik_res is None:
+                    raise RuntimeError(f"SPLINE Singularity hit at {t_steps[i]:.2f}s")
+                
+                # 透過 Unwrap 過濾，保證馬達絕對不會自轉甩尾
+                ik_res = unwrap_joints(ik_res, seed)
+                
+                seed = ik_res
+                yield list(ik_res)
+
+        msg = f"[System] Perfect SO(3) Spline compiled successfully ({num_points} points)."
+        return spline_generator(), t_arr[-1], msg, N

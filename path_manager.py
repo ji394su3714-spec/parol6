@@ -63,31 +63,28 @@ class StreamingPathExecutor(QThread):
                 if isinstance(item, dict):
                     cmd_type = item.get("type")
                     if cmd_type == "LOG":
-                        self.log_signal.emit(item["msg"])
+                        self.log_signal.emit(item.get("msg", ""))
                     elif cmd_type == "SET_TCP_CMD":
-                        self.log_signal.emit(item["msg"])
+                        self.log_signal.emit(item.get("msg", "執行: 設定 TCP 偏移"))
                         self.set_tcp_signal.emit(item["tool_idx"])
                     elif cmd_type == "SET_BASE_CMD":
-                        self.log_signal.emit(item["msg"])
+                        self.log_signal.emit(item.get("msg", "執行: 設定 Base 座標系"))
                         self.set_base_signal.emit(item["base_idx"])
                     elif cmd_type == "DELAY_CMD":
-                        self.log_signal.emit(item["msg"])
+                        #self.log_signal.emit(item.get("msg", f"執行: 延遲等待 {item.get('value', 0.5)} 秒"))
                         if self.serial_ref and self.serial_ref.is_connected:
-                            # 1. 確保 Arduino 把前面的動作全部走完，水桶徹底淨空
                             if hasattr(self.serial_ref, 'wait_for_motion_complete'):
                                 self.serial_ref.wait_for_motion_complete(timeout=10.0)
-                        # 2. 物理鎮定休眠 (讓馬達慣性與微震動完全停止)
                         time.sleep(item.get("value", 0.5))
-                        
                     elif cmd_type == "EE_CMD":
-                        self.log_signal.emit(item["msg"])
+                        self.log_signal.emit(item.get("msg", "執行: 末端效應器指令"))
                         if self.serial_ref and self.serial_ref.is_connected:
                             if hasattr(self.serial_ref, 'wait_for_motion_complete'):
                                 self.serial_ref.wait_for_motion_complete(timeout=10.0)
                             self.serial_ref.send_command(item["cmd"])
                             if hasattr(self.serial_ref, 'wait_for_ee_done'):
                                 self.serial_ref.wait_for_ee_done(timeout=10.0)
-                    continue 
+                    continue
                 # ==========================================
 
                 ik_joints = item
@@ -129,6 +126,8 @@ class StreamingPathExecutor(QThread):
         pending_trajectory = None       
         pending_blend_str = 'FINE'      
         loop_count = 1  
+        
+        spline_buffer = [] # 新增：專屬 Look-ahead (前瞻預讀) 緩衝區
 
         while self._is_running:
             if self.loop:
@@ -142,17 +141,18 @@ class StreamingPathExecutor(QThread):
                 wp_name = wp.get("name", f"Point {wp_idx+1}")
                 display_label = f"[{move_type}] {wp_name}"
                 
-                # 處理不需要 IK 的輔助指令
+                # ===================================================
+                # 1. 處理不需要 IK 的輔助指令 (SET_TCP, SET_BASE, I/O)
+                # ===================================================
                 if move_type in ["SET_TCP", "SET_BASE", "I/O"]:
                     
-                    # 1. 遇到切換指令前，先將前面累積的軌跡結算並送出
+                    # 遇到切換指令前，先將前面累積的軌跡結算並送出
                     if pending_trajectory is not None:
                         for ik_joints in pending_trajectory:
                             if not self._is_running: return
                             self.point_queue.put(ik_joints, block=True)
                         pending_trajectory = None
                         
-                    # 2. 處理 I/O
                     if move_type == "I/O":
                         ee_type = wp.get("action_type", "DIGITAL")
                         ee_val = int(wp.get("value", 0))
@@ -161,7 +161,6 @@ class StreamingPathExecutor(QThread):
                             "msg": f">> 執行工具動作: {ee_type} -> {ee_val}"
                         }, block=True)
                         
-                    # 3. 處理 SET_TCP，並自動注入 0.5s 物理鎮定延遲
                     elif move_type == "SET_TCP":
                         self.point_queue.put({
                             "type": "SET_TCP_CMD", "tool_idx": int(wp.get("value", 0)),
@@ -169,11 +168,9 @@ class StreamingPathExecutor(QThread):
                         }, block=True)
                         
                         self.point_queue.put({
-                            "type": "DELAY_CMD", "value": 0.5,
-                            #"msg": ">> [系統自動防護] TCP 切換，物理鎮定 0.5 秒"
+                            "type": "DELAY_CMD", "value": 0.5,  #物理鎮定 0.5 秒
                         }, block=True)
                         
-                    # 4. 處理 SET_BASE，並自動注入 0.5s 物理鎮定延遲
                     elif move_type == "SET_BASE":
                         self.point_queue.put({
                             "type": "SET_BASE_CMD", "base_idx": int(wp.get("value", 0)),
@@ -181,8 +178,7 @@ class StreamingPathExecutor(QThread):
                         }, block=True)
                         
                         self.point_queue.put({
-                            "type": "DELAY_CMD", "value": 0.5,
-                            #"msg": ">> [系統自動防護] Base 切換，物理鎮定 0.5 秒"
+                            "type": "DELAY_CMD", "value": 0.5,  #物理鎮定 0.5 秒
                         }, block=True)
                         
                     # 強制切斷連續融合
@@ -190,39 +186,53 @@ class StreamingPathExecutor(QThread):
                     continue
 
                 # ===================================================
-                # 👑 2. 全新引擎：五次 B-樣條 (Look-ahead 貪吃蛇邏輯)
+                # 2. 全新引擎：CAM 軌跡包 (黑盒子直接解壓縮)
                 # ===================================================
-                if move_type == "SPLINE":
-                    spline_buffer.append(wp)
-                    is_last = (wp_idx == len(self.waypoint_list) - 1)
-                    next_is_spline = not is_last and (self.waypoint_list[wp_idx+1].get("move_type") == "SPLINE")
-
-                    if next_is_spline:
-                        continue # 💡 繼續吃點，不急著進入運算！
-
-                    # 收集完畢，準備計算！
-                    # 遇到 Spline 區塊前，強制將前面的尾巴結算 (Spline 不需要舊版疊加融合)
+                elif move_type == "CAM_PATH":  # 注意這裡用 elif
+                    # 遇到 CAM_PATH 前，強制將前面的尾巴結算 (不與前面的指令疊加)
                     if pending_trajectory is not None:
                         for ik_joints in pending_trajectory:
                             if not self._is_running: return
                             self.point_queue.put(ik_joints, block=True)
                         pending_trajectory = None
 
-                    # 呼叫五次 B-樣條數學引擎
+                    # 1. 打開黑盒子，把裡面的點位全部拿出來
+                    path_points = wp.get("path_data", [])
+                    if not path_points:
+                        continue # 如果是空的就跳過
+
+                    # 致命修復：必須從外層的 wp 把「真正的 TCP 矩陣」與「速度係數」拿進來
+                    current_tcp_mat = wp.get("tcp_offset_mat", np.eye(4))
+                    pt_speed_factor = wp.get("speed_factor", 0.3)
+                    pt_accel_factor = wp.get("accel_factor", 0.5)
+
+                    # 2. 為了相容你的 B-樣條數學引擎，我們把它們快速偽裝成標準字典清單
+                    spline_buffer = []
+                    global_speed = wp.get("speed", 30.0)
+                    for pt_joints in path_points:
+                        spline_buffer.append({
+                            "target_joints": pt_joints, 
+                            "joints": pt_joints,
+                            "speed": global_speed,
+                            "tcp_offset_mat": current_tcp_mat, # 傳遞真實刀具姿態給引擎！
+                            "speed_factor": pt_speed_factor,
+                            "accel_factor": pt_accel_factor,
+                            "move_type": "SPLINE"              # 告訴底層這是樣條點
+                        })
+
                     gen, t_tot, msg, total_N = kinematics.TrajectoryMathEngine.calculate_spline_trajectory(
                         current_seed, spline_buffer, interval=0.010
                     )
-                    spline_buffer = [] # 清空肚子，等待下一批
                     
                     if gen is None:
-                        self.error_signal.emit(f"[SPLINE Block] failed: {msg}")
+                        self.error_signal.emit(f"[CAM_PATH Block] failed: {msg}")
                         self.producer_error = True
                         return
 
                     if msg and msg != "SUCCESS":
                         self.log_signal.emit(msg)
                         
-                    # 直接將完美平滑的曲線推播給發送佇列 (Bypass 掉舊版的 blend 區塊)
+                    # 4. 將完美平滑的連續曲線推播給發送佇列
                     try:
                         for _ in range(total_N):
                             if not self._is_running: return
@@ -230,13 +240,13 @@ class StreamingPathExecutor(QThread):
                             self.point_queue.put(pt, block=True)
                             current_seed = pt
                     except Exception as e:
-                        self.error_signal.emit(f"[SPLINE Block] IK Error: {e}")
+                        self.error_signal.emit(f"[CAM_PATH Block] IK Error: {e}")
                         self.producer_error = True
                         return
                     
-                    pending_blend_str = 'FINE' # Spline 跑完後，強制煞車等待下一個指令
+                    # 跑完 CAM 軌跡後，強制煞車等待下一個指令
+                    pending_blend_str = 'FINE' 
                     continue 
-                # ===================================================
 
                 # ===================================================
                 # 3. 處理傳統的 PTP, LIN, CIRC, DELAY
@@ -275,12 +285,9 @@ class StreamingPathExecutor(QThread):
                 if msg and msg != "SUCCESS" and not msg.startswith("wait"):
                     self.log_signal.emit(f"{display_label}: {msg}")
 
-                # ----------------------------------------------------
-                # 1. 提取要跟「上一個點」融合的頭部點數 (N_blend)
-                # ----------------------------------------------------
+                # --- 舊版的 Blend 疊加平滑處理區塊 (PTP, LIN, CIRC 共用) ---
                 N_blend = 0
                 if pending_trajectory is not None and pending_blend_str != 'FINE' and move_type != 'DELAY':
-                    # 修正：pending_trajectory 本身就已經是切好的尾巴了，直接比對長度即可！
                     N_blend = min(len(pending_trajectory), total_N)
                 
                 curr_head = []
@@ -335,7 +342,7 @@ class StreamingPathExecutor(QThread):
                     for _ in range(stream_count):
                         if not self._is_running: return
                         pt = next(gen)
-                        self.point_queue.put(pt, block=True) # 隊列滿了就會在此完美休眠，不吃效能！
+                        self.point_queue.put(pt, block=True) 
                         current_seed = pt
                         
                     pending_trajectory = []
@@ -644,15 +651,69 @@ class PathManager(QObject):
         filename, _ = QFileDialog.getSaveFileName(self.parent_widget, "Save Path", "", "JSON Files (*.json)")
         if filename:
             try:
-                with open(filename, 'w') as f:
-                    json.dump(self.waypoints, f, indent=4)
+                import re
+                import copy
                 
-                # 檔案成功寫入硬碟，洗白標記！
+                # ========================================================
+                # 儲存前動態瘦身 (Payload Pruning & Precision Formatting)
+                # ========================================================
+                export_waypoints = []
+                for wp in self.waypoints:
+                    clean_wp = copy.deepcopy(wp)
+                    
+                    # 1. 拔除預設廢話
+                    if clean_wp.get("type") != "CIRC" and "aux_joints" in clean_wp:
+                        del clean_wp["aux_joints"]
+                    if "note" in clean_wp and not clean_wp["note"]:
+                        del clean_wp["note"]
+                    if clean_wp.get("active") is True:
+                        del clean_wp["active"]
+                        
+                    # 2. 抹除 speed 與 accel 的 .0 
+                    for key in ["speed", "accel"]:
+                        if key in clean_wp:
+                            val = clean_wp[key]
+                            if isinstance(val, float) and val.is_integer():
+                                clean_wp[key] = int(val)
+                                
+                    # 3. 收斂 joints 的小數位數到 3 位
+                    if "joints" in clean_wp:
+                        clean_wp["joints"] = [round(j, 3) for j in clean_wp["joints"]]
+                    if "aux_joints" in clean_wp and clean_wp["aux_joints"]:
+                        clean_wp["aux_joints"] = [round(j, 3) for j in clean_wp["aux_joints"]]
+                        
+                    # 4. 4x4 矩陣也收斂到 4 位小數
+                    for mat_key in ["cartesian_flange", "recorded_base_matrix"]:
+                        if mat_key in clean_wp and isinstance(clean_wp[mat_key], list):
+                            clean_wp[mat_key] = [[round(val, 4) for val in row] for row in clean_wp[mat_key]]
+                            
+                    export_waypoints.append(clean_wp)
+
+                # 1. 轉成縮排字串
+                raw_json = json.dumps(export_waypoints, indent=4)
+                
+                # ========================================================
+                # 二段式混合排版壓縮
+                # ========================================================
+                compact_json = re.sub(
+                    r'\[\s+([-0-9.eE]+(?:,\s*[-0-9.eE]+)*)\s+\]',
+                    lambda m: '[' + re.sub(r'\s+', '', m.group(1)).replace(',', ', ') + ']',
+                    raw_json
+                )
+                
+                compact_json = re.sub(
+                    r'\[\s+((?:\[[-0-9.eE, ]+\]\s*,\s*)*\[[-0-9.eE, ]+\])\s+\]',
+                    lambda m: '[' + re.sub(r'\s*\n\s*', ' ', m.group(1)) + ']',
+                    compact_json
+                )
+                
+                # 3. 寫入檔案
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(compact_json)
+                
                 self.is_modified = False
-                
                 base_name = os.path.basename(filename)
                 self.log_signal.emit(f"[System] UPDATED: Waypoints successfully saved to {base_name}")
-                
                 if hasattr(self, 'file_loaded_signal'):
                     self.file_loaded_signal.emit(base_name)
                 
@@ -663,7 +724,7 @@ class PathManager(QObject):
         filename, _ = QFileDialog.getOpenFileName(self.parent_widget, "Load Path", "", "JSON Files (*.json)")
         if filename:
             try:
-                with open(filename, 'r') as f:
+                with open(filename, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 
                 # 確保讀進來的是正確的陣列格式
@@ -777,6 +838,22 @@ class PathManager(QObject):
                     'aux_joints': actual_aux_joints,
                     'tcp': current_tcp
                 })
+
+            # ==========================================
+            # 新增：將 CAM 軌跡包解壓縮成預覽點位
+            # ==========================================
+            elif m_type == "CAM_PATH":
+                path_data = wp.get("path_data", [])
+                for pt_joints in path_data:
+                    # 把黑盒子裡的點，全部偽裝成微小的 LIN 直線段
+                    valid_physical_pts.append({
+                        'joints': pt_joints,
+                        'type': 'LIN', 
+                        'aux_joints': None,
+                        'tcp': current_tcp
+                    })
+                if path_data:
+                    last_valid_actual_joints = path_data[-1] # 記憶最後一個點
 
         # 2. 開始依照綁定並轉換後的座標畫線
         if len(valid_physical_pts) >= 2:
@@ -898,6 +975,12 @@ class PathManager(QObject):
                 
                 last_valid_actual_joints = target_joints
 
+            # 新增：如果是 CAM 軌跡，更新最後位置紀錄
+            elif move_type == "CAM_PATH":
+                path_data = pt.get("path_data", [])
+                if path_data:
+                    last_valid_actual_joints = path_data[-1]
+
             wp = {
                 "move_type": move_type,
                 "name": pt.get('name', ''), 
@@ -908,6 +991,7 @@ class PathManager(QObject):
                 "value": pt.get('value', 0.0), 
                 "blend": pt.get('blend', 'FINE')
             }
+            
             if move_type == "CIRC" and 'aux_joints' in pt:
                 aux_j = pt['aux_joints']
                 if not np.allclose(current_base_mat, recorded_base_mat, atol=1e-4):
@@ -929,6 +1013,13 @@ class PathManager(QObject):
                 
             if move_type == "I/O":
                 wp["action_type"] = pt.get("action_type", "DIGITAL")
+
+            # ==========================================
+            # 核心修復：把黑盒子資料打包進要送給大腦的 wp 裡
+            # ==========================================
+            if move_type == "CAM_PATH":
+                wp["path_data"] = pt.get("path_data", [])
+                wp["speed"] = pt.get("speed", 30.0)
                 
             wp_list.append(wp)
 

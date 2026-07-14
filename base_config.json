@@ -22,7 +22,7 @@
             0.0,
             0.0
         ],
-        "in_box": true,
+        "in_box": false,
         "is_locked": false
     },
     {
@@ -48,20 +48,20 @@
             0.0,
             0.0
         ],
-        "in_box": true,
+        "in_box": false,
         "is_locked": false
     },
     {
-        "name": "Base 4",
+        "name": "Base 5",
         "values": [
             0.0,
-            0.0,
+            50.0,
             0.0,
             0.0,
             0.0,
             0.0
         ],
-        "in_box": true,
+        "in_box": false,
         "is_locked": false
     }
 ]

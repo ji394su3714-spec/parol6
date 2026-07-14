@@ -13,12 +13,12 @@
 // S6 專屬 6 軸腳位矩陣
 const JointConfig JOINTS[6] = {
     // Step, Dir,  En,   Limit, ActiveState, homingSpd, homingPos, bounce, ctrlSpd10, maxSpd10, ramp
-    {PE11, PE10, PE9,  PB14,  LOW,   1200,  -28,  1000, 48000, 200000, 1400}, // J1 (X)
-    {PD8,  PB12, PD9,  PB13,  HIGH, -2400,   50,  2000, 68000, 200000, 2000}, // J2 (Y)
-    {PD14, PD13, PD15, PA0,   HIGH,  3000,  -70,  2400, 68000, 200000, 2000}, // J3 (Z)
+    {PE11, PE10, PE9,  PB14,  LOW,   1200,  -118,  1000, 48000, 200000, 1200}, // J1 (X)
+    {PD8,  PB12, PD9,  PB13,  HIGH, -2400,   50,  2000, 68000, 200000, 1400}, // J2 (Y)
+    {PD14, PD13, PD15, PA0,   HIGH,  3000,  -70,  2400, 68000, 200000, 1400}, // J3 (Z)
     {PD5,  PD6,  PD4,  PA1,   LOW,   3800, -144,  1600, 60000, 200000, 1000}, // J4 (E0)
     {PE6,  PC13, PE5,  PA2,   HIGH,  2800, -125,  1200, 60000, 200000, 1000}, // J5 (E1)
-    {PE2,  PE4,  PE3,  PA3,   LOW,   5000,    2,  1600, 80000, 200000, 1400}  // J6 (E2)
+    {PE2,  PE4,  PE3,  PA3,   LOW,   5000,    2,  1600, 80000, 200000, 1200}  // J6 (E2)
 };
 
 const MotorCurrentConfig MOTOR_CURRENTS[6] = {

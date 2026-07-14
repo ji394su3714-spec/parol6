@@ -94,8 +94,6 @@ class TCPManager(QObject):
             self.save_config()
             self.data_changed.emit()
 
-    # (原本的 update_tool_values 與 rename_tool 已被刪除，由 update_tool 統一管理)
-
     # --- 核心運算 ---
     def get_active_tool_data(self):
         """回傳當前工具的 name 與 values"""
