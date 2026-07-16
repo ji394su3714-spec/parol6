@@ -1,7 +1,7 @@
 #include "EndEffector.h"
 
 #define SERVO_PIN PB10 
-MoToServo gripperServo; 
+Servo gripperServo; // 改用標準 Servo 物件
 
 const int GRIPPER_OPEN = 1020;   
 const int GRIPPER_CLOSE = 1920; 
@@ -15,11 +15,11 @@ int servo_step_delay = 20;
 bool ee_cmd_waiting = false;
 int pending_target_us = GRIPPER_OPEN;
 
-bool waiting_for_servo_arrival = false; // 記錄夾爪是否正在作動中
+bool waiting_for_servo_arrival = false; 
 
 void initEndEffector() {
     gripperServo.attach(SERVO_PIN); 
-    gripperServo.write(GRIPPER_OPEN); 
+    gripperServo.writeMicroseconds(GRIPPER_OPEN);
 }
 
 bool parseEndEffectorCmd(char* cmdStr) {
@@ -71,11 +71,11 @@ void updateEndEffector(bool isArmIdle) {
                 gripper_current_us = gripper_target_us;
             }
             
-            gripperServo.write(gripper_current_us);
+            gripperServo.writeMicroseconds(gripper_current_us); 
             servo_last_time = millis();
         }
     } else {
-        // 關鍵修改：夾爪到位後，印出專屬暗號，絕不用 "OK"
+        // 夾爪到位後，印出專屬暗號
         if (waiting_for_servo_arrival) {
             Serial.println("<EE_DONE>"); 
             waiting_for_servo_arrival = false;

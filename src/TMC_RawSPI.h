@@ -6,7 +6,7 @@
 
 // 初始化 TMC2240
 // invert_dir 預設為 false。若需反轉方向，傳入 true 即可。
-void setupTMC2240_RawSPI(uint8_t cs_pin, uint16_t run_mA, float hold_ratio, bool invert_dir = true);
+void setupTMC2240_RawSPI(uint8_t cs_pin, uint16_t run_mA, float hold_ratio, bool invert_dir = false);
 
 // 讀取 TMC2240 核心溫度
 float readTMC2240Temp(uint8_t cs_pin);

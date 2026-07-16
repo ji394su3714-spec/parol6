@@ -1,10 +1,11 @@
 # kinematics.py
 import math
+import time
 import warnings
 import numpy as np
 from scipy.spatial.transform import Rotation as R, Slerp
 from scipy.signal import savgol_filter
-from scipy.interpolate import make_interp_spline  # 👑 新增：B-樣條數學引擎
+from scipy.interpolate import make_interp_spline
 
 import config
 from motion_profile import SCurveProfile 
@@ -149,15 +150,17 @@ def compute_geometric_jacobian(joints):
     return J, T_curr
 
 def _core_inverse_kinematics(target_matrix, seed_joints, max_retries=1):
+    """核心逆向運動學函式，使用 Levenberg-Marquardt 方法求解，並加入奇異點脫困機制"""
+    t_start = time.perf_counter() # 計時開始
+    total_iters = 0               # 累計迭代次數
+
     target_pos = target_matrix[:3, 3]
     target_rot = target_matrix[:3, :3]
     
     max_iter = 50       
-    # 1. 核心嚴格精度：位置 0.01 mm (1e-5 m)，旋轉 0.01 度 (徹底消滅微小抖動)
     pos_tol = 1e-5  
     rot_tol = np.deg2rad(0.01)
     
-    # 2. 外部寬容底線：(從 config 讀取的 0.1mm，專門用來在奇異點保命)
     rescue_pos_tol = config.IK_POS_TOLERANCE / 1000.0
     rescue_rot_tol = np.deg2rad(0.1)
     
@@ -166,12 +169,14 @@ def _core_inverse_kinematics(target_matrix, seed_joints, max_retries=1):
 
     for attempt in range(max_retries + 1):
         if attempt > 0:
-            noise = np.random.uniform(-1.0, 1.0, 6) # 縮小掙扎範圍，防止暴衝
+            noise = np.random.uniform(-1.0, 1.0, 6) 
             current_joints = np.array(seed_joints, dtype=float) + noise
         else:
             current_joints = np.array(seed_joints, dtype=float)
             
         for _ in range(max_iter):
+            total_iters += 1 # 每跑一次 Jacobian 迴圈就 +1
+            
             J, T_curr = compute_geometric_jacobian(current_joints)
             
             curr_pos = T_curr[:3, 3]
@@ -184,8 +189,13 @@ def _core_inverse_kinematics(target_matrix, seed_joints, max_retries=1):
             err_pos_norm = np.linalg.norm(err_pos)
             err_rot_norm = np.linalg.norm(err_rot)
             
-            # 只有達到嚴格精度才算完美收斂
             if err_pos_norm < pos_tol and err_rot_norm < rot_tol:
+                # 只有在 DEBUG 模式開啟時，才去算時間和印出警告
+                if config.DEBUG_IK_PROFILER:
+                    dt_ms = (time.perf_counter() - t_start) * 1000.0
+                    # 如果迭代次數>5或耗時>15ms，才印出警告
+                    if total_iters > 5 or dt_ms > 15.0:
+                        print(f"[IK Warn] {total_iters} iters | {dt_ms:.3f} ms")
                 return current_joints, (err_pos_norm * 1000.0)
 
             error_vector = np.concatenate((err_pos, err_rot))
@@ -194,9 +204,13 @@ def _core_inverse_kinematics(target_matrix, seed_joints, max_retries=1):
             y = np.linalg.solve(XtX, error_vector)
             delta_theta = J.T @ y
             
-            # 奇異點防護 (Early Exit)：掉進黑洞時，啟動寬容底線保命
             if np.max(np.abs(delta_theta)) < 1e-4:
                 if err_pos_norm < rescue_pos_tol and err_rot_norm < rescue_rot_tol:
+                    if config.DEBUG_IK_PROFILER:
+                        dt_ms = (time.perf_counter() - t_start) * 1000.0
+                        #若迭代超過15次，印出奇異點脫困警告
+                        if total_iters > 15:
+                            print(f"[IK Rescue] 奇異點脫困: {total_iters} iters | {dt_ms:.3f} ms")
                     return current_joints, (err_pos_norm * 1000.0)
                 break
 
@@ -207,13 +221,20 @@ def _core_inverse_kinematics(target_matrix, seed_joints, max_retries=1):
                 if current_joints[i] < min_lim: current_joints[i] = min_lim
                 if current_joints[i] > max_lim: current_joints[i] = max_lim
 
-        # 迴圈跑滿 50 次，檢查寬容底線
+        # 迴圈跑滿 50 次的最終保命機制
         if err_pos_norm < rescue_pos_tol and err_rot_norm < rescue_rot_tol: 
+            if config.DEBUG_IK_PROFILER:
+                dt_ms = (time.perf_counter() - t_start) * 1000.0
+                err_mm = err_pos_norm * 1000.0
+                err_deg = np.rad2deg(err_rot_norm)
+                print(f"[IK Rescue] 滿載保命 (耗盡迭代): {total_iters} iters | {dt_ms:.3f} ms | 殘留誤差: {err_mm:.3f} mm, {err_deg:.3f}°")
             return current_joints, (err_pos_norm * 1000.0)
             
+    print(f"[IK FAILED] 解算失敗，共掙扎 {total_iters} iters")
     return None, None
 
 def inverse_kinematics(target_matrix, seed_joints, max_retries=1):
+    """逆向運動學主函式，會自動判斷是否需要插值分段求解"""
     T_start = forward_kinematics(seed_joints)
     pos_start = T_start[:3, 3]
     pos_end = target_matrix[:3, 3]
@@ -256,7 +277,7 @@ def inverse_kinematics(target_matrix, seed_joints, max_retries=1):
     return curr_seed, last_err
 
 def calculate_base_shift_ik(T_flange_old, recorded_base_mat, target_base_mat, seed_joints):
-    """雙模切換：Base Shift 若 SLERP 失敗，自動切換為 Euler 插值"""
+    """純淨版 Base Shift：徹底根除 Euler，直接在 SO(3) 處理 Slerp 奇異點"""
     pos_start = recorded_base_mat[:3, 3]
     pos_end = target_base_mat[:3, 3]
     
@@ -264,50 +285,40 @@ def calculate_base_shift_ik(T_flange_old, recorded_base_mat, target_base_mat, se
     R_end = target_base_mat[:3, :3]
     T_user = np.linalg.inv(recorded_base_mat) @ T_flange_old
     
-    # 第一次嘗試：嚴格的 SLERP
-    res_joints, res_err = _run_interpolated_ik(pos_start, pos_end, R_start, R_end, T_user, seed_joints, method='slerp')
+    # 👑 The Engineer's Touch: 處理 180 度對蹠點奇異 (Antipodal Singularity)
+    # 計算旋轉差異矩陣的跡數 (Trace)，如果 Trace 趨近於 -1，代表這是一個接近 180 度的翻轉
+    R_diff = R_start.T @ R_end
+    trace = np.trace(R_diff)
     
-    if res_joints is not None:
-        return res_joints, res_err
-        
-    # 第二次嘗試：若 SLERP 卡在奇異點報錯，自動切換回舊版的尤拉線性插值閃避！
-    res_joints, res_err = _run_interpolated_ik(pos_start, pos_end, R_start, R_end, T_user, seed_joints, method='euler')
-    if res_joints is not None:
-        return res_joints, res_err
-        
-    return None, "Base Shift Failed (Both SLERP & Euler Singularities hit)"
+    if trace < -0.999: 
+        # 注入極微小的擾動 (1e-4 rad 約等於 0.005 度) 破壞對稱性
+        # 強迫 Slerp 毫不猶豫地選擇其中一條最短路徑！
+        perturbation = R.from_rotvec([1e-4, 1e-4, 1e-4]).as_matrix()
+        R_end = R_end @ perturbation
 
-def _run_interpolated_ik(pos_start, pos_end, R_start, R_end, T_user, seed_joints, method='slerp'):
+    # 直接進入純粹的 SLERP 插補，沒有 fallback，沒有 if-else！
+    return _run_interpolated_ik(pos_start, pos_end, R_start, R_end, T_user, seed_joints)
+
+def _run_interpolated_ik(pos_start, pos_end, R_start, R_end, T_user, seed_joints):
+    """拔除 method 切換，回歸最純粹的球面線性插值"""
     pos_dist = np.linalg.norm(pos_end - pos_start) * 1000.0
     R_diff = R_start.T @ R_end
     rot_dist_deg = np.rad2deg(np.linalg.norm(fast_matrix_to_rotvec(R_diff)))
+    
     steps = max(1, int(np.ceil(pos_dist / 10.0)), int(np.ceil(rot_dist_deg / 5.0)))
     
     curr_seed = np.array(seed_joints, dtype=float)
     last_err = 0.0
 
-    if method == 'slerp':
-        key_rots = R.from_matrix([R_start, R_end])
-        slerp = Slerp([0, 1], key_rots)
-    else:
-        # Euler 插值準備：處理 ±180 度翻轉問題
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            rpy_start = R.from_matrix(R_start).as_euler('xyz')
-            rpy_end = R.from_matrix(R_end).as_euler('xyz')
-        diff = (rpy_end - rpy_start + np.pi) % (2 * np.pi) - np.pi
-        rpy_end_unwrapped = rpy_start + diff
+    # 放心大膽地使用 SLERP，因為源頭的 180 度地雷已經被我們掃除了
+    key_rots = R.from_matrix([R_start, R_end])
+    slerp = Slerp([0, 1], key_rots)
 
     for i in range(1, steps + 1):
         fraction = i / steps
         T_interp_base = np.eye(4)
         T_interp_base[:3, 3] = pos_start + fraction * (pos_end - pos_start)
-        
-        if method == 'slerp':
-            T_interp_base[:3, :3] = slerp(fraction).as_matrix()
-        else:
-            curr_rpy = rpy_start * (1 - fraction) + rpy_end_unwrapped * fraction
-            T_interp_base[:3, :3] = R.from_euler('xyz', curr_rpy).as_matrix()
+        T_interp_base[:3, :3] = slerp(fraction).as_matrix()
             
         T_target_flange = T_interp_base @ T_user
         
@@ -316,28 +327,36 @@ def _run_interpolated_ik(pos_start, pos_end, R_start, R_end, T_user, seed_joints
             curr_seed = next_joints
             last_err = err
         else:
-            return None, None
+            return None, f"Base Shift Failed at {fraction*100:.1f}% (Singularity blocked)"
             
     return curr_seed, last_err
 
-def calculate_jog_joints(current_joints, axis, step_val, frame, T_total_offset, T_base_matrix=None):
+def calculate_jog_joints(current_joints, axis, step_val, frame, T_total_offset, T_base_matrix=None, T_last_ideal_tcp=None):
     if T_base_matrix is None: T_base_matrix = np.eye(4)
 
-    T_math_flange = forward_kinematics(current_joints)
-    T_tcp_curr = T_math_flange @ T_total_offset
+    # ==========================================
+    # 👑 2. 誤差阻斷機制：如果有上一部的理想矩陣，直接沿用，無視關節誤差！
+    # ==========================================
+    if T_last_ideal_tcp is not None:
+        T_tcp_curr = np.copy(T_last_ideal_tcp)
+    else:
+        # 只有在「第一下」點動時，才從物理關節推算初始位置
+        T_math_flange = forward_kinematics(current_joints)
+        T_tcp_curr = T_math_flange @ T_total_offset
+        
     T_tcp_target = np.copy(T_tcp_curr)
     T_step = np.eye(4)
     
     if axis in ['x', 'y', 'z']:
         step_m = step_val / 1000.0
         idx = {'x': 0, 'y': 1, 'z': 2}[axis]
-        step_vec_local = np.zeros(3)
-        step_vec_local[idx] = step_m
         
         if frame == "Tool":
             T_step[idx, 3] = step_m
             T_tcp_target = T_tcp_curr @ T_step 
         elif frame == "Base":
+            step_vec_local = np.zeros(3)
+            step_vec_local[idx] = step_m
             step_vec_world = T_base_matrix[:3, :3] @ step_vec_local
             T_tcp_target[:3, 3] += step_vec_world
         else:
@@ -361,18 +380,29 @@ def calculate_jog_joints(current_joints, axis, step_val, frame, T_total_offset, 
     T_flange_target = T_tcp_target @ np.linalg.inv(T_total_offset)
     new_joints, error_score = inverse_kinematics(T_flange_target, current_joints)
     
-    if new_joints is None: return None, "IK Failed"
+    # 👑 3. 錯誤回傳也要補上第三個參數 None
+    if new_joints is None: return None, "IK Failed", None
         
     T_check_flange = forward_kinematics(new_joints)
+    
     pos_diff = np.linalg.norm(T_check_flange[:3, 3] - T_flange_target[:3, 3]) * 1000.0
+    if pos_diff > config.IK_POS_TOLERANCE: 
+        return None, f"IK Inaccurate! Pos Diff: {pos_diff:.3f} mm", None
 
-    if pos_diff > config.IK_POS_TOLERANCE: return None, f"IK Inaccurate! Diff: {pos_diff:.3f}mm"
+    R_check = T_check_flange[:3, :3]
+    R_target = T_flange_target[:3, :3]
+    rot_diff_rad = np.linalg.norm(fast_matrix_to_rotvec(R_check.T @ R_target))
+    rot_diff_deg = np.rad2deg(rot_diff_rad)
+    
+    if rot_diff_deg > 0.1: 
+        return None, f"IK Inaccurate! Rot Diff: {rot_diff_deg:.3f}°", None
 
     for i, angle in enumerate(new_joints):
         min_lim, max_lim = config.JOINT_LIMITS[i]
-        if angle < (min_lim - 0.1) or angle > (max_lim + 0.1): return None, f"Limit Hit J{i+1}"
+        if angle < (min_lim - 0.1) or angle > (max_lim + 0.1): return None, f"Limit Hit J{i+1}", None
 
-    return list(new_joints), None
+    # 👑 4. 成功解出時，把這次的「完美目標矩陣 (T_tcp_target)」一起傳回給上位機！
+    return list(new_joints), None, T_tcp_target
 
 def extract_continuous_rpy(T_matrix, prev_rpy_deg=None):
     r = R.from_matrix(T_matrix[:3, :3])
@@ -589,10 +619,25 @@ class TrajectoryMathEngine:
 
         # 惰性生成器 (Lazy Generator)：算一點、交一點，不再霸佔 CPU
         def lin_generator():
+            total_ik_time = 0.0 
+            
             for i in range(N):
+                t0 = time.perf_counter() 
                 ik_res, ik_err = _core_inverse_kinematics(T_flange_targets[i], expected_joints_arr[i])
+                total_ik_time += (time.perf_counter() - t0) 
+                
                 if ik_res is None or ik_err > (config.IK_POS_TOLERANCE * 5):
                     raise RuntimeError(f"LIN Singularity blocked at {prog_arr[i]*100:.1f}%")
+                
+                if i == N - 1 and config.DEBUG_IK_PROFILER:
+                    avg_ms = (total_ik_time / N) * 1000.0
+                    max_hz = 1000.0 / avg_ms if avg_ms > 0 else 0
+                    print(f"\n--- [LIN Profiler] ---")
+                    print(f"總採樣點數: {N} 點")
+                    print(f"平均 IK 耗時: {avg_ms:.3f} ms / 點")
+                    #print(f"極限串流能力: {max_hz:.0f} Hz")
+                    #print(f"----------------------\n")
+
                 yield list(ik_res)
             
         msg = "SUCCESS"
@@ -776,11 +821,26 @@ class TrajectoryMathEngine:
         
         # CIRC 專屬 Generator
         def circ_generator():
+            total_ik_time = 0.0
+            
             for i in range(N):
+                t0 = time.perf_counter()
                 ik_res, ik_err = _core_inverse_kinematics(T_flange_targets[i], expected_joints_arr[i])
+                total_ik_time += (time.perf_counter() - t0) 
+                
                 if ik_res is None or ik_err > (config.IK_POS_TOLERANCE * 5):
                     raise RuntimeError(f"CIRC Singularity blocked at {prog_arr[i]*100:.1f}%")
                 yield list(ik_res)
+                
+            # 只有 DEBUG 開啟，才印出 CIRC 效能報告
+            if config.DEBUG_IK_PROFILER and N > 0:
+                avg_ms = (total_ik_time / N) * 1000.0
+                max_hz = 1000.0 / avg_ms if avg_ms > 0 else 0
+                print(f"\n--- [CIRC Profiler] ---")
+                print(f"總採樣點數: {N} 點")
+                print(f"平均 IK 耗時: {avg_ms:.3f} ms / 點")
+                #print(f"極限串流能力: {max_hz:.0f} Hz")
+                #print(f"----------------------\n")
             
         msg = "SUCCESS"
         if scale_down > 1.0:
@@ -790,10 +850,7 @@ class TrajectoryMathEngine:
     
     @staticmethod
     def calculate_spline_trajectory(start_joints, spline_waypoints, interval=0.010):
-        """
-        終極完全體：笛卡爾 XYZ 五次樣條 + SO(3) 四元數旋轉樣條
-        搭配 CAM 端的完美數學法線，實現 0 雜訊、0 甩尾、100% 貼合圓管的工業級切割！
-        """
+        """終極完全體：笛卡爾 XYZ 五次樣條 + SO(3) 四元數旋轉樣條"""
         from scipy.spatial.transform import Rotation as R, RotationSpline
 
         if not spline_waypoints:
@@ -877,10 +934,10 @@ class TrajectoryMathEngine:
         sampled_rot = spline_rot(t_steps).as_matrix()
 
         # 6. 惰性生成器：將完美平滑的笛卡爾點位逆推回關節
+        # 6. 惰性生成器：將完美平滑的笛卡爾點位逆推回關節
         def spline_generator():
             seed = start_joints
             
-            # 核心防護網：強制展開關節角度，防止馬達從 179 度退回 -179 度時發生 360 度折返跑！
             def unwrap_joints(current, previous):
                 unwrapped = []
                 for c, p in zip(current, previous):
@@ -888,23 +945,34 @@ class TrajectoryMathEngine:
                     unwrapped.append(p + diff)
                 return unwrapped
 
+            total_ik_time = 0.0 # 用來累積這整段路徑的 IK 總耗時
+
             for i in range(N):
                 T_target_tcp = np.eye(4)
                 T_target_tcp[:3, :3] = sampled_rot[i]
                 T_target_tcp[:3, 3] = sampled_xyz[i]
                 
-                # 扣除 TCP 轉換為法蘭盤目標
                 T_target_flange = T_target_tcp @ inv_tcp_mat
                 
-                # IK 逆推
+                t0 = time.perf_counter() 
                 ik_res, ik_err = _core_inverse_kinematics(T_target_flange, seed)
+                total_ik_time += (time.perf_counter() - t0) 
+                
                 if ik_res is None:
                     raise RuntimeError(f"SPLINE Singularity hit at {t_steps[i]:.2f}s")
                 
-                # 透過 Unwrap 過濾，保證馬達絕對不會自轉甩尾
                 ik_res = unwrap_joints(ik_res, seed)
-                
                 seed = ik_res
+                
+                if i == N - 1 and config.DEBUG_IK_PROFILER:
+                    avg_ms = (total_ik_time / N) * 1000.0
+                    max_hz = 1000.0 / avg_ms if avg_ms > 0 else 0
+                    print(f"\n--- [SPLINE Profiler] ---")
+                    print(f"總採樣點數: {N} 點")
+                    print(f"平均 IK 耗時: {avg_ms:.3f} ms / 點")
+                    #print(f"極限串流能力: {max_hz:.0f} Hz")
+                    #print(f"-------------------------\n")
+                
                 yield list(ik_res)
 
         msg = f"[System] Perfect SO(3) Spline compiled successfully ({num_points} points)."

@@ -45,7 +45,7 @@ class StreamingPathExecutor(QThread):
         real_start_time = time.time()
         counter = 0
         interval = 0.010
-        gui_skip_frames =5
+        gui_skip_frames =3
         self.update_signal.emit(list(self.start_joints))
         
         last_ik_joints = None
@@ -1038,7 +1038,8 @@ class PathManager(QObject):
             self.worker.set_tcp_signal.connect(callbacks['set_tcp'])
         if 'set_base' in callbacks:
             self.worker.set_base_signal.connect(callbacks['set_base'])
-
+        if serial_ref:
+            serial_ref.reset_semaphore() # 👑 確保每次執行新路徑時，水管容量是標準的 50
         self.worker.start()
 
     def _on_worker_error(self, msg):

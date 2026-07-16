@@ -26,6 +26,8 @@ MAX_PULSE_FREQ = 50000
 GEAR_RATIOS = np.array([6.4, 20.0, 18.095, 4.0, 4.0, 10.0])
 STEPS_PER_DEG = (6400.0 * GEAR_RATIOS) / 360.0
 
+DEBUG_IK_PROFILER = False  # 設為 True 時，會在控制台印出 IK 效能與奇異點警告
+
 # ==========================================
 # 全域機構與運算參數 (供 kinematics.py 讀取)
 # ==========================================
@@ -36,11 +38,6 @@ JOINT_LIMITS = [
 ]
 
 BASE_MESH_OFFSET = {'xyz': [0, 0, 0], 'rpy': [1.5708, 0, -1.5708]}
-STL_FILES = [
-    'base_link.STL', 'Link1.STL', 'Link2.STL', 'Link3.STL',
-    'Link4.STL', 'Link5.STL', 'Link6.STL'
-]
-
 URDF_PARAMS = [
     {'xyz': [0, 0.1105, 0],        'rpy': [3.1416, 0, 0],       'axis': 'y'}, 
     {'xyz': [-0.0234, 0, 0],       'rpy': [1.5708, -1.5708, 0], 'axis': 'x', 'invert': True}, 
@@ -48,6 +45,39 @@ URDF_PARAMS = [
     {'xyz': [0, -0.0712, 0.04344], 'rpy': [3.1416, 0, -1.5708], 'axis': 'x', 'invert': True}, 
     {'xyz': [0.1053, 0, 0],        'rpy': [1.5708, 0, 1.5708],  'axis': 'x', 'invert': True}, 
     {'xyz': [0, 0, 0.0505],        'rpy': [3.1416, 0, 0],       'axis': 'z'}  
+]
+
+# ==========================================
+# 數位孿生材質庫 (R, G, B)
+# ==========================================
+MATERIAL_COLORS = {
+    'default': (0.90, 0.90, 0.90), # 白 (略調暗以保留光影立體感)
+    'motor':   (0.18, 0.18, 0.18), # 黑 (深灰色，避免純黑吃掉陰影)
+    'screws':  (0.78, 0.80, 0.84), # 金屬色
+    'gear':    (0.85, 0.78, 0.58),  # 黃銅色
+    'cage':    (0.65, 0.65, 0.65)  # 銀灰色
+}
+
+# 你的拆分檔案列表 (只要檔名包含上面字典的 key，就會自動上色)
+STL_FILES = [
+    'base_link.STL', 
+    'Link1_main.STL', 'Link1_motor.STL', 'Link1_screws.STL','Link1_gear.STL', 'Link1_cage.STL',
+    'Link2_main.STL', 'Link2_motor.STL', 'Link2_screws.STL','Link2_gear.STL', 'Link2_cage.STL',
+    'Link3_main.STL', 'Link3_motor.STL', 'Link3_screws.STL',
+    'Link4_main.STL', 'Link4_motor.STL', 'Link4_screws.STL',
+    'Link5_main.STL', 'Link5_motor.STL', 
+    'Link6_main.STL'
+]
+
+# 對應的關節矩陣索引 (告訴系統哪個零件跟著哪一軸轉)
+MESH_JOINT_INDICES = [
+    0,             # base_link
+    1, 1, 1, 1, 1, # Link1
+    2, 2, 2, 2, 2, # Link2
+    3, 3, 3,       # Link3
+    4, 4, 4,       # Link4
+    5, 5,          # Link5
+    6              # Link6
 ]
 
 # ==========================================
@@ -272,10 +302,9 @@ class Robot3DView(QWidget):
                 })
 
         # ==========================================
-        # 效能優化 2：絕對效能優先，拔除 Active 顏色與粗細變換
+        # 效能優化 2：拔除 Active 顏色與粗細變換
         # ==========================================
         BASE_AXIS_LEN = getattr(self, 'BASE_AXIS_LEN', 0.12)
-        # 固定顏色與透明度，不再隨選擇改變
         base_colors = [(0.95, 0.20, 0.20, 0.7), (0.20, 0.85, 0.20, 0.7), (0.20, 0.40, 0.95, 0.7)]
 
         for idx, base in enumerate(self.base_manager.bases):
@@ -353,22 +382,43 @@ class Robot3DView(QWidget):
         parent_node = self.view.scene
         zero_matrices = kinematics.forward_kinematics_all([0.0]*6)
 
-        for i, stl_name in enumerate(STL_FILES):
-            full_path = os.path.join(base_path, stl_name)
+        for i, filename in enumerate(STL_FILES):
+            full_path = os.path.join(base_path, filename)
             try:
-                mesh_data = trimesh.load(full_path)
+                mesh_data = trimesh.load(full_path, force='mesh')
                 vertices = np.array(mesh_data.vertices, dtype=np.float32) * 0.001
                 faces    = np.array(mesh_data.faces,    dtype=np.uint32)
-            except Exception:
+                
+                # ==========================================
+                # 魔法核心：透過檔名自動匹配材質！
+                # ==========================================
+                color_key = 'default'
+                for key in MATERIAL_COLORS.keys():
+                    if key in filename.lower():
+                        color_key = key
+                        break
+                        
+                part_color = MATERIAL_COLORS[color_key]
+                
+            except Exception as e:
+                print(f"[3D Render] 無法載入 {filename}: {e}")
                 box      = trimesh.creation.box(extents=(0.05, 0.05, 0.05))
                 vertices = np.array(box.vertices, dtype=np.float32)
                 faces    = np.array(box.faces,    dtype=np.uint32)
+                # 載入失敗時給預設色
+                part_color = MATERIAL_COLORS['default']
 
-            M0 = zero_matrices[i] if i < len(zero_matrices) else np.eye(4)
+            # 根據陣列抓取正確的連動矩陣
+            mat_idx = MESH_JOINT_INDICES[i]
+            M0 = zero_matrices[mat_idx] if mat_idx < len(zero_matrices) else np.eye(4)
+            
             ones = np.ones((len(vertices), 1), dtype=np.float32)
             world_vertices = (M0 @ np.hstack([vertices, ones]).T).T[:, :3]
 
-            new_verts, new_faces, vc = self._bake_lighting_post_transform(vertices, world_vertices, faces, BASE_COLOR)
+            # 將單一顏色 part_color 直接餵給原本的光影烘焙引擎
+            new_verts, new_faces, vc = self._bake_lighting_post_transform(
+                vertices, world_vertices, faces, part_color
+            )
 
             mesh_visual = scene.visuals.Mesh(
                 vertices=new_verts,
@@ -389,8 +439,9 @@ class Robot3DView(QWidget):
         matrices = kinematics.forward_kinematics_all(joint_angles)
         
         for i, actor in enumerate(self.actors):
-            if i < len(matrices):
-                actor.transform.matrix = matrices[i].T.astype(np.float32)
+            mat_idx = MESH_JOINT_INDICES[i]
+            if mat_idx < len(matrices):
+                actor.transform.matrix = matrices[mat_idx].T.astype(np.float32)
                 
         if tcp_mat is not None and hasattr(self, 'tcp_node'):
             from vispy import scene 
@@ -423,11 +474,33 @@ class Robot3DView(QWidget):
         for _, cone, _ in self.gizmo_ring_cones: cone.visible = is_rot
         self.canvas.update()
 
+    # 乾淨的軌跡繪製邏輯
+    def draw_trajectory_preview(self, points):
+        if not hasattr(self, 'path_actor'):
+            self.path_actor = scene.visuals.Line(
+                color='#00e6b8', width=1.5, antialias=True, method='gl', parent=self.view.scene
+            )
+            self.path_actor.set_gl_state(depth_test=False, blend=True)
+            self.show_trajectory = True 
+
+        if not getattr(self, 'show_trajectory', True) or not points or len(points) < 2:
+            if hasattr(self, 'path_actor'):
+                self.path_actor.visible = False
+            return
+            
+        points_array = np.array(points, dtype=np.float32)
+        self.path_actor.set_data(pos=points_array)
+        self.path_actor.visible = True
+        
+    def get_tcp_matrix(self):
+        return np.eye(4)
+
+    # ==========================================
     def on_mouse_press(self, event):
         if event.button != 1: return
         
         # ==========================================
-        # 👑 新增：如果開啟了擷取模式 (Picking Mode)，發射 3D 射線
+        # 新增：如果開啟了擷取模式 (Picking Mode)，發射 3D 射線
         # ==========================================
         if getattr(self, '_picking_mode', False) and hasattr(self, 'raycast_callback') and self.raycast_callback:
             # 借用完美對齊世界零點的 floor_grid 來取得螢幕與 3D 世界的轉換矩陣
@@ -492,7 +565,7 @@ class Robot3DView(QWidget):
 
     def on_mouse_move(self, event):
 
-        # 👑 新增：如果開啟了擷取模式，滑鼠移動時持續發射 Hover 射線
+        # 新增：如果開啟了擷取模式，滑鼠移動時持續發射 Hover 射線
         if getattr(self, '_picking_mode', False) and hasattr(self, 'raycast_hover_callback') and self.raycast_hover_callback:
             trans = self.floor_grid.get_transform('canvas', 'visual')
             p_near = trans.map([event.pos[0], event.pos[1], -1.0])
@@ -589,24 +662,4 @@ class Robot3DView(QWidget):
                 if hasattr(self, 'cancel_gizmo_callback') and self.cancel_gizmo_callback:
                     self.cancel_gizmo_callback()
             self._bg_pressed = False
-    
-    # 乾淨的軌跡繪製邏輯
-    def draw_trajectory_preview(self, points):
-        if not hasattr(self, 'path_actor'):
-            self.path_actor = scene.visuals.Line(
-                color='#00e6b8', width=1.5, antialias=True, method='gl', parent=self.view.scene
-            )
-            self.path_actor.set_gl_state(depth_test=False, blend=True)
-            self.show_trajectory = True 
-
-        if not getattr(self, 'show_trajectory', True) or not points or len(points) < 2:
-            if hasattr(self, 'path_actor'):
-                self.path_actor.visible = False
-            return
-            
-        points_array = np.array(points, dtype=np.float32)
-        self.path_actor.set_data(pos=points_array)
-        self.path_actor.visible = True
-        
-    def get_tcp_matrix(self):
-        return np.eye(4)
+    #=========================================

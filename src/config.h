@@ -3,21 +3,36 @@
 
 #include <Arduino.h>
 
-// 關節配置與硬體參數結構
-struct JointConfig {
-    byte stepPin; byte dirPin; byte enPin; byte limitPin; bool limitActiveState;
-    float homingSpeed; float homingPos; long bounceSteps; 
-    long jointControlSpd10; long maxSpeedSteps10; 
-    int rampSteps;      
+// ==========================================
+// 1. 輕量化結構定義
+// ==========================================
+
+// 1. 腳位群
+struct JointPins {
+    byte stepPin; byte dirPin; byte enPin; byte limitPin;
 };
 
-// 馬達電流配置結構
+// 2. 歸零群
+struct HomingConfig {
+    float homingSpeed; float homingPos; long bounceSteps; int rampSteps;
+};
+
+// 3. 速度群
+struct SpeedConfig {
+    long jointControlSpd10; long maxSpeedSteps10;
+};
+
+// 4. 電流群
 struct MotorCurrentConfig {
-    uint16_t run_mA; 
-    float hold_ratio;
+    uint16_t run_mA; float hold_ratio;
 };
 
-// S6 CS 腳位定義 (對應 X, Y, Z, E0, E1, E2)
+// ==========================================
+// 2. 核心硬體常數
+// ==========================================
+constexpr float MICROSTEPS = 32.0f; 
+constexpr float MOTOR_STEPS = 200.0f; 
+
 #define X_CS_PIN  PE7
 #define Y_CS_PIN  PE15
 #define Z_CS_PIN  PD10
@@ -25,13 +40,17 @@ struct MotorCurrentConfig {
 #define E1_CS_PIN PC14
 #define E2_CS_PIN PC15
 
-// 宣告外部常數陣列
-extern const JointConfig JOINTS[6];
+// ==========================================
+// 3. 全域平行陣列宣告 (Structure of Arrays)
+// ==========================================
+extern const JointPins JOINT_PINS[6];
+extern const bool LIMIT_ACTIVE_STATE[6]; // 極限狀態只有一個布林值，直接用基本陣列最乾淨！
+extern const HomingConfig HOMING_CFG[6];
+extern const SpeedConfig SPEED_CFG[6];
+
 extern const MotorCurrentConfig MOTOR_CURRENTS[6];
 extern const float GEAR_RATIOS[6];
-
-// 全域硬體常數
-const float MICROSTEPS = 32.0; 
-const float MOTOR_STEPS = 200.0; 
+extern const int32_t AXIS_MAX_LIMIT[6];
+extern const int32_t AXIS_MIN_LIMIT[6];
 
 #endif

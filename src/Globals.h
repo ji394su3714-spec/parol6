@@ -2,44 +2,27 @@
 #define GLOBALS_H
 
 #include <Arduino.h>
-#include <MobaTools.h>
 
-// 宣告共用的馬達與狀態變數
-extern MoToStepper* steppers[6];
+// ==========================================
+// 1. 共用狀態變數
+// ==========================================
 extern byte homingState[6]; 
 extern bool normalMoveActive;
 
-// 通訊緩衝區設定
+// ==========================================
+// 2. UART 通訊解析暫存區
+// ==========================================
 #define NUM_CHARS 128
 extern char receivedChars[NUM_CHARS];
 extern char tempChars[NUM_CHARS];
 extern long receivedSteps[6];
 extern bool newData;
 
-// 宣告共用的輔助函式
+// ==========================================
+// 3. 共用輔助函式宣告
+// ==========================================
 float getStepsPerDeg(int axis);
 bool isAnyHoming();
+float getAxisAccel(int axis);
 
-#define BUF_SIZE 300
-
-struct BufPoint {
-    long targetSteps[6];
-    unsigned long interval_us;
-};
-
-extern BufPoint ringBuf[BUF_SIZE];
-extern int bufHead;
-extern int bufTail;
-extern int bufCount;
-extern bool isBufPlaying;
-extern bool pendingOK;
-
-extern long lastBufTarget[6]; 
-extern unsigned long lastPointTimeUs;
-extern unsigned long currentPointIntervalUs;
-
-extern long global_hw_max_steps;
-extern float global_T_acc;
-
-void updateRingBuffer();
 #endif

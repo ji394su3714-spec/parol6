@@ -78,6 +78,10 @@ class SerialManager(QObject):
         self.connection_state_signal.emit(False)
         self.log_signal.emit("Disconnected.")
 
+    def reset_semaphore(self):
+        """ 暴力重置 Semaphore 為 50，確保每次發車都是乾淨的狀態 """
+        self.ok_semaphore = threading.Semaphore(50)
+
     # ==========================================
     # 加上保護鎖的發送區塊
     # ==========================================
@@ -102,7 +106,10 @@ class SerialManager(QObject):
         """ 發送步數指令給 Arduino """
         if not self.is_connected or not self.ser: return False
         
-        self.motion_done_event.clear()
+        # 連線時清空旗標 
+        self.motion_done_event.clear()  
+        self.ee_done_event.clear() # 清空夾爪旗標
+        self.reset_semaphore()     # 👑 重置背壓信號量
         
         try:
             steps = []

@@ -335,9 +335,27 @@ BTN_SECONDARY_STYLE = """
 """
 
 BTN_CARTESIAN_STYLE = """
-    QPushButton { background-color: #333; border: 1px solid #444; border-radius: 4px; color: #ddd; font-size: 10px; font-weight: bold; }
-    QPushButton:hover { background-color: #555; color: white; border-color: #666; }
-    QPushButton:pressed { background-color: #111; margin: 1px 0 0 1px; }
+    QPushButton { 
+        /* 微弱漸層底色，保持沉穩 */
+        background-color: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1, stop: 0 #3E3E3E, stop: 1 #323232);
+        /* 統一的 1px 深色細邊框，讓輪廓極度清晰銳利 */
+        border: 1px solid #5a5a5c; 
+        border-radius: 4px; 
+        color: #E0E0E0; 
+        font-size: 10px; 
+        font-weight: bold; 
+    }
+    QPushButton:hover { 
+        background-color: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1, stop: 0 #525252, stop: 1 #464646);
+        color: #FFFFFF; 
+        border: 1px solid #2A2A2A; 
+    }
+    QPushButton:pressed { 
+        /* 按下時直接變回純粹的暗色，取消漸層反轉 */
+        background-color: #1A1A1A;
+        border: 1px solid #000000;
+        margin: 1px 0 0 1px;
+    }
 """
 
 BTN_FRAME_TOGGLE_STYLE = """

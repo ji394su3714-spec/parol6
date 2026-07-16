@@ -132,6 +132,7 @@ class RobotControllerGUI(QMainWindow):
         self.jog_widget.send_jog_callback = self.send_joint_jog     
         self.jog_widget.cartesian_jog_callback = self.handle_cartesian_jog
         self.jog_widget.continuous_jog_callback = self.handle_continuous_joint_jog
+        self.jog_widget.cartesian_jog_stop_callback = self.handle_cartesian_jog_stop
 
         # 夾爪改為綁定 send_gripper_callback
         self.jog_widget.send_gripper_callback = self.handle_gripper_jog
@@ -256,11 +257,25 @@ class RobotControllerGUI(QMainWindow):
             world_mat = self.base_manager.get_matrix(self.base_manager.current_index) # 使用當前生效的基座
             
         actual_frame = "Base" if frame == "World" else frame
-        new_joints, error_msg = kinematics.calculate_jog_joints(
-            self.current_float_joints, axis, step_val, actual_frame, tcp_mat, world_mat
+        
+        # 👑 1. 安全獲取上一次的完美矩陣 (如果還沒有這個屬性，預設為 None)
+        last_ideal_mat = getattr(self, '_active_jog_ideal_tcp', None)
+
+        # 👑 2. 這裡就是修復報錯的地方！必須用三個變數接收，並把 last_ideal_mat 傳進去
+        new_joints, error_msg, ideal_tcp_mat = kinematics.calculate_jog_joints(
+            self.current_float_joints, 
+            axis, 
+            step_val, 
+            actual_frame, 
+            tcp_mat, 
+            world_mat,
+            T_last_ideal_tcp=last_ideal_mat
         )
         
         if new_joints is not None:
+            # 👑 3. 點動成功！把這次算出來的完美矩陣「記下來」，供下一次連續點動使用
+            self._active_jog_ideal_tcp = ideal_tcp_mat
+
             self.handle_system_pose_update(new_joints) # 這會同步 UI 上的滑桿
             
             # 將算出來的新角度發送給實機
@@ -268,7 +283,16 @@ class RobotControllerGUI(QMainWindow):
                 spd_factor = self.get_jog_speed_factor(self.jog_widget.c_speed_level)
                 self.serial_manager.send_joints(new_joints, speed_factor=spd_factor, move_mode=0)
         else:
+            # 👑 4. 如果遇到死角失敗，清空矩陣記憶，避免卡死
+            self._active_jog_ideal_tcp = None
             self.log_widget.append_log(f"[Jog Warning] {error_msg}")
+
+    def handle_cartesian_jog_stop(self):
+        """主視窗大腦接收到 UI 的停止訊號，清空完美矩陣記憶"""
+        self._active_jog_ideal_tcp = None
+        
+        if hasattr(self, 'serial_manager') and self.serial_manager.is_connected:
+            self.serial_manager.send_stop()
 
     # ==========================================
     # 其他核心控制功能

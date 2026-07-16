@@ -1,121 +1,127 @@
-//#include "Homing.h"
 #include "Globals.h"
 #include "Config.h"
+#include "MotionEngine.h"
 
-// 核心：二段式歸零狀態機 (Double-Tap)
+float getAxisAccel(int axis) {
+    if (axis < 0 || axis >= 6) return 50000.0f;
+    float max_v = SPEED_CFG[axis].maxSpeedSteps10 / 10.0f; // 該軸的絕對極速
+    float ramp = (float)HOMING_CFG[axis].rampSteps;         // 該軸的加速步數
+    if (ramp <= 0.0f) return 50000.0f;                  // 防呆
+    
+    // 物理公式 a = V^2 / 2S
+    return (max_v * max_v) / (2.0f * ramp);
+}
+
+// 加入 current_vel 判斷
+bool isAxisMoving(int axis) {
+    if (axis < 0 || axis >= 6) return false;
+    noInterrupts();
+    bool moving = (axes[axis].target_pos != axes[axis].current_pos) || 
+                  (axes[axis].current_vel > 0.0f) || 
+                  (axes[axis].target_vel > 0.0f);
+    interrupts();
+    return moving;
+}
+
+void moveToRelative(int axis, long relativeSteps, float speedSec) {
+    if (axis < 0 || axis >= 6) return;
+
+    float accel = getAxisAccel(axis);
+    
+    moveAxisIndependent(axis, relativeSteps, speedSec, accel);
+}
+
 void updateHomingLogic() {
     const float J6_PREP_ANGLE = -90.0; 
     static unsigned long j6DelayStartTime = 0; 
     
     for (int i = 0; i < 6; i++) {
         // 狀態 1：【第一段】快速尋找開關
-        if (homingState[i] == 1 && JOINTS[i].limitPin != 0) {
-            if (digitalRead(JOINTS[i].limitPin) == JOINTS[i].limitActiveState) {
+        if (homingState[i] == 1 && JOINT_PINS[i].limitPin != 0) {
+            if (digitalRead(JOINT_PINS[i].limitPin) == LIMIT_ACTIVE_STATE[i]) {
                 delay(3); 
-                if (digitalRead(JOINTS[i].limitPin) == JOINTS[i].limitActiveState) {
-                    steppers[i]->setRampLen(0);
-                    steppers[i]->stop(); 
+                if (digitalRead(JOINT_PINS[i].limitPin) == LIMIT_ACTIVE_STATE[i]) {
+                    
+                    // 換成瞬間硬停！保證歸零的絕對精準度
+                    stopAxisInstant(i); 
                     homingState[i] = 2; 
                 }
             } 
         }
-        // 狀態 2：急停完畢，確認隊友後，執行【短回彈】
         else if (homingState[i] == 2) {
-            if (!steppers[i]->moving()) {
+            if (!isAxisMoving(i)) {
                 bool readyToBounce = true;
                 if (i <= 2) {
                     for (int j = 0; j < 3; j++) {
-                        if (homingState[j] == 1 || (homingState[j] == 2 && steppers[j]->moving())) {
-                            readyToBounce = false;
-                            break;
-                        }
+                        if (homingState[j] == 1 || (homingState[j] == 2 && isAxisMoving(j))) { readyToBounce = false; break; }
                     }
                 }
                 if (readyToBounce) {
-                    steppers[i]->setRampLen(40);
-                    steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 13);
-                    int bounceDir = (JOINTS[i].homingSpeed > 0) ? -1 : 1;
-                    long bounceDist = JOINTS[i].bounceSteps * bounceDir;
-                    steppers[i]->doSteps(bounceDist); 
+                    int bounceDir = (HOMING_CFG[i].homingSpeed > 0) ? -1 : 1;
+                    long bounceDist = HOMING_CFG[i].bounceSteps * bounceDir;
+                    float speedSec = abs(HOMING_CFG[i].homingSpeed) * 1.3f; 
+                    moveToRelative(i, bounceDist, speedSec); 
                     homingState[i] = 12; 
                 }
             }
         }
-        // 狀態 12：回彈完畢，確認隊友後，執行【第二段尋找】
         else if (homingState[i] == 12) {
-            if (!steppers[i]->moving()) {
+            if (!isAxisMoving(i)) {
                 bool readyToSecondTap = true;
                 if (i <= 2) {
                     for (int j = 0; j < 3; j++) {
-                        if (homingState[j] == 2 || (homingState[j] == 12 && steppers[j]->moving())) {
-                            readyToSecondTap = false;
-                            break;
-                        }
+                        if (homingState[j] == 2 || (homingState[j] == 12 && isAxisMoving(j))) { readyToSecondTap = false; break; }
                     }
                 }
                 if (readyToSecondTap) {
-                    steppers[i]->setRampLen(40);
-                    steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 5); 
-                    int dir = (JOINTS[i].homingSpeed > 0) ? 1 : -1;
-                    steppers[i]->rotate(dir); 
+                    int dir = (HOMING_CFG[i].homingSpeed > 0) ? 1 : -1;
+                    float slowSpeedSec = abs(HOMING_CFG[i].homingSpeed) * 0.5f; 
+                    jogAxis(i, dir, slowSpeedSec, getAxisAccel(i), true); 
                     homingState[i] = 13; 
                 }
             }
         }
         // 狀態 13：【第二段】尋找開關
         else if (homingState[i] == 13) {
-            if (digitalRead(JOINTS[i].limitPin) == JOINTS[i].limitActiveState) {
+            if (digitalRead(JOINT_PINS[i].limitPin) == LIMIT_ACTIVE_STATE[i]) {
                 delay(3); 
-                if (digitalRead(JOINTS[i].limitPin) == JOINTS[i].limitActiveState) {
-                    steppers[i]->setRampLen(0);
-                    steppers[i]->stop(); 
+                if (digitalRead(JOINT_PINS[i].limitPin) == LIMIT_ACTIVE_STATE[i]) {
+                    
+                    // 換成瞬間硬停！保證歸零的絕對精準度
+                    stopAxisInstant(i); 
                     homingState[i] = 14; 
                 }
             } 
         }
-        // 狀態 14：第二次急停完畢，決定 Final Offset 或 Prep 退回策略
         else if (homingState[i] == 14) {
-            if (!steppers[i]->moving()) {
+            if (!isAxisMoving(i)) {
                 bool readyToOffset = true;
                 if (i <= 2) {
                     for (int j = 0; j < 3; j++) {
-                        if (homingState[j] == 13 || (homingState[j] == 14 && steppers[j]->moving())) {
-                            readyToOffset = false;
-                            break;
-                        }
+                        if (homingState[j] == 13 || (homingState[j] == 14 && isAxisMoving(j))) { readyToOffset = false; break; }
                     }
                 }
                 if (i == 5) {
                     readyToOffset = false; 
                     long prepSteps = J6_PREP_ANGLE * getStepsPerDeg(i);
-                    steppers[i]->setRampLen(300);
-                    steppers[i]->setSpeedSteps(JOINTS[i].maxSpeedSteps10);
-                    steppers[i]->doSteps(prepSteps); 
+                    float prepSpeedSec = SPEED_CFG[i].maxSpeedSteps10 / 10.0f;
+                    moveToRelative(i, prepSteps, prepSpeedSec);
                     homingState[i] = 4; 
                 }
-                if (i == 4) {
-                    readyToOffset = false;
-                    homingState[i] = 6; 
-                }
+                if (i == 4) { readyToOffset = false; homingState[i] = 6; }
+                
                 if (readyToOffset) {
-                    if (i <= 2) {
-                        steppers[i]->setRampLen(300); 
-                        steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 20);
-                    } 
-                    else if (i == 3) {
-                        steppers[i]->setRampLen(300); 
-                        steppers[i]->setSpeedSteps(abs(JOINTS[i].homingSpeed) * 15);
-                    }
-                    long offsetSteps = JOINTS[i].homingPos * getStepsPerDeg(i);
-                    steppers[i]->doSteps(offsetSteps); 
+                    float offsetSpeedSec = abs(HOMING_CFG[i].homingSpeed) * 2.0f; 
+                    if (i == 3) offsetSpeedSec = abs(HOMING_CFG[i].homingSpeed) * 1.5f;
+                    long offsetSteps = HOMING_CFG[i].homingPos * getStepsPerDeg(i);
+                    moveToRelative(i, offsetSteps, offsetSpeedSec); 
                     homingState[i] = 3; 
                 }
             }
         }
-        // 狀態 3：Offset 退回完畢 (真正設為 0)
         else if (homingState[i] == 3) {
-            if (!steppers[i]->moving()) {
-                steppers[i]->setZero(0); 
+            if (!isAxisMoving(i)) {
+                setAxisPosition(i, 0); 
                 homingState[i] = 0;
                 Serial.print(">>> Axis "); Serial.print(i + 1); Serial.println(" Homing Done <<<");
 
@@ -129,9 +135,9 @@ void updateHomingLogic() {
                                 else if (k == 5 && j4_waiting) homingState[k] = 10; 
                                 else {
                                     homingState[k] = 1;  
-                                    steppers[k]->setRampLen(40);
-                                    steppers[k]->setSpeedSteps(abs(JOINTS[k].homingSpeed) * 10);
-                                    steppers[k]->rotate((JOINTS[k].homingSpeed > 0) ? 1 : -1);
+                                    float speedSec = abs(HOMING_CFG[k].homingSpeed);
+                                    // 補上加速度參數
+                                    jogAxis(k, (HOMING_CFG[k].homingSpeed > 0) ? 1 : -1, speedSec, getAxisAccel(i), true);
                                 }
                             }
                         }
@@ -139,44 +145,37 @@ void updateHomingLogic() {
                 }
                 if (i == 3 && homingState[5] == 10) {
                     homingState[5] = 1;
-                    steppers[5]->setRampLen(40);
-                    steppers[5]->setSpeedSteps(abs(JOINTS[5].homingSpeed) * 10);
-                    steppers[5]->rotate((JOINTS[5].homingSpeed > 0) ? 1 : -1);
+                    float speedSec = abs(HOMING_CFG[5].homingSpeed);
+                    jogAxis(5, (HOMING_CFG[5].homingSpeed > 0) ? 1 : -1, speedSec, getAxisAccel(i), true);
                 }
             }
         }
-        // 狀態 4：J6 正在前往 90 度預備姿態
         else if (homingState[i] == 4 && i == 5) {
-            if (!steppers[i]->moving()) {
+            if (!isAxisMoving(i)) {
                 homingState[i] = 5; 
                 if (homingState[4] == 10) {
                     homingState[4] = 1;
-                    steppers[4]->setRampLen(40);
-                    steppers[4]->setSpeedSteps(abs(JOINTS[4].homingSpeed) * 10);
-                    steppers[4]->rotate((JOINTS[4].homingSpeed > 0) ? 1 : -1);
+                    float speedSec = abs(HOMING_CFG[4].homingSpeed);
+                    jogAxis(4, (HOMING_CFG[4].homingSpeed > 0) ? 1 : -1, speedSec, getAxisAccel(i), true);
                 }
             }
         }
-        // 狀態 6：J5 撞到開關了，等待 J6 準備好
         else if (homingState[i] == 6 && i == 4) {
             if (homingState[5] == 5) {
-                steppers[4]->setRampLen(300);
-                steppers[4]->setSpeedSteps(abs(JOINTS[4].homingSpeed) * 14);
-                long offsetJ5 = JOINTS[4].homingPos * getStepsPerDeg(4);
-                steppers[4]->doSteps(offsetJ5);
+                float speedSec = abs(HOMING_CFG[4].homingSpeed) * 1.4f;
+                long offsetJ5 = HOMING_CFG[4].homingPos * getStepsPerDeg(4);
+                moveToRelative(4, offsetJ5, speedSec);
                 homingState[4] = 3; 
                 homingState[5] = 15; 
                 j6DelayStartTime = millis(); 
             }
         }
-        // 狀態 15：J6 的 0.5 秒非阻塞延遲
         else if (homingState[i] == 15 && i == 5) {
             if (millis() - j6DelayStartTime >= 500) { 
-                steppers[5]->setRampLen(2000);
-                steppers[5]->setSpeedSteps(abs(JOINTS[5].homingSpeed) * 10);
-                float remainingAngle = JOINTS[5].homingPos - J6_PREP_ANGLE;
+                float speedSec = abs(HOMING_CFG[5].homingSpeed);
+                float remainingAngle = HOMING_CFG[5].homingPos - J6_PREP_ANGLE;
                 long offsetJ6 = remainingAngle * getStepsPerDeg(5);
-                steppers[5]->doSteps(offsetJ6);
+                moveToRelative(5, offsetJ6, speedSec);
                 homingState[5] = 3; 
             }
         }
@@ -184,8 +183,6 @@ void updateHomingLogic() {
 
     static bool wasHoming = false;
     bool stillHoming = isAnyHoming();
-    if (wasHoming && !stillHoming) {
-        Serial.println("HomingDone");  
-    }
+    if (wasHoming && !stillHoming) { Serial.println("HomingDone"); }
     wasHoming = stillHoming;
 }

@@ -934,6 +934,10 @@ class JogWidget(BaseBlock):
     def _stop_cartesian_jog(self):
         self.cart_jog_timer.stop()
         self.active_cart_axis = None
+        
+        # 👑 踩下煞車時，大喊通知主視窗
+        if hasattr(self, 'cartesian_jog_stop_callback') and self.cartesian_jog_stop_callback:
+            self.cartesian_jog_stop_callback()
 
     def _cartesian_timer_tick(self):
         if not self.active_cart_axis: return

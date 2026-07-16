@@ -2,7 +2,7 @@
 #define END_EFFECTOR_H
 
 #include <Arduino.h>
-#include <MobaTools.h> // 用 MobaTools 統一管理
+#include <Servo.h> // 👑 替換為 Arduino 內建標準伺服馬達庫
 
 void initEndEffector();
 bool parseEndEffectorCmd(char* cmdStr);
