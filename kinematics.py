@@ -285,7 +285,7 @@ def calculate_base_shift_ik(T_flange_old, recorded_base_mat, target_base_mat, se
     R_end = target_base_mat[:3, :3]
     T_user = np.linalg.inv(recorded_base_mat) @ T_flange_old
     
-    # 👑 The Engineer's Touch: 處理 180 度對蹠點奇異 (Antipodal Singularity)
+    # 處理 180 度對稱旋轉的奇異點，避免 Slerp 迷失方向
     # 計算旋轉差異矩陣的跡數 (Trace)，如果 Trace 趨近於 -1，代表這是一個接近 180 度的翻轉
     R_diff = R_start.T @ R_end
     trace = np.trace(R_diff)
@@ -296,7 +296,6 @@ def calculate_base_shift_ik(T_flange_old, recorded_base_mat, target_base_mat, se
         perturbation = R.from_rotvec([1e-4, 1e-4, 1e-4]).as_matrix()
         R_end = R_end @ perturbation
 
-    # 直接進入純粹的 SLERP 插補，沒有 fallback，沒有 if-else！
     return _run_interpolated_ik(pos_start, pos_end, R_start, R_end, T_user, seed_joints)
 
 def _run_interpolated_ik(pos_start, pos_end, R_start, R_end, T_user, seed_joints):
@@ -335,7 +334,7 @@ def calculate_jog_joints(current_joints, axis, step_val, frame, T_total_offset, 
     if T_base_matrix is None: T_base_matrix = np.eye(4)
 
     # ==========================================
-    # 👑 2. 誤差阻斷機制：如果有上一部的理想矩陣，直接沿用，無視關節誤差！
+    # 2. 誤差阻斷機制：如果有上一部的理想矩陣，直接沿用，無視關節誤差！
     # ==========================================
     if T_last_ideal_tcp is not None:
         T_tcp_curr = np.copy(T_last_ideal_tcp)
@@ -380,7 +379,6 @@ def calculate_jog_joints(current_joints, axis, step_val, frame, T_total_offset, 
     T_flange_target = T_tcp_target @ np.linalg.inv(T_total_offset)
     new_joints, error_score = inverse_kinematics(T_flange_target, current_joints)
     
-    # 👑 3. 錯誤回傳也要補上第三個參數 None
     if new_joints is None: return None, "IK Failed", None
         
     T_check_flange = forward_kinematics(new_joints)
@@ -401,7 +399,7 @@ def calculate_jog_joints(current_joints, axis, step_val, frame, T_total_offset, 
         min_lim, max_lim = config.JOINT_LIMITS[i]
         if angle < (min_lim - 0.1) or angle > (max_lim + 0.1): return None, f"Limit Hit J{i+1}", None
 
-    # 👑 4. 成功解出時，把這次的「完美目標矩陣 (T_tcp_target)」一起傳回給上位機！
+    # 4. 成功解出時，把這次的「完美目標矩陣 (T_tcp_target)」一起傳回給上位機！
     return list(new_joints), None, T_tcp_target
 
 def extract_continuous_rpy(T_matrix, prev_rpy_deg=None):

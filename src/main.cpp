@@ -3,7 +3,7 @@
 
 // 引入拆分出來的模組
 #include "TMC_RawSPI.h"
-#include "Config.h"
+#include "config.h"
 #include "Globals.h"
 #include "Homing.h"
 #include "Comms.h"
@@ -25,24 +25,24 @@ const bool LIMIT_ACTIVE_STATE[6] = {
     LOW, HIGH, HIGH, LOW, HIGH, LOW
 };
 
-// 3. 歸零參數 (homingSpd, homingPos, bounce, ramp)
+// 3. 歸零參數 (Homing Speed, Homing Position, Bounce, Ramp)
 const HomingConfig HOMING_CFG[6] = {
-    { 1200, -118, 1000, 1200}, // J1
-    {-2400,   50, 2000, 1400}, // J2
-    { 3000,  -70, 2400, 1400}, // J3
-    { 3800, -144, 1600, 1000}, // J4
-    { 2800, -125, 1200, 1000}, // J5
-    { 5000,    2, 1600, 1200}  // J6
+    { 1200, -13426, 1000, 1200}, // J1 (-118 度)
+    {-2400,  17778, 2000, 1400}, // J2 (  50 度)
+    { 3000, -22518, 2400, 1400}, // J3 ( -70 度)
+    { 3800, -10240, 1600, 1200}, // J4 (-144 度)
+    { 2800,  -8889, 1200, 1200}, // J5 (-125 度)
+    { 5000,    356, 1600, 1400}  // J6 (   2 度)
 };
 
-// 4. 馬達速度 (ctrlSpd10, maxSpd10)
+// 4. 馬達速度 (controlSpeed, maxSpeed)
 const SpeedConfig SPEED_CFG[6] = {
-    {48000, 200000}, // J1
-    {68000, 200000}, // J2
-    {68000, 200000}, // J3
-    {60000, 200000}, // J4
-    {60000, 200000}, // J5
-    {80000, 200000}  // J6
+    {4800.0f, 20000.0f}, // J1
+    {6800.0f, 20000.0f}, // J2
+    {6800.0f, 20000.0f}, // J3
+    {6000.0f, 20000.0f}, // J4
+    {6000.0f, 20000.0f}, // J5
+    {8000.0f, 20000.0f}  // J6
 };
 
 // 5. 馬達電流 (run_mA, hold_ratio)
@@ -51,10 +51,8 @@ const MotorCurrentConfig MOTOR_CURRENTS[6] = {
     {1000, 0.5f}, {1000, 0.5f}, {850,  0.5f} 
 };
 
-const float GEAR_RATIOS[6] = {6.4, 20.0, 18.095, 4.0, 4.0, 10.0};
-
-const int32_t AXIS_MAX_LIMIT[6] = { 29013,  24889,  22518,  13156,  7822,  37333};
-const int32_t AXIS_MIN_LIMIT[6] = {-8533, -17778, -22518, -6756, -7822, -21333};
+const int32_t AXIS_MAX_LIMIT[6] = { 29013,  24889,  22518,  13156,  7822 ,21333};
+const int32_t AXIS_MIN_LIMIT[6] = {-8533, -17778, -22518, -6756, -7822, -37333};
 
 // ==========================================
 // 2. 全域狀態變數
@@ -68,17 +66,12 @@ bool normalMoveActive = false;
 byte homingState[6] = {0, 0, 0, 0, 0, 0};
 
 // 輔助函式
-float getStepsPerDeg(int axis) {
-    return (MOTOR_STEPS * MICROSTEPS * GEAR_RATIOS[axis]) / 360.0f;
-}
-
 bool isAnyHoming() {
     for(int i = 0; i < 6; i++) {
         if(homingState[i] != 0) return true;
     }
     return false;
 }
-
 
 // ==========================================
 // 3. 主程式 Setup & Loop
@@ -100,15 +93,13 @@ void setup() {
         digitalWrite(JOINT_PINS[i].enPin, LOW); // 喚醒驅動器
         delay(10);
         
-        // 傳入 true，硬體接管方向反轉
-        setupTMC2240_RawSPI(all_cs_pins[i], MOTOR_CURRENTS[i].run_mA, MOTOR_CURRENTS[i].hold_ratio, true);
+        setupTMC2240_RawSPI(all_cs_pins[i], MOTOR_CURRENTS[i].run_mA, MOTOR_CURRENTS[i].hold_ratio, false);
         
         if (JOINT_PINS[i].limitPin != 0) {
             pinMode(JOINT_PINS[i].limitPin, INPUT_PULLUP);
         }
     }
     
-    // 區域陣列化：傳給引擎後即刻釋放記憶體，保持全域乾淨
     const uint8_t engine_step_pins[6] = {JOINT_PINS[0].stepPin, JOINT_PINS[1].stepPin, JOINT_PINS[2].stepPin,
                                          JOINT_PINS[3].stepPin, JOINT_PINS[4].stepPin, JOINT_PINS[5].stepPin};
     const uint8_t engine_dir_pins[6]  = {JOINT_PINS[0].dirPin, JOINT_PINS[1].dirPin, JOINT_PINS[2].dirPin,
@@ -121,19 +112,11 @@ void setup() {
 }
 
 void loop() {
-    recvWithStartEndMarkers();
-
-    if (newData) {
-        strcpy(tempChars, receivedChars);
-        if (!parseEndEffectorCmd(tempChars)) {
-            processCommand(); 
-        }
-        newData = false;
-    }
+// 👑 純二進制接收狀態機 (它會在收滿 32 Bytes 後自動執行，不需要任何 if 判斷)
+    receiveBinaryLoop();
 
     updateHomingLogic(); 
 
-    // 判斷是否完全空閒 (傳給夾爪與回報 Done)
     bool isArmIdle = !isEngineMoving();
     updateEndEffector(isArmIdle); 
     
@@ -148,14 +131,14 @@ void loop() {
         lastTempReport = millis();
         
         if (isArmIdle) { 
-            noInterrupts();
+            LockMotionEngine(); 
             float tempJ1 = readTMC2240Temp(X_CS_PIN);
             float tempJ2 = readTMC2240Temp(Y_CS_PIN);
             float tempJ3 = readTMC2240Temp(Z_CS_PIN);
             float tempJ4 = readTMC2240Temp(E0_CS_PIN);
             float tempJ5 = readTMC2240Temp(E1_CS_PIN);
             float tempJ6 = readTMC2240Temp(E2_CS_PIN);
-            interrupts();
+            UnlockMotionEngine();
             
             Serial.print("[Thermal] J1:"); Serial.print(tempJ1, 1);
             Serial.print("C | J2:"); Serial.print(tempJ2, 1);

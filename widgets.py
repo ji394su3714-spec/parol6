@@ -3,6 +3,7 @@ import ctypes
 from ctypes import wintypes
 import datetime
 import os
+import time
 
 from PySide6.QtWidgets import (QDoubleSpinBox, QGridLayout, QSizePolicy, QSpacerItem, QWidget, QVBoxLayout, QHBoxLayout, 
                                QFrame, QLabel, QPushButton, QSlider, QTextEdit, QLineEdit, QApplication, QMenu, QMessageBox)
@@ -407,10 +408,10 @@ class CustomTopBar(QFrame):
         
         if msg_box.exec() == QMessageBox.StandardButton.Ok:
             main_win = self.window()
-            homing_cmd = "<999999,999999,999999,999999,999999,999999,1.0,0>\n"
-            
+                        
             if hasattr(main_win, 'serial_manager') and main_win.serial_manager.is_connected:
-                main_win.serial_manager.send_command(homing_cmd)
+                main_win.serial_manager.send_homing() 
+                
                 if hasattr(main_win, 'log_widget'):
                     main_win.log_widget.append_log("[System] Homing sequence initiated...")
             else:
@@ -563,7 +564,7 @@ class MonitorWidget(QFrame):
         if hasattr(self, 'current_joints_str'): QApplication.clipboard().setText(self.current_joints_str)
 
 # ==========================================
-# 重構清理版 JogWidget (全獨立時鐘連發架構)
+# 重構清理版 JogWidget (全獨立時鐘連發架構) 
 # ==========================================
 class JogWidget(BaseBlock):
     def __init__(self, parent=None):
@@ -580,7 +581,7 @@ class JogWidget(BaseBlock):
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        # 初始化三大獨立心跳時鐘 (20Hz = 50ms)
+        # 初始化三大獨立心跳時鐘 (100hz)
         self._init_timers()
         
         # 建立 UI 區塊
@@ -588,17 +589,38 @@ class JogWidget(BaseBlock):
         self._setup_cartesian_ui()
         self._setup_gripper_ui()
 
+    # MCU 韌體中的真實物理速度 (對應 C++ 的 controlSpeed)
+    MCU_CTRL_STEPS = [4800.0, 6800.0, 6800.0, 6000.0, 6000.0, 8000.0]
+
+    def _get_axis_speed_deg(self, axis_idx, speed_factor):
+        """將 MCU 引擎的『步數/秒』，精準換算為 UI 需要的『度數/秒』"""
+        steps_per_sec = self.MCU_CTRL_STEPS[axis_idx] * speed_factor
+        return abs(steps_per_sec / config.STEPS_PER_DEG[axis_idx])
+
     def _init_timers(self):
         # Joint 虛擬時鐘 (只更新 3D 畫面，實體已由 MCU 接管連續轉動)
         self.joint_jog_timer = QTimer()
         self.joint_jog_timer.timeout.connect(self._update_joint_simulation)
         self.active_joint_axis = -1
         self.active_joint_sign = 0
+        
+        # 智慧按鍵的長按計時器 (250ms)
+        self.joint_hold_timer = QTimer()
+        self.joint_hold_timer.setSingleShot(True)
+        self.joint_hold_timer.timeout.connect(self._on_joint_hold_timeout)
+        self._joint_press_axis = -1
+        self._joint_press_dir = 0
 
         # Cartesian 實體連發時鐘 (Python 持續算 IK 並發送 PTP 點位給 MCU)
         self.cart_jog_timer = QTimer()
         self.cart_jog_timer.timeout.connect(self._cartesian_timer_tick)
         self.active_cart_axis = None
+
+        # Cartesian 的長按計時器 (智慧按鍵專用)
+        self.cart_hold_timer = QTimer()
+        self.cart_hold_timer.setSingleShot(True)
+        self.cart_hold_timer.timeout.connect(self._on_cart_hold_timeout)
+        self._cart_press_axis = None
         
         # Gripper 實體連發時鐘
         self.gripper_jog_timer = QTimer()
@@ -890,70 +912,225 @@ class JogWidget(BaseBlock):
     def on_joint_slider_released(self):
         """鬆開 Slider 或輸入數值時，送出 PTP 指令給實機"""
         angles = [float(s.value()) / 100 for s in self.joint_sliders]
+        
+        # 取得當前面板設定的速度比例 (1~4 檔位轉為 0.25~1.0)
+        speed_factor = self.j_speed_ctrl.level * 0.25 
+        
         if hasattr(self, 'send_jog_callback') and self.send_jog_callback:
-            self.send_jog_callback(angles)
+            self.send_jog_callback(angles, speed_factor)
 
-    def _start_joint_jog(self, index, sign):
-        """按下按鈕：通知 MCU 接管轉動，並啟動 3D 動畫時鐘"""
-        self.active_joint_axis = index
-        self.active_joint_sign = sign
-        if hasattr(self, 'continuous_jog_callback'):
-            speed_factor = self.j_speed_level * 0.25
-            self.continuous_jog_callback(index, sign, speed_factor)
-        self.joint_jog_timer.start(50)
+    def _start_joint_jog(self, axis_idx, direction):
+        """按下按鈕：先不發送，啟動 250ms 的長按偵測計時器"""
+        self._joint_press_axis = axis_idx
+        self._joint_press_dir = direction
+        self.joint_hold_timer.start(250) # 250 毫秒的決斷點
 
-    def _stop_joint_jog(self, index):
-        """鬆開按鈕：通知 MCU 煞車，並停止 3D 動畫時鐘"""
-        self.joint_jog_timer.stop()
-        self.active_joint_axis = -1
-        self.active_joint_sign = 0
-        if hasattr(self, 'continuous_jog_callback'):
-            self.continuous_jog_callback(index, 0, 0.0)
+    def _on_joint_hold_timeout(self):
+        """長按觸發：超過 250ms，確認使用者是想要『連續寸動』"""
+        axis_idx = self._joint_press_axis
+        direction = self._joint_press_dir
+        speed_factor = self.j_speed_ctrl.level * 0.25 
+
+        self.active_joint_axis = axis_idx
+        self.active_joint_sign = direction
+
+        # 發送連續寸動給 STM32 (moveMode = 2)
+        if hasattr(self, 'continuous_jog_callback') and self.continuous_jog_callback:
+            self.continuous_jog_callback(axis_idx, direction, speed_factor)
+        
+        # 記錄真實啟動時間戳記
+        self._last_joint_tick = time.perf_counter()
+        
+        self.joint_jog_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.joint_jog_timer.start(10)
+
+    def _stop_joint_jog(self, axis_idx):
+        """放開按鈕：判定是短按還是長按結束"""
+        if self.joint_hold_timer.isActive():
+            # 情況 A【短按】：計時器還沒結束就被放開了 -> 執行單步點動！
+            self.joint_hold_timer.stop()
+            self._execute_joint_step(axis_idx, self._joint_press_dir)
+        else:
+            # 情況 B【長按結束】：送出煞車指令，停止連續寸動
+            if hasattr(self, 'continuous_jog_callback') and self.continuous_jog_callback:
+                self.continuous_jog_callback(axis_idx, 0, 0.0) 
+            
+            if self.active_joint_axis == axis_idx:
+                self.active_joint_axis = -1
+                self.active_joint_sign = 0
+                self.joint_jog_timer.stop()
+
+    def _execute_joint_step(self, axis_idx, direction):
+        """處理單次點擊 (Step)：固定每次點按 0.5 度，強制同步 UI 與實機"""
+        
+        step_deg = 0.5 * direction # 固定每次點按走 0.5 度
+
+        # 1. 計算目標新角度
+        slider = self.joint_sliders[axis_idx]
+        current_val = slider.value() / 100.0
+        new_val = current_val + step_deg
+
+        # 2. 限制在關節的安全極限內
+        min_lim, max_lim = config.JOINT_LIMITS[axis_idx]
+        new_val = max(min_lim, min(max_lim, new_val))
+
+        # 3. 強制更新 UI (這會自動觸發 3D 畫面的同步)
+        slider.setValue(int(new_val * 100))
+
+        # 4. 直接呼叫「放開滑桿」事件，發送 PTP 指令給 STM32
+        self.on_joint_slider_released()
 
     def _update_joint_simulation(self):
-        """3D 動畫時鐘：不發送任何封包，單純讓畫面手臂跟著動"""
-        if self.active_joint_axis == -1: return
-        safe_max_deg_per_sec = [40.0, 18.0, 20.0, 80.0, 80.0, 42.0]
-        speed_factor = self.j_speed_level * 0.25
-        step_angle = self.active_joint_sign * (safe_max_deg_per_sec[self.active_joint_axis] * speed_factor) / 20.0
+        """UI 視覺更新時鐘 (試圖追趕 MCU 的物理位置)"""
+        now = time.perf_counter()
+        real_dt = now - self._last_joint_tick
+        self._last_joint_tick = now
         
-        slider = self.joint_sliders[self.active_joint_axis]
-        new_val = slider.value() + int(step_angle * 100.0)
-        new_val = max(slider.minimum(), min(slider.maximum(), new_val)) 
-        slider.setValue(new_val)
+        # 防呆機制：如果拖曳視窗導致嚴重卡頓，限制單次最大跳躍時間，防止滑桿飛掉
+        if real_dt > 0.1: 
+            real_dt = 1.0 / 60.0 
+
+        axis = self.active_joint_axis
+        if axis < 0 or axis > 5: return
+
+        speed_deg = self._get_axis_speed_deg(axis, self.get_jog_speed_factor(self.jog_widget.j_speed_level))
+        delta = self._joint_press_dir * speed_deg * real_dt 
+        
+        # 更新滑桿與 3D 畫面
+        current_val = self.sliders[axis].value()
+        self.sliders[axis].setValue(current_val + delta)
 
     # ---------------------------------------------------------
     # 連動邏輯：Cartesian (Python IK 持續派發點位)
     # ---------------------------------------------------------
     def _start_cartesian_jog(self, base_label):
-        self.active_cart_axis = base_label
-        self._cartesian_timer_tick() # 按下瞬間先觸發一次步進
+        """按下按鍵"""
+        self._cart_press_axis = base_label
+        
         if self.is_cartesian_continuous:
-            self.cart_jog_timer.start(50) # 20Hz 發送頻率
+            # Cont 模式：啟動 250ms 長按偵測計時器
+            self.cart_hold_timer.start(250)
+        else:
+            # Step 模式：不啟動連發，純粹等待使用者放開按鈕
+            pass
+
+    def _on_cart_hold_timeout(self):
+        """長按確認：超過 250ms，正式啟動軟體加減速連續串流"""
+        self.active_cart_axis = self._cart_press_axis
+        self.cart_current_speed = 0.0 
+        self.cart_is_stopping = False 
+        
+        self.cart_jog_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.cart_jog_timer.start(10) 
 
     def _stop_cartesian_jog(self):
-        self.cart_jog_timer.stop()
-        self.active_cart_axis = None
+        """放開按鍵"""
+        if self.is_cartesian_continuous:
+            if self.cart_hold_timer.isActive():
+                # 計時器未結束就放開，直接停止計時，不執行任何動作
+                self.cart_hold_timer.stop()
+                return
+            else:
+                # 進入軟體煞車階段
+                self.cart_is_stopping = True
+        else:
+            # Step 模式：放開時直接讀取輸入框數值並發送定距移動
+            self._execute_cartesian_step(self._cart_press_axis, fixed_step=self.spin_step.value())
+
+    def _execute_cartesian_step(self, base_label, fixed_step):
+        """啟動定距移動"""
+        if not base_label: return
         
-        # 👑 踩下煞車時，大喊通知主視窗
-        if hasattr(self, 'cartesian_jog_stop_callback') and self.cartesian_jog_stop_callback:
-            self.cartesian_jog_stop_callback()
+        self.active_cart_axis = base_label
+        self.cart_current_speed = 0.0 # 初始速度 0，保證平滑起步
+        self.cart_is_stopping = False
+        
+        # 記錄還要走多遠 (取絕對值)
+        self.cart_step_remaining = abs(fixed_step)
+        
+        # 啟動 100Hz 引擎
+        self.cart_jog_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.cart_jog_timer.start(10)
 
     def _cartesian_timer_tick(self):
+        """100Hz 串流引擎 (完美融合 Cont 與 Step 模式)"""
         if not self.active_cart_axis: return
-        if hasattr(self, 'cartesian_jog_callback') and self.cartesian_jog_callback:
-            axis_str = self.active_cart_axis[:-1] 
-            sign = 1 if self.active_cart_axis[-1] == '+' else -1
-            is_rot = len(axis_str) > 1
-            axis_arg = axis_str if is_rot else axis_str.lower()
-            
-            if self.is_cartesian_continuous:
-                step_val = sign * 0.25 * (2 ** (self.c_speed_level - 1))
+
+        axis_str = self.active_cart_axis[:-1] 
+        sign = 1 if self.active_cart_axis[-1] == '+' else -1
+        is_rot = len(axis_str) > 1
+        axis_arg = axis_str if is_rot else axis_str.lower()
+        
+        dt = 0.01 
+        max_speed = (100.0 if not is_rot else 25.0) * (self.c_speed_level / 4.0)
+        accel = 200.0 
+
+        step_val = 0.0
+
+        if self.is_cartesian_continuous:
+            # 連續模式 (Cont) 
+            if not self.cart_is_stopping:
+                self.cart_current_speed += accel * dt
+                if self.cart_current_speed > max_speed: self.cart_current_speed = max_speed
             else:
-                step_val = sign * self.spin_step.value()
+                self.cart_current_speed -= accel * dt
+                if self.cart_current_speed <= 0:
+                    self.cart_current_speed = 0.0
+                    self.cart_jog_timer.stop()
+                    self.active_cart_axis = None
+                    if hasattr(self, 'cartesian_jog_stop_callback'):
+                        self.cartesian_jog_stop_callback()
+                    return 
+            
+            step_val = sign * self.cart_current_speed * dt
+
+        else:
+            # 定距模式 (Step)
+            if self.cart_step_remaining > 0:
+                # 算出煞車距離 (物理公式: d = v^2 / 2a)
+                stop_dist = (self.cart_current_speed ** 2) / (2.0 * accel)
                 
-            frame = "Tool" if self.btn_frame_toggle.isChecked() else "World"
-            self.cartesian_jog_callback(axis_arg, step_val, frame)
+                if self.cart_step_remaining <= stop_dist:
+                    # 進入煞車區
+                    self.cart_current_speed -= accel * dt
+                    if self.cart_current_speed < 1.0: self.cart_current_speed = 1.0 # 保持微速直到摸到終點
+                else:
+                    # 繼續加速或巡航
+                    self.cart_current_speed += accel * dt
+                    if self.cart_current_speed > max_speed: self.cart_current_speed = max_speed
+
+                # 算出這 10ms 該走的距離
+                move_dist = self.cart_current_speed * dt
+                
+                # 如果這一步會超過終點，就精準截斷
+                if move_dist > self.cart_step_remaining:
+                    move_dist = self.cart_step_remaining
+                    
+                self.cart_step_remaining -= move_dist
+                step_val = sign * move_dist
+
+                # 抵達終點，關閉時鐘
+                if self.cart_step_remaining <= 0:
+                    self.cart_jog_timer.stop()
+                    self.active_cart_axis = None
+                    
+                    # 沖水機制 (Flush)：連發 5 包與最後位置一模一樣的點
+                    # 把 buffer 裡的有效軌跡硬擠出 STM32 的 5 點水位線！
+                    if hasattr(self, 'cartesian_jog_callback') and self.cartesian_jog_callback:
+                        for _ in range(5):
+                            # 發送距離為 0 的點
+                            self.cartesian_jog_callback(axis_arg, 0.0, frame, True)
+                            time.sleep(0.005) # 給一點點微小延遲避免擠爆 USB
+                            
+                    if hasattr(self, 'cartesian_jog_stop_callback'):
+                        self.cartesian_jog_stop_callback()
+            else:
+                return
+
+        # 派發給 gui.py 計算 IK 並發送
+        frame = "Tool" if self.btn_frame_toggle.isChecked() else "World"
+        if hasattr(self, 'cartesian_jog_callback') and self.cartesian_jog_callback:
+            self.cartesian_jog_callback(axis_arg, step_val, frame, True)
 
     # ---------------------------------------------------------
     # 連動邏輯：Gripper
@@ -965,7 +1142,7 @@ class JogWidget(BaseBlock):
     def _start_gripper_jog(self, sign):
         self.active_gripper_sign = sign
         self._gripper_timer_tick() 
-        self.gripper_jog_timer.start(50)
+        self.gripper_jog_timer.start(10) # 100Hz 更新頻率
 
     def _stop_gripper_jog(self):
         self.gripper_jog_timer.stop()

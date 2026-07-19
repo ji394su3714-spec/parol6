@@ -11,57 +11,5 @@
         ],
         "in_box": true,
         "is_locked": true
-    },
-    {
-        "name": "Base 1",
-        "values": [
-            80.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0
-        ],
-        "in_box": false,
-        "is_locked": false
-    },
-    {
-        "name": "Base 2",
-        "values": [
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            -135.0
-        ],
-        "in_box": true,
-        "is_locked": false
-    },
-    {
-        "name": "Base 3",
-        "values": [
-            0.0,
-            -50.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0
-        ],
-        "in_box": false,
-        "is_locked": false
-    },
-    {
-        "name": "Base 5",
-        "values": [
-            0.0,
-            50.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0
-        ],
-        "in_box": false,
-        "is_locked": false
     }
 ]

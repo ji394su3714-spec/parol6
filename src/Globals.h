@@ -21,8 +21,7 @@ extern bool newData;
 // ==========================================
 // 3. 共用輔助函式宣告
 // ==========================================
-float getStepsPerDeg(int axis);
+float getAxisAccel(int axis, float rampRatio = 1.0f);
 bool isAnyHoming();
-float getAxisAccel(int axis);
 
 #endif

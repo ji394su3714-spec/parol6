@@ -13,7 +13,7 @@ from gui import ParolCamWindow
 
 def main():
     app = QApplication(sys.argv)
-    app.setStyle("Fusion") 
+    app.setStyle("dark")  # 設定應用程式的樣式為暗色模式
     
     window = ParolCamWindow()
     window.show()

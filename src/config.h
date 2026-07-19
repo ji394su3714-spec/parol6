@@ -14,12 +14,12 @@ struct JointPins {
 
 // 2. 歸零群
 struct HomingConfig {
-    float homingSpeed; float homingPos; long bounceSteps; int rampSteps;
+    float homingSpeed; long homingPos; long bounceSteps; int rampSteps;
 };
 
 // 3. 速度群
 struct SpeedConfig {
-    long jointControlSpd10; long maxSpeedSteps10;
+    float controlSpeed; float maxSpeed;    
 };
 
 // 4. 電流群
@@ -44,12 +44,11 @@ constexpr float MOTOR_STEPS = 200.0f;
 // 3. 全域平行陣列宣告 (Structure of Arrays)
 // ==========================================
 extern const JointPins JOINT_PINS[6];
-extern const bool LIMIT_ACTIVE_STATE[6]; // 極限狀態只有一個布林值，直接用基本陣列最乾淨！
+extern const bool LIMIT_ACTIVE_STATE[6]; 
 extern const HomingConfig HOMING_CFG[6];
 extern const SpeedConfig SPEED_CFG[6];
 
 extern const MotorCurrentConfig MOTOR_CURRENTS[6];
-extern const float GEAR_RATIOS[6];
 extern const int32_t AXIS_MAX_LIMIT[6];
 extern const int32_t AXIS_MIN_LIMIT[6];
 

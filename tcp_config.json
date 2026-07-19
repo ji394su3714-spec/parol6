@@ -1,7 +1,7 @@
 {
     "tools": [
         {
-            "name": "Flange",
+            "name": "Default Tool",
             "values": [
                 0.0,
                 0.0,
@@ -13,43 +13,7 @@
             "in_box": true
         },
         {
-            "name": "Gripper front",
-            "values": [
-                0.0,
-                0.0,
-                30.0,
-                0.0,
-                0.0,
-                0.0
-            ],
-            "in_box": true
-        },
-        {
-            "name": "RTCP",
-            "values": [
-                0.0,
-                -44.0,
-                11.6,
-                45.0,
-                0.0,
-                180.0
-            ],
-            "in_box": false
-        },
-        {
-            "name": "Tool 4",
-            "values": [
-                0.0,
-                0.0,
-                0.0,
-                12.0,
-                44.0,
-                5.0
-            ],
-            "in_box": true
-        },
-        {
-            "name": "Tool 5",
+            "name": "Tool 2",
             "values": [
                 0.0,
                 50.0,
@@ -61,5 +25,5 @@
             "in_box": true
         }
     ],
-    "current_index": 4
+    "current_index": 0
 }

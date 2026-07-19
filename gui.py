@@ -5,13 +5,14 @@ import os
 import numpy as np
 from PySide6.QtWidgets import QMainWindow, QMenu, QMessageBox, QWidget, QVBoxLayout, QSplitter, QApplication
 from PySide6.QtCore import QEasingCurve, QVariantAnimation, Qt, QTimer
-from PySide6.QtGui import QCursor, QIcon, QShortcut, QKeySequence 
+from PySide6.QtGui import QIcon, QShortcut, QKeySequence 
 
 import qtawesome as qta
 
 # ==========================================
 # 內部引擎與設定模組
 # ==========================================
+import config
 import kinematics
 from serial_manager import SerialManager
 import styles
@@ -115,6 +116,7 @@ class RobotControllerGUI(QMainWindow):
         self.serial_manager = SerialManager()
         self.serial_manager.log_signal.connect(self.log_widget.append_log)
         self.serial_manager.connection_state_signal.connect(self.update_connection_ui)
+        self.serial_manager.estop_state_signal.connect(self.on_estop_state_changed)
         
         self.path_manager.serial_manager = self.serial_manager
 
@@ -218,6 +220,11 @@ class RobotControllerGUI(QMainWindow):
     # ==========================================
     # Jogging 硬體通訊核心
     # ==========================================
+    # 新增物理轉換常數 (與 MCU 硬體設定一致)
+    def deg_to_steps(self, axis_idx, degrees):
+        """將 UI 的角度轉換為 MCU 看得懂的真實馬達步數"""
+        return int(degrees * config.STEPS_PER_DEG[axis_idx])
+
     def get_jog_speed_factor(self, level):
         """將 UI 的 1~4 檔位轉換為速度比例"""
         mapping = {1: 0.25, 2: 0.5, 3: 0.75, 4: 1.0}
@@ -228,71 +235,68 @@ class RobotControllerGUI(QMainWindow):
         self.current_float_joints = list(angles)
         self.pending_3d_update = True
 
-    def send_joint_jog(self, angles):
-        """處理關節寸動 (放開滑鼠/按鍵點擊)：更新 3D 並發送實機訊號"""
-        self.current_float_joints = list(angles)
-        self.pending_3d_update = True
-        
+    def send_joint_jog(self, target_angles_deg, speed_factor):
+        """處理滑桿放開時的絕對點對點移動 (PTP)"""
         if hasattr(self, 'serial_manager') and self.serial_manager.is_connected:
-            spd_factor = self.get_jog_speed_factor(self.jog_widget.j_speed_level)
-            self.serial_manager.send_joints(angles, speed_factor=spd_factor, move_mode=0)
+            self.serial_manager.send_joints(target_angles_deg, speed_factor=speed_factor, move_mode=0)
 
-    def handle_continuous_joint_jog(self, axis, direction, speed_factor):
-        """通知 MCU 進入 Mode 2：交出控制權，由硬體接管連續旋轉"""
+    def handle_continuous_joint_jog(self, axis_idx, direction, speed_factor):
+        """發送連續寸動指令給 STM32"""
         if hasattr(self, 'serial_manager') and self.serial_manager.is_connected:
-            cmd = f"<{axis},{direction},0,0,0,0,{speed_factor:.2f},2>\n"
-            self.serial_manager.send_command(cmd)
+            actual_dir = int(direction)
+            
+            # 翻轉按鈕方向
+            if config.STEPS_PER_DEG[axis_idx] < 0:
+                actual_dir *= -1
+                
+            targets = [int(axis_idx), actual_dir, 0, 0, 0, 0]
+            self.serial_manager._send_binary_packet(targets, speed_factor, 2) # Mode 2
 
     def handle_gripper_jog(self, val):
         """處理夾爪作動"""
         if hasattr(self, 'serial_manager') and self.serial_manager.is_connected:
-            cmd = f"<EE,{val}>\n"
-            self.serial_manager.send_command(cmd)
+            self.serial_manager.send_gripper(val)
 
-    def handle_cartesian_jog(self, axis, step_val, frame):
-        """處理空間寸動"""
+    def handle_cartesian_jog(self, axis, step_val, frame, is_continuous=True):
+        """處理空間寸動 (全部統一交給 Mode 1 串流引擎代勞)"""
         tcp_mat = self.tcp_manager.get_active_matrix()
         world_mat = np.eye(4)
         if hasattr(self, 'base_manager'):
-            world_mat = self.base_manager.get_matrix(self.base_manager.current_index) # 使用當前生效的基座
+            world_mat = self.base_manager.get_matrix(self.base_manager.current_index) 
             
         actual_frame = "Base" if frame == "World" else frame
         
-        # 👑 1. 安全獲取上一次的完美矩陣 (如果還沒有這個屬性，預設為 None)
-        last_ideal_mat = getattr(self, '_active_jog_ideal_tcp', None)
+        # 永遠參考上一個理想點位，保證軌跡絕對平滑相連
+        last_ideal = getattr(self, '_active_jog_ideal_tcp', None) 
 
-        # 👑 2. 這裡就是修復報錯的地方！必須用三個變數接收，並把 last_ideal_mat 傳進去
         new_joints, error_msg, ideal_tcp_mat = kinematics.calculate_jog_joints(
-            self.current_float_joints, 
+            list(self.current_float_joints), 
             axis, 
             step_val, 
             actual_frame, 
             tcp_mat, 
             world_mat,
-            T_last_ideal_tcp=last_ideal_mat
+            T_last_ideal_tcp=last_ideal
         )
         
         if new_joints is not None:
-            # 👑 3. 點動成功！把這次算出來的完美矩陣「記下來」，供下一次連續點動使用
             self._active_jog_ideal_tcp = ideal_tcp_mat
-
-            self.handle_system_pose_update(new_joints) # 這會同步 UI 上的滑桿
             
-            # 將算出來的新角度發送給實機
             if hasattr(self, 'serial_manager') and self.serial_manager.is_connected:
                 spd_factor = self.get_jog_speed_factor(self.jog_widget.c_speed_level)
-                self.serial_manager.send_joints(new_joints, speed_factor=spd_factor, move_mode=0)
+                
+                # 使用 Mode 1 (串流)
+                # 在你的 100Hz 迴圈中，發送 PVT 點位時這樣呼叫：
+                self.serial_manager.send_joints(new_joints, speed_factor=spd_factor, move_mode=1, is_stream=True)
+                
+            self.handle_system_pose_update(new_joints)
         else:
-            # 👑 4. 如果遇到死角失敗，清空矩陣記憶，避免卡死
             self._active_jog_ideal_tcp = None
             self.log_widget.append_log(f"[Jog Warning] {error_msg}")
 
     def handle_cartesian_jog_stop(self):
-        """主視窗大腦接收到 UI 的停止訊號，清空完美矩陣記憶"""
+        """主視窗大腦接收到 UI 的停止訊號 (此時速度已經由 Python 平滑降至 0)"""
         self._active_jog_ideal_tcp = None
-        
-        if hasattr(self, 'serial_manager') and self.serial_manager.is_connected:
-            self.serial_manager.send_stop()
 
     # ==========================================
     # 其他核心控制功能
@@ -596,7 +600,7 @@ class RobotControllerGUI(QMainWindow):
                 self.log_widget.append_log("[HW] 找不到任何可用的 COM Port 裝置。")
                 return
             menu = QMenu(self)
-            menu.setStyleSheet(styles.MENU_STYLE)
+            menu.setStyleSheet(styles.MENU_STYLE) # 假設你有 styles 模組
             for port in ports:
                 action = menu.addAction(f"Connect to {port}")
                 action.triggered.connect(lambda checked, p=port: self.serial_manager.connect(p))
@@ -609,17 +613,45 @@ class RobotControllerGUI(QMainWindow):
             self.top_bar.btn_connect.setToolTip("Disconnect")
                         
             # 改為印出安全提示，提醒操作者手動對齊姿態
-            if hasattr(self, 'log_widget'):
-                self.log_widget.append_log("[HW] 已連線：實機保持靜默。請執行原點復歸Homing")
+            #if hasattr(self, 'log_widget'):
+            #    self.log_widget.append_log("[HW] 已連線，請執行原點復歸。若無法移動，請確認是否處於急停鎖存狀態。")
         else:
             self.top_bar.btn_connect.setIcon(qta.icon('mdi.connection', color='#e0e0e0'))
             self.top_bar.btn_connect.setToolTip("Connect to Serial Port")
 
+    # ==========================================
+    # 新增：專屬的急停狀態攔截處理槽
+    # ==========================================
+    def on_estop_state_changed(self, is_latched):
+        """當收到 MCU 處於或解除急停鎖死狀態時觸發"""
+        if is_latched:
+            # 彈出嚴重的置頂警告視窗，明確告訴使用者發生什麼事
+            QMessageBox.critical(
+                self, 
+                "⛔ 系統急停鎖死 (LATCHED)", 
+                "硬體控制器目前處於「急停鎖死狀態」！\n\n"
+                "為了安全起見，您剛才發送的移動指令已被 MCU 拒絕。\n"
+                "請確認實體機台安全後，點擊專屬的「解除急停」按鈕來恢復運作。"
+            )
+            
+            # 💡 額外建議：如果你 UI 上有狀態燈號，可以在這裡變紅
+            # if hasattr(self.top_bar, 'status_label'):
+            #     self.top_bar.status_label.setStyleSheet("color: red; font-weight: bold;")
+            #     self.top_bar.status_label.setText("狀態: 急停鎖死")
+        else:
+            QMessageBox.information(
+                self, 
+                "✅ 警報解除", 
+                "急停鎖死已成功解除，系統恢復正常就緒。"
+            )
+            
+            # 💡 額外建議：恢復狀態燈號
+            # if hasattr(self.top_bar, 'status_label'):
+            #     self.top_bar.status_label.setStyleSheet("color: #4CAF50;")
+            #     self.top_bar.status_label.setText("狀態: 正常就緒")
+
     def _play_pose_animation(self, target_joints, wp_type='PTP'):
         """處理 3D 畫面的平滑過渡動畫"""
-        from PySide6.QtCore import QVariantAnimation, QEasingCurve
-        import numpy as np
-
         target_j_array = np.array(target_joints)
         start_j_array = np.array(self.current_float_joints)
         
@@ -779,7 +811,6 @@ class RobotControllerGUI(QMainWindow):
         # 4. 動態預覽基座偏移
         if hasattr(self, 'base_manager'):
             current_base_mat = self.base_manager.get_matrix(target_base_idx)
-            import numpy as np
             recorded_base_mat = np.array(reference_wp.get('recorded_base_matrix', np.eye(4)))
             
             if not np.allclose(current_base_mat, recorded_base_mat, atol=1e-4):

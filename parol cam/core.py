@@ -31,7 +31,7 @@ class CAMEngine:
     def _build_topology_cache(self):
         """預運算：找出所有平坦面並快取【所有】邊界迴路"""
         self.face_to_facet = {}
-        self.facet_boundaries = {} # 👑 改為存放一個 list，裡面包含多條迴路
+        self.facet_boundaries = {} # 改為存放一個 list，裡面包含多條迴路
         
         print("[Core] 正在分析 STL 幾何拓樸與平面特徵...")
         facets = self.original_mesh.facets
@@ -52,7 +52,7 @@ class CAMEngine:
             G.add_edges_from(boundary_edges)
             components = list(nx.connected_components(G))
             
-            # 👑 迴圈取出該平面的「所有」封閉輪廓 (外框與所有內孔洞)
+            # 迴圈取出該平面的「所有」封閉輪廓 (外框與所有內孔洞)
             loops = []
             for comp in components:
                 sub_G = G.subgraph(comp)
@@ -68,7 +68,7 @@ class CAMEngine:
         print("[Core] 拓樸快取完成！")
 
     def _closest_dist_to_loop(self, loop_pts, target_pt):
-        """👑 數學核心：計算空間中某一點，到一個 3D 多邊形線段的最短距離"""
+        """數學核心：計算空間中某一點，到一個 3D 多邊形線段的最短距離"""
         a = loop_pts
         b = np.roll(loop_pts, -1, axis=0) # 下一個點 (頭尾相連)
         ab = b - a
@@ -82,7 +82,7 @@ class CAMEngine:
         return np.min(dists)
 
     def get_closest_boundary_points(self, hit_face_idx, hit_pos_world):
-        """👑 找出滑鼠點擊處最靠近的那一條邊界 (外框或內孔)"""
+        """找出滑鼠點擊處最靠近的那一條邊界 (外框或內孔)"""
         facet_idx = self.face_to_facet.get(hit_face_idx)
         if facet_idx is None: return None
         loops = self.facet_boundaries.get(facet_idx)
@@ -165,7 +165,7 @@ class CAMEngine:
             return np.array([start, end])
 
     def extract_contour_from_boundary(self, hit_face_idx, hit_pos_world, offset_rx=0, offset_ry=0, offset_rz=0):
-        """👑 互動版：結合最近邊界判斷與 DP 壓縮"""
+        """互動版：結合最近邊界判斷與 DP 壓縮"""
         if self.workpiece_mesh is None: raise ValueError("請先載入 STL 模型！")
 
         facet_idx = self.face_to_facet.get(hit_face_idx)
@@ -174,7 +174,7 @@ class CAMEngine:
             
         facet_normal = self.workpiece_mesh.facets_normal[facet_idx]
         
-        # 👑 改為取得最靠近點擊處的邊界！
+        # 改為取得最靠近點擊處的邊界！
         dense_locations = self.get_closest_boundary_points(hit_face_idx, hit_pos_world)
         if dense_locations is None:
             raise ValueError("找不到對應的邊界。")
