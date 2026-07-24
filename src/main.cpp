@@ -2,12 +2,10 @@
 #include <SPI.h>
 
 // 引入拆分出來的模組
-#include "TMC_RawSPI.h"
-#include "config.h"
 #include "Globals.h"
-#include "Homing.h"
 #include "Comms.h"
 #include "MotionEngine.h"
+#include "TMC_RawSPI.h"
 #include "EndEffector.h" 
 
 // 1. 腳位定義 (Step, Dir, En, Limit)
@@ -25,9 +23,9 @@ const bool LIMIT_ACTIVE_STATE[6] = {
     LOW, HIGH, HIGH, LOW, HIGH, LOW
 };
 
-// 3. 歸零參數 (Homing Speed, Homing Position, Bounce, Ramp)
+// 3. 歸零參數 (Homing Speed, Homing Pos, Bounce, Ramp)
 const HomingConfig HOMING_CFG[6] = {
-    { 1200, -13426, 1000, 1200}, // J1 (-118 度)
+    { 1400, -13426, 1000, 1200}, // J1 (-118 度)
     {-2400,  17778, 2000, 1400}, // J2 (  50 度)
     { 3000, -22518, 2400, 1400}, // J3 ( -70 度)
     { 3800, -10240, 1600, 1200}, // J4 (-144 度)
@@ -53,25 +51,6 @@ const MotorCurrentConfig MOTOR_CURRENTS[6] = {
 
 const int32_t AXIS_MAX_LIMIT[6] = { 29013,  24889,  22518,  13156,  7822 ,21333};
 const int32_t AXIS_MIN_LIMIT[6] = {-8533, -17778, -22518, -6756, -7822, -37333};
-
-// ==========================================
-// 2. 全域狀態變數
-// ==========================================
-char receivedChars[NUM_CHARS];
-char tempChars[NUM_CHARS];
-long receivedSteps[6] = {0};
-bool newData = false;
-bool normalMoveActive = false;
-
-byte homingState[6] = {0, 0, 0, 0, 0, 0};
-
-// 輔助函式
-bool isAnyHoming() {
-    for(int i = 0; i < 6; i++) {
-        if(homingState[i] != 0) return true;
-    }
-    return false;
-}
 
 // ==========================================
 // 3. 主程式 Setup & Loop
@@ -112,41 +91,47 @@ void setup() {
 }
 
 void loop() {
-// 👑 純二進制接收狀態機 (它會在收滿 32 Bytes 後自動執行，不需要任何 if 判斷)
+    // 純二進制接收狀態機
     receiveBinaryLoop();
 
+    // 歸零狀態機
     updateHomingLogic(); 
 
+    // 手臂空閒判定與夾爪更新
     bool isArmIdle = !isEngineMoving();
     updateEndEffector(isArmIdle); 
     
+    // 運動完成回報
     if (normalMoveActive && isArmIdle) {
         Serial.println("Done");      
         normalMoveActive = false;    
     }
     
-    // 溫度讀取安全機制
-    static unsigned long lastTempReport = 0;
-    if (millis() - lastTempReport >= 30000) {
-        lastTempReport = millis();
+    // 背景 30 秒自動輪詢與 80 度過熱警報網
+    checkThermalAlarms(isArmIdle);
+    /*
+    // ==========================================
+    // 效能診斷印出 (每 1 秒印一次)
+    // ==========================================
+    static unsigned long lastDiagTime = 0;
+    if (millis() - lastDiagTime >= 1000) {
+        lastDiagTime = millis();
         
-        if (isArmIdle) { 
-            LockMotionEngine(); 
-            float tempJ1 = readTMC2240Temp(X_CS_PIN);
-            float tempJ2 = readTMC2240Temp(Y_CS_PIN);
-            float tempJ3 = readTMC2240Temp(Z_CS_PIN);
-            float tempJ4 = readTMC2240Temp(E0_CS_PIN);
-            float tempJ5 = readTMC2240Temp(E1_CS_PIN);
-            float tempJ6 = readTMC2240Temp(E2_CS_PIN);
-            UnlockMotionEngine();
-            
-            Serial.print("[Thermal] J1:"); Serial.print(tempJ1, 1);
-            Serial.print("C | J2:"); Serial.print(tempJ2, 1);
-            Serial.print("C | J3:"); Serial.print(tempJ3, 1);
-            Serial.print("C | J4:"); Serial.print(tempJ4, 1);
-            Serial.print("C | J5:"); Serial.print(tempJ5, 1);
-            Serial.print("C | J6:"); Serial.print(tempJ6, 1);
-            Serial.println("C");
+        // 為了避免中斷干擾，快速複製一份數值
+        NVIC_DisableIRQ(TIM6_DAC_IRQn);
+        uint32_t smooth = diag_smooth_count;
+        uint32_t stop = diag_stop_count;
+        diag_smooth_count = 0;
+        diag_stop_count = 0;
+        NVIC_EnableIRQ(TIM6_DAC_IRQn);
+        
+        if (smooth > 0 || stop > 0) {
+            Serial.print("[Diag] 平滑相連 (buf>1): ");
+            Serial.print(smooth);
+            Serial.print(" 次 | 被迫煞停 (buf=1): ");
+            Serial.print(stop);
+            Serial.println(" 次");
         }
     }
+    */
 }

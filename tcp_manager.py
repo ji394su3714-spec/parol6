@@ -5,7 +5,15 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 from PySide6.QtCore import QObject, Signal
 
-TCP_CONFIG_FILE = "tcp_config.json"
+# ==========================================
+# 動態絕對路徑設定 (防止終端機啟動位置錯誤)
+# ==========================================
+# 取得目前這支 Python 檔案所在的「絕對資料夾路徑」
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 設定子資料夾名稱為 "config"
+CONFIG_DIR = os.path.join(BASE_DIR, "config")
+# 組合出絕對不會出錯的檔案路徑
+TCP_CONFIG_FILE = os.path.join(CONFIG_DIR, "tcp_config.json")
 
 class TCPManager(QObject):
     data_changed = Signal() 
@@ -38,6 +46,9 @@ class TCPManager(QObject):
             "current_index": self.current_index
         }
         try:
+            # 關鍵防護：確保存檔前，子資料夾 "config" 絕對存在
+            os.makedirs(os.path.dirname(TCP_CONFIG_FILE), exist_ok=True)
+            
             with open(TCP_CONFIG_FILE, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4, ensure_ascii=False)
         except Exception as e:
@@ -81,13 +92,13 @@ class TCPManager(QObject):
             self.save_config()
             self.data_changed.emit()
 
-    # 💡 核心修復：供 Apply 按鈕呼叫的唯一更新入口
+    # 核心修復：供 Apply 按鈕呼叫的唯一更新入口
     def update_tool(self, index, name, values, in_box=True):
         """按下 Apply 後才呼叫：寫入資料、存檔，並觸發全系統 3D 重繪"""
         if 0 <= index < len(self.tools):
             self.tools[index]["name"] = name
             
-            # 🔥 終極防禦：使用 list() 強制拷貝陣列，徹底切斷記憶體共用問題！
+            # 終極防禦：使用 list() 強制拷貝陣列，徹底切斷記憶體共用問題！
             self.tools[index]["values"] = list(values) 
             
             self.tools[index]["in_box"] = in_box

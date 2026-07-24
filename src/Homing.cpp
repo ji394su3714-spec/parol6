@@ -1,6 +1,12 @@
 #include "Globals.h"
-#include "Config.h"
 #include "MotionEngine.h"
+
+bool isAnyHoming() {
+    for(int i = 0; i < 6; i++) {
+        if(homingState[i] != 0) return true;
+    }
+    return false;
+}
 
 float getAxisAccel(int axis, float rampRatio) {
     if (axis < 0 || axis >= 6) return 50000.0f;
@@ -115,11 +121,13 @@ void updateHomingLogic() {
         else if (homingState[i] == 14) {
             if (!isAxisMoving(i)) {
                 bool readyToOffset = true;
+                // J1~J3 必須等待彼此都完成狀態 13 才能一起動
                 if (i <= 2) {
                     for (int j = 0; j < 3; j++) {
                         if (homingState[j] == 13 || (homingState[j] == 14 && isAxisMoving(j))) { readyToOffset = false; break; }
                     }
                 }
+                // J6 專屬：進入 Offset 前的預備退讓動作
                 if (i == 5) {
                     readyToOffset = false; 
                     float speedSec = SPEED_CFG[i].maxSpeed;
@@ -127,14 +135,15 @@ void updateHomingLogic() {
                     homingState[i] = 4; 
                 }
                 if (i == 4) { readyToOffset = false; homingState[i] = 6; }
-                
+
+                // 執行 J1~J4 的 Offset 運動
                 if (readyToOffset) {
                     float offsetSpeedSec = abs(HOMING_CFG[i].homingSpeed) * 2.0f; 
                     if (i == 3) offsetSpeedSec = abs(HOMING_CFG[i].homingSpeed) * 1.5f;
                     long offsetSteps = HOMING_CFG[i].homingPos; 
                     
-                    // 這裡使用 moveToRelative，到達偏移位置時會平滑煞車
-                    moveToRelative(i, offsetSteps, offsetSpeedSec); 
+                    //  J1~J4 在走 Offset 時改成 1.5f 讓動作放緩)
+                    moveToRelative(i, offsetSteps, offsetSpeedSec, 1.5f); 
                     homingState[i] = 3; 
                 }
             }
@@ -189,19 +198,22 @@ void updateHomingLogic() {
         // ==================================================
         else if (homingState[i] == 6 && i == 4) {
             if (homingState[5] == 5) {
-                float speedSec = abs(HOMING_CFG[4].homingSpeed) * 1.4f;
+                float speedSec = abs(HOMING_CFG[4].homingSpeed) * 1.5f;
                 long offsetJ5 = HOMING_CFG[4].homingPos;
-                moveToRelative(4, offsetJ5, speedSec); // 到達後平滑煞車
+                // 執行 J5 的 Offset 運動
+                moveToRelative(4, offsetJ5, speedSec, 1.0f);
                 homingState[4] = 3; 
                 homingState[5] = 15; 
                 j6DelayStartTime = millis(); 
             }
         }
         else if (homingState[i] == 15 && i == 5) {
+            // 等待 J5 先行動 500 毫秒
             if (millis() - j6DelayStartTime >= 500) { 
-                float speedSec = abs(HOMING_CFG[5].homingSpeed);
+                float speedSec = abs(HOMING_CFG[5].homingSpeed)* 1.5f;
                 long offsetJ6 = HOMING_CFG[5].homingPos - J6_PREP_STEPS;
-                moveToRelative(5, offsetJ6, speedSec); // 到達後平滑煞車
+                // 明確加入 1.0f，確保 J6 最終補償步數時會平滑煞車
+                moveToRelative(5, offsetJ6, speedSec, 1.0f);
                 homingState[5] = 3; 
             }
         }

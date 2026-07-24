@@ -1,6 +1,7 @@
 # gui.py
 import copy
 import os
+import time
 
 import numpy as np
 from PySide6.QtWidgets import QMainWindow, QMenu, QMessageBox, QWidget, QVBoxLayout, QSplitter, QApplication
@@ -116,7 +117,7 @@ class RobotControllerGUI(QMainWindow):
         self.serial_manager = SerialManager()
         self.serial_manager.log_signal.connect(self.log_widget.append_log)
         self.serial_manager.connection_state_signal.connect(self.update_connection_ui)
-        self.serial_manager.estop_state_signal.connect(self.on_estop_state_changed)
+        self.serial_manager.estop_state_signal.connect(self.on_estop_state_changed) #綁定 MCU 的狀態廣播 (由下往上)
         
         self.path_manager.serial_manager = self.serial_manager
 
@@ -197,8 +198,10 @@ class RobotControllerGUI(QMainWindow):
             lambda key, val: self.update_path_list_ui() if key == "show_comments" else None
         )
 
-        self.top_bar.btn_play.toggled.connect(self.toggle_execution)
+        self.top_bar.btn_play.toggled.connect(self.on_play_toggled)
+        self._is_paused = False
         self.top_bar.btn_stop.clicked.connect(self.stop_execution)
+        self.top_bar.btn_estop_reset.clicked.connect(self.reset_estop) # 綁定 UI 的按鈕操作 (由上往下)
         self.top_bar.btn_soft_home.clicked.connect(self.go_soft_home)
         self.top_bar.btn_connect.clicked.connect(self.toggle_connection)
 
@@ -258,7 +261,7 @@ class RobotControllerGUI(QMainWindow):
             self.serial_manager.send_gripper(val)
 
     def handle_cartesian_jog(self, axis, step_val, frame, is_continuous=True):
-        """處理空間寸動 (全部統一交給 Mode 1 串流引擎代勞)"""
+        """處理空間寸動 (統一交給 Mode 1 串流引擎代勞)"""
         tcp_mat = self.tcp_manager.get_active_matrix()
         world_mat = np.eye(4)
         if hasattr(self, 'base_manager'):
@@ -285,18 +288,51 @@ class RobotControllerGUI(QMainWindow):
             if hasattr(self, 'serial_manager') and self.serial_manager.is_connected:
                 spd_factor = self.get_jog_speed_factor(self.jog_widget.c_speed_level)
                 
-                # 使用 Mode 1 (串流)
-                # 在你的 100Hz 迴圈中，發送 PVT 點位時這樣呼叫：
-                self.serial_manager.send_joints(new_joints, speed_factor=spd_factor, move_mode=1, is_stream=True)
+                # 發送點位
+                success = self.serial_manager.send_joints(
+                    new_joints, 
+                    speed_factor=spd_factor, 
+                    move_mode=1, 
+                    is_stream=True, 
+                    is_jog=True  
+                )
                 
+                if not success:
+                    return 
+                
+            # 只有在確定發送成功 (或未連線的純虛擬模式下)，才允許更新系統姿態
+            self._active_jog_ideal_tcp = ideal_tcp_mat
             self.handle_system_pose_update(new_joints)
+            self._last_jog_error = None
+            
+            # 3D 畫面渲染降頻
+            current_time = time.time()
+            last_ui_update = getattr(self, '_last_jog_ui_update', 0.0)
+            
+            # 限制 UI 更新頻率大約為 25FPS
+            if current_time - last_ui_update >= 0.04:
+                self.handle_system_pose_update(new_joints)
+                self._last_jog_ui_update = current_time
+            else:
+                # 雖然不重繪畫面，但要在背景把最新關節值存起來，供下一幀 IK 計算使用
+                self.current_float_joints = new_joints
+                
+            self._last_jog_error = None
         else:
             self._active_jog_ideal_tcp = None
-            self.log_widget.append_log(f"[Jog Warning] {error_msg}")
+            
+            last_err = getattr(self, '_last_jog_error', None)
+            if error_msg != last_err:
+                self.log_widget.append_log(f"[Jog Warning] {error_msg}")
+                self._last_jog_error = error_msg
 
     def handle_cartesian_jog_stop(self):
         """主視窗大腦接收到 UI 的停止訊號 (此時速度已經由 Python 平滑降至 0)"""
         self._active_jog_ideal_tcp = None
+        
+        # 煞車停止時，強制做最後一次絕對精準的畫面刷新！
+        if hasattr(self, 'current_float_joints'):
+            self.handle_system_pose_update(self.current_float_joints)
 
     # ==========================================
     # 其他核心控制功能
@@ -611,44 +647,23 @@ class RobotControllerGUI(QMainWindow):
         if is_connected:
             self.top_bar.btn_connect.setIcon(qta.icon('mdi.connection', color='#c63bbb'))
             self.top_bar.btn_connect.setToolTip("Disconnect")
+            
+            # 👑 連線成功時：預設點亮「停止」鍵，維持關閉「解鎖」鍵
+            # (如果硬體其實在鎖死狀態，等一下按下移動時 MCU 會報錯，就會自動觸發狀態切換)
+            if hasattr(self, 'top_bar'):
+                self.top_bar.btn_stop.setEnabled(True)
+                self.top_bar.btn_estop_reset.setEnabled(False)
                         
-            # 改為印出安全提示，提醒操作者手動對齊姿態
-            #if hasattr(self, 'log_widget'):
-            #    self.log_widget.append_log("[HW] 已連線，請執行原點復歸。若無法移動，請確認是否處於急停鎖存狀態。")
+            if hasattr(self, 'log_widget'):
+                self.log_widget.append_log("[HW] 已連線，請執行原點復歸。若無法移動，請確認是否處於急停鎖存狀態。")
         else:
             self.top_bar.btn_connect.setIcon(qta.icon('mdi.connection', color='#e0e0e0'))
             self.top_bar.btn_connect.setToolTip("Connect to Serial Port")
-
-    # ==========================================
-    # 新增：專屬的急停狀態攔截處理槽
-    # ==========================================
-    def on_estop_state_changed(self, is_latched):
-        """當收到 MCU 處於或解除急停鎖死狀態時觸發"""
-        if is_latched:
-            # 彈出嚴重的置頂警告視窗，明確告訴使用者發生什麼事
-            QMessageBox.critical(
-                self, 
-                "⛔ 系統急停鎖死 (LATCHED)", 
-                "硬體控制器目前處於「急停鎖死狀態」！\n\n"
-                "為了安全起見，您剛才發送的移動指令已被 MCU 拒絕。\n"
-                "請確認實體機台安全後，點擊專屬的「解除急停」按鈕來恢復運作。"
-            )
             
-            # 💡 額外建議：如果你 UI 上有狀態燈號，可以在這裡變紅
-            # if hasattr(self.top_bar, 'status_label'):
-            #     self.top_bar.status_label.setStyleSheet("color: red; font-weight: bold;")
-            #     self.top_bar.status_label.setText("狀態: 急停鎖死")
-        else:
-            QMessageBox.information(
-                self, 
-                "✅ 警報解除", 
-                "急停鎖死已成功解除，系統恢復正常就緒。"
-            )
-            
-            # 💡 額外建議：恢復狀態燈號
-            # if hasattr(self.top_bar, 'status_label'):
-            #     self.top_bar.status_label.setStyleSheet("color: #4CAF50;")
-            #     self.top_bar.status_label.setText("狀態: 正常就緒")
+            # 👑 斷線時：強制將兩個安全按鈕都變為灰色禁用狀態
+            if hasattr(self, 'top_bar'):
+                self.top_bar.btn_stop.setEnabled(False)
+                self.top_bar.btn_estop_reset.setEnabled(False)
 
     def _play_pose_animation(self, target_joints, wp_type='PTP'):
         """處理 3D 畫面的平滑過渡動畫"""
@@ -825,62 +840,265 @@ class RobotControllerGUI(QMainWindow):
         # 5.呼叫動畫引擎！
         self._play_pose_animation(preview_joints, wp_type=wp_type)
 
+    def on_play_toggled(self, checked):
+        """處理 btn_play 被按下時的所有邏輯 (啟動/暫停/繼續)"""        
+        if checked:
+            # ==========================================
+            # 狀態 A：按下 (Checked = True) -> 顯示為「暫停」圖示
+            # ==========================================
+            self.top_bar.btn_play.setIcon(qta.icon('mdi.pause-circle-outline', color='#e6a800'))
+            self.top_bar.btn_play.setToolTip("暫停執行 (Pause)")
+
+            # 判斷是「繼續」還是「全新啟動」
+            if hasattr(self, 'path_manager') and self.path_manager.is_running():
+                # ---------------------------------
+                # 動作 1：繼續 (Resume) - 軌跡跑到一半
+                # ---------------------------------
+                self.log_widget.append_log(">>> 恢復執行...")
+                self._is_paused = False
+                
+                # 通知硬體取消時間膨脹 (Mode 8)
+                if self.serial_manager and self.serial_manager.is_connected:
+                    self.serial_manager.send_resume()
+                    
+                # 通知 Python 背景工人恢復餵食
+                if hasattr(self.path_manager, 'worker'):
+                    self.path_manager.worker._is_paused = False
+                    
+            else:
+                # ---------------------------------
+                # 動作 2：全新啟動 (Start) - 尚未開始
+                # ---------------------------------
+                valid_types = ["PTP", "LIN", "CIRC", "DELAY", "GRIPPER", "I/O", "LOOP_START", "LOOP_END", "SET_TCP", "SET_BASE", "CAM_PATH"]
+                
+                # 抓取目前列表上有效的點位
+                active_points = [
+                    pt for pt in self.path_manager.waypoints 
+                    if pt.get('active', True) and pt.get('type') in valid_types
+                ]
+                
+                # 防呆：如果根本沒有點位
+                if len(active_points) == 0:
+                    self.log_widget.append_log("[System] 警告: 沒有可執行的點位。")
+                    self._reset_play_ui() 
+                    return
+
+                self.log_widget.append_log(">>> 開始執行路徑串流...")
+                
+                # 鎖定 Monitor：執行期間全面禁止編輯！
+                self.view3d_widget.monitor_widget.set_locked(True)
+                self._is_paused = False
+                
+                tcp_mat = self.tcp_manager.get_active_matrix()
+                callbacks = {
+                    'update': self.handle_system_pose_update, 
+                    'error': lambda msg: (self.log_widget.append_log(f"[ERROR] {msg}"), self._reset_play_ui()),
+                    'log': self.log_widget.append_log,
+                    'finished': self._on_execution_finished, # 確保跑完會呼叫歸位 UI
+                    'set_tcp': self.handle_set_tcp_playback,
+                    'set_base': self.handle_set_base_playback 
+                }
+                
+                # 連線狀態判定 (沒連線也能跑模擬)
+                serial_ref = self.serial_manager if (self.serial_manager and self.serial_manager.is_connected) else None
+                
+                # 正式啟動背景串流執行緒！
+                self.path_manager.execute_streaming_path(
+                    active_points=active_points,
+                    start_joints=self.current_float_joints,
+                    tcp_offset_mat=tcp_mat,
+                    loop=False, 
+                    global_speed=50.0,
+                    global_accel=50.0,
+                    serial_ref=serial_ref, 
+                    callbacks=callbacks,
+                )
+
+        else:
+            # ==========================================
+            # 狀態 B：彈起 (Checked = False) -> 顯示為「播放」圖示
+            # ==========================================
+            self.top_bar.btn_play.setIcon(qta.icon('mdi.motion-play-outline', color='#00e6b8'))
+            self.top_bar.btn_play.setToolTip("繼續執行 (Resume)")
+            
+            if hasattr(self, 'path_manager') and self.path_manager.is_running():
+                # ---------------------------------
+                # 動作 3：暫停 (Pause / Feed Hold)
+                # ---------------------------------
+                self.log_widget.append_log(">>> 執行暫停 (Feed Hold)")
+                self._is_paused = True
+                
+                # 1. 通知硬體啟動時間膨脹煞車 (Mode 7)
+                if self.serial_manager and self.serial_manager.is_connected:
+                    self.serial_manager.send_pause()
+                    
+                # 2. 通知 Python 背景工人停止餵食
+                if hasattr(self.path_manager, 'worker'):
+                    self.path_manager.worker._is_paused = True
+                
     def toggle_execution(self, checked):
         if checked:
-            valid_types = ["PTP", "LIN", "CIRC", "DELAY", "GRIPPER", "I/O", "LOOP_START", "LOOP_END", "SET_TCP", "SET_BASE", "CAM_PATH"]
-            
-            active_points = [
-                pt for pt in self.path_manager.waypoints 
-                if pt.get('active', True) and pt.get('type') in valid_types
-            ]
-            
-            if len(active_points) == 0:
-                self.log_widget.append_log("[System] 警告: 沒有可執行的點位。")
-                self._reset_play_ui() # 呼叫共用函式
-                return
+            # ==========================================
+            # 狀態 A：按下 (Checked = True) -> 顯示為「暫停」圖示
+            # ==========================================
+            self.top_bar.btn_play.setIcon(qta.icon('mdi.pause-circle-outline', color='#e6a800'))
+            self.top_bar.btn_play.setToolTip("暫停執行 (Pause)")
 
-            self.log_widget.append_log(">>> 開始執行路徑串流...")
-            # 鎖定 Monitor：執行期間全面禁止編輯！
-            self.view3d_widget.monitor_widget.set_locked(True)
-            
-            tcp_mat = self.tcp_manager.get_active_matrix()
-            callbacks = {
-                'update': self.handle_system_pose_update, 
-                'error': lambda msg: self.log_widget.append_log(f"[ERROR] {msg}"),
-                'log': self.log_widget.append_log,
-                'finished': self._on_execution_finished,
-                'set_tcp': self.handle_set_tcp_playback,
-                'set_base': self.handle_set_base_playback 
-            }
-            self.path_manager.execute_streaming_path(
-                active_points=active_points,
-                start_joints=self.current_float_joints,
-                tcp_offset_mat=tcp_mat,
-                loop=False, 
-                global_speed=50.0,
-                global_accel=50.0,
-                serial_ref=None, 
-                callbacks=callbacks,
-            )
-        else:
             if self.path_manager.is_running():
-                self.path_manager.stop_path()
-                self.log_widget.append_log(">>> 執行暫停")
-            self.view3d_widget.monitor_widget.set_locked(False)
+                # ---------------------------------
+                # 動作 1：繼續 (Resume) - 軌跡跑到一半
+                # ---------------------------------
+                self.log_widget.append_log(">>> 恢復執行...")
+                self._is_paused = False
+                
+                # 1. 通知硬體取消時間膨脹 (Mode 8)
+                if self.serial_manager and self.serial_manager.is_connected:
+                    self.serial_manager.send_resume()
+                    
+                # 2. 通知 Python 背景工人恢復餵食
+                if hasattr(self.path_manager, 'worker'):
+                    self.path_manager.worker._is_paused = False
+                    
+            else:
+                # ---------------------------------
+                # 動作 2：全新啟動 (Start) - 尚未開始
+                # ---------------------------------
+                valid_types = ["PTP", "LIN", "CIRC", "DELAY", "GRIPPER", "I/O", "LOOP_START", "LOOP_END", "SET_TCP", "SET_BASE", "CAM_PATH"]
+                
+                active_points = [
+                    pt for pt in self.path_manager.waypoints 
+                    if pt.get('active', True) and pt.get('type') in valid_types
+                ]
+                
+                if len(active_points) == 0:
+                    self.log_widget.append_log("[System] 警告: 沒有可執行的點位。")
+                    self._reset_play_ui() 
+                    return
+
+                self.log_widget.append_log(">>> 開始執行路徑串流...")
+                
+                # 鎖定 Monitor：執行期間全面禁止編輯！
+                self.view3d_widget.monitor_widget.set_locked(True)
+                self._is_paused = False
+                
+                tcp_mat = self.tcp_manager.get_active_matrix()
+                callbacks = {
+                    'update': self.handle_system_pose_update, 
+                    'error': lambda msg: (self.log_widget.append_log(f"[ERROR] {msg}"), self._reset_play_ui()), # 發生錯誤時也要歸位按鈕與解鎖
+                    'log': self.log_widget.append_log,
+                    'finished': self._on_execution_finished,
+                    'set_tcp': self.handle_set_tcp_playback,
+                    'set_base': self.handle_set_base_playback 
+                }
+                
+                serial_ref = self.serial_manager if (self.serial_manager and self.serial_manager.is_connected) else None
+                
+                self.path_manager.execute_streaming_path(
+                    active_points=active_points,
+                    start_joints=self.current_float_joints,
+                    tcp_offset_mat=tcp_mat,
+                    loop=False, 
+                    global_speed=50.0,
+                    global_accel=50.0,
+                    serial_ref=serial_ref, 
+                    callbacks=callbacks,
+                )
+
+        else:
+            # ==========================================
+            # 狀態 B：彈起 (Checked = False) -> 顯示為「播放」圖示
+            # ==========================================
+            self.top_bar.btn_play.setIcon(qta.icon('mdi.motion-play-outline', color='#00e6b8'))
+            self.top_bar.btn_play.setToolTip("繼續執行 (Resume)")
+            
+            if self.path_manager.is_running():
+                # ---------------------------------
+                # 動作 3：暫停 (Pause Feed Hold)
+                # ---------------------------------
+                self.log_widget.append_log(">>> 執行暫停 (Feed Hold)")
+                self._is_paused = True
+                
+                # 1. 通知硬體啟動時間膨脹煞車 (Mode 7)
+                if self.serial_manager and self.serial_manager.is_connected:
+                    self.serial_manager.send_pause()
+                    
+                # 2. 通知 Python 背景工人停止餵食
+                if hasattr(self.path_manager, 'worker'):
+                    self.path_manager.worker._is_paused = True
+                
+                # 注意這裡：暫停時「不可以」解鎖 UI，也不可以 stop_path！
+                # 機器只是卡住了，一切都還在記憶體內待命。
 
     def _reset_play_ui(self):
-        """共用函式：重置播放按鈕狀態並解鎖 UI"""
-        self.top_bar.btn_play.blockSignals(True)
-        self.top_bar.btn_play.setChecked(False)
-        self.top_bar.btn_play.setIcon(qta.icon('mdi.motion-play-outline', color='#00e6b8'))
-        self.top_bar.btn_play.blockSignals(False)
+        """共用函式：重置播放按鈕狀態並解鎖 UI """
+        if hasattr(self, 'top_bar'):
+            self.top_bar.btn_play.blockSignals(True)
+            self.top_bar.btn_play.setChecked(False)
+            self.top_bar.btn_play.setIcon(qta.icon('mdi.motion-play-outline', color='#00e6b8'))
+            self.top_bar.btn_play.setToolTip("開始 / 繼續 (Play/Resume)")
+            self.top_bar.btn_play.blockSignals(False)
+            
+        # 解鎖編輯區
         if hasattr(self, 'view3d_widget') and hasattr(self.view3d_widget, 'monitor_widget'):
             self.view3d_widget.monitor_widget.set_locked(False)
 
+    # ==========================================
+    # 動作 1：發送停止指令 (UI -> MCU)
+    # ==========================================
     def stop_execution(self):
-        if self.path_manager.is_running():
+        """使用者按下『停止』：全面斬斷所有運動 (軌跡與寸動)，並發送硬體急停"""
+        self.log_widget.append_log(">>> 發送全系統急停指令！")
+        self._reset_play_ui()
+
+        # 1. 斬斷背景軌跡執行 (PathManager 收到後會停止執行緒)
+        if hasattr(self, 'path_manager') and self.path_manager.is_running():
             self.path_manager.stop_path()
-            self.log_widget.append_log(">>> 執行終止")
+            
+        # 2. 斬斷寸動的軟體記憶 (清理你原本的殘留狀態)
+        self._active_jog_ideal_tcp = None
+
+        # 3. 直通底層，確保向 MCU 送出 Mode 4 煞車指令
+        if self.serial_manager and self.serial_manager.is_connected:
+            self.serial_manager.send_stop()
+
+
+    # ==========================================
+    # 動作 2：發送解鎖指令 (UI -> MCU)
+    # ==========================================
+    def reset_estop(self):
+        """使用者按下『解除鎖定』：發送 Mode 9 解鎖訊號"""
+        if self.serial_manager and self.serial_manager.is_connected:
+            self.log_widget.append_log(">>> 嘗試解除急停鎖死...")
+            self.serial_manager.send_estop_reset()
+
+
+    # ==========================================
+    # 動作 3：純粹處理畫面切換 (MCU -> UI)
+    # ==========================================
+    def on_estop_state_changed(self, is_latched):
+        """當收到 MCU 處於或解除急停鎖死狀態時觸發，只負責更新 UI"""
+        if is_latched:
+            # 狀態：鎖死。關閉停止鍵，點亮解鎖鍵
+            if hasattr(self, 'top_bar'):
+                self.top_bar.btn_stop.setEnabled(False)
+                self.top_bar.btn_estop_reset.setEnabled(True)
+                
+            QMessageBox.critical(
+                self, 
+                "系統急停 (LATCHED)", 
+                "硬體控制器目前處於「急停鎖死狀態」！\n\n"
+                "請確認實體機台安全後，點擊工具列的「解鎖」按鈕來恢復運作。"
+            )
+        else:
+            # 狀態：正常。點亮停止鍵，關閉解鎖鍵
+            if hasattr(self, 'top_bar'):
+                self.top_bar.btn_stop.setEnabled(True)
+                self.top_bar.btn_estop_reset.setEnabled(False)
+                
+            QMessageBox.information(
+                self, 
+                "警報解除，系統恢復正常就緒。"
+            )
             
         self._reset_play_ui() # 呼叫共用函式
 

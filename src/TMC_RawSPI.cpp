@@ -1,5 +1,5 @@
 #include "TMC_RawSPI.h"
-
+#include "MotionEngine.h" 
 // ==========================================
 // 定義 S6 專屬的馬達 SPI 腳位
 // ==========================================
@@ -124,4 +124,58 @@ float readTMC2240Temp(uint8_t cs_pin) {
 
     uint16_t adc_temp_raw = val & 0xFFFF;
     return (adc_temp_raw - 2038.0) / 7.7;
+}
+
+// ==========================================
+// 系統溫度監控與回報邏輯
+// ==========================================
+
+void reportSystemTemperatures() {
+    LockMotionEngine();
+    float t1 = readTMC2240Temp(X_CS_PIN);
+    float t2 = readTMC2240Temp(Y_CS_PIN);
+    float t3 = readTMC2240Temp(Z_CS_PIN);
+    float t4 = readTMC2240Temp(E0_CS_PIN);
+    float t5 = readTMC2240Temp(E1_CS_PIN);
+    float t6 = readTMC2240Temp(E2_CS_PIN);
+    UnlockMotionEngine();
+    
+    Serial.print("[Thermal] J1:"); Serial.print(t1, 1);
+    Serial.print("C | J2:"); Serial.print(t2, 1);
+    Serial.print("C | J3:"); Serial.print(t3, 1);
+    Serial.print("C | J4:"); Serial.print(t4, 1);
+    Serial.print("C | J5:"); Serial.print(t5, 1);
+    Serial.print("C | J6:"); Serial.print(t6, 1);
+    Serial.println("C");
+}
+
+void checkThermalAlarms(bool isArmIdle) {
+    static unsigned long lastTempCheck = 0;
+    // 10 秒輪詢一次
+    if (millis() - lastTempCheck >= 10000) {
+        lastTempCheck = millis();
+        
+        if (isArmIdle) {
+            LockMotionEngine();
+            float t[6] = {
+                readTMC2240Temp(X_CS_PIN), readTMC2240Temp(Y_CS_PIN), readTMC2240Temp(Z_CS_PIN),
+                readTMC2240Temp(E0_CS_PIN), readTMC2240Temp(E1_CS_PIN), readTMC2240Temp(E2_CS_PIN)
+            };
+            UnlockMotionEngine();
+            
+            bool overHeat = false;
+            for (int i = 0; i < 6; i++) {
+                if (t[i] >= 80.0f) {
+                    overHeat = true;
+                    break;
+                }
+            }
+            
+            // 超過 80 度時報警
+            if (overHeat) {
+                Serial.println("ERR: THERMAL ALARM! MOTOR DRIVER EXCEEDS 80C!");
+                reportSystemTemperatures(); 
+            }
+        }
+    }
 }

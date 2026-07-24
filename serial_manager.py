@@ -126,17 +126,34 @@ class SerialManager(QObject):
     # ==========================================
     # 提供給 UI 大腦呼叫的專屬 API (Public Methods)
     # ==========================================
-    def send_joints(self, joints, speed_factor=1.0, move_mode=0, is_stream=False):
-        """ 一般運動發送 (自動將角度轉為絕對步數)。若為串流，不可重置號碼牌與事件"""
-        # 只有在「非串流」的全新指令時，才重置事件與號碼牌
+    def send_joints(self, joints, speed_factor=1.0, move_mode=0, is_stream=False, is_jog=False):
+        """ 
+        is_stream: 是否為連續串流 (若為 False，則視為單點移動，會重置系統狀態)
+        is_jog: 標示這是否來自於高頻點動 (UI 手動操作)
+        """
         if not is_stream:
             self.motion_done_event.clear()  
             self.ee_done_event.clear() 
             self.reset_semaphore()     
+        else:
+            if is_jog:
+                # ------------------------------------------------
+                # 路線 A：點動模式 (Jog) - 極速非阻塞檢查
+                # ------------------------------------------------
+                if not self.ok_semaphore.acquire(blocking=False):
+                    return False
+
+            else:
+                # ------------------------------------------------
+                # 路線 B：CAM 路徑串流 (StreamingPathExecutor) - 絕不丟點
+                # ------------------------------------------------
+                # 這裡什麼都不做！絕不扣除號碼牌！
+                # 讓外部的 run() 迴圈透過 wait_for_ok() 自己去排隊等待，
+                # 徹底解決「雙重扣除」與「靜默丟棄」的災難。
+                pass
         
         steps = []
         import config
-        
         for i in range(6):
             if joints[i] == 999.0 or joints[i] == 999999:
                 steps.append(999999) 
@@ -157,6 +174,22 @@ class SerialManager(QObject):
         """ 觸發硬體急停 (對應 C++ 的 Mode 4) """
         self.log_signal.emit("[System] 發送急停指令！")
         return self._send_binary_packet([0] * 6, 1.0, 4)
+    
+    # ==========================================
+    # 暫停與繼續 API (對接 Mode 7 & 8)
+    # ==========================================
+    def send_pause(self):
+        """發送暫停指令 (Mode 5)"""
+        if self.is_connected:
+            self.log_signal.emit(">>> [SYS] 發送暫停指令，機台減速中...")
+            # 步數陣列全填 0 即可，因為 Mode 5 只看 Mode 標籤
+            self._send_binary_packet([0, 0, 0, 0, 0, 0], speed_factor=1.0, move_mode=7)
+
+    def send_resume(self):
+        """發送繼續指令 (Mode 6)"""
+        if self.is_connected:
+            self.log_signal.emit(">>> [SYS] 發送繼續指令，機台恢復運作...")
+            self._send_binary_packet([0, 0, 0, 0, 0, 0], speed_factor=1.0, move_mode=8)
     
     def send_estop_reset(self):
         """ 明確向 MCU 發送人工解鎖指令 (Mode 9) """

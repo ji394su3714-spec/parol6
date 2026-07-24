@@ -52,7 +52,7 @@
             "name": "Tool 5",
             "values": [
                 0.0,
-                50.0,
+                100.0,
                 0.0,
                 0.0,
                 0.0,
@@ -61,5 +61,5 @@
             "in_box": true
         }
     ],
-    "current_index": 0
+    "current_index": 4
 }

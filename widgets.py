@@ -328,19 +328,21 @@ class CustomTopBar(QFrame):
         layout.addWidget(title_lbl)
         layout.addStretch(1)
 
-        self.btn_play = self._create_btn('mdi.motion-play-outline')
-        self.btn_play.setCheckable(True)
-        self.btn_play.toggled.connect(lambda checked: 
-            self.btn_play.setIcon(qta.icon(
-                'mdi.pause-circle-outline' if checked else 'mdi.motion-play-outline', 
-                color='#e6a800' if checked else '#00e6b8'
-            ))
-        )
+        self.btn_play = self._create_btn('mdi.motion-play-outline') 
         self.btn_play.setIcon(qta.icon('mdi.motion-play-outline', color='#00e6b8'))
+        self.btn_play.setCheckable(True) 
+        self.btn_play.setToolTip("開始 / 繼續 (Play/Resume)")
         layout.addWidget(self.btn_play)
 
-        self.btn_stop = self._create_btn('mdi.stop-circle-outline') 
+        self.btn_stop = self._create_btn('mdi.stop-circle-outline')
+        self.btn_stop.setToolTip("全面停止 (E-Stop)")
+        self.btn_stop.setEnabled(False) # 預設關閉，等連線才打開
         layout.addWidget(self.btn_stop)
+
+        self.btn_estop_reset = self._create_btn('mdi.lock-open-variant-outline')
+        self.btn_estop_reset.setToolTip("解除急停鎖定")
+        self.btn_estop_reset.setEnabled(False) # 預設關閉
+        layout.addWidget(self.btn_estop_reset)
         
         self.btn_home = self._create_btn('mdi.home-search')
         self.btn_home.clicked.connect(self.show_homing_warning)
@@ -905,13 +907,13 @@ class JogWidget(BaseBlock):
     # ---------------------------------------------------------
     def on_joint_slider_changed(self):
         """拖動 Slider 時，只負責更新 3D 畫面"""
-        angles = [float(s.value()) / 100 for s in self.joint_sliders]
+        angles = [float(s.value()) / 100.0 for s in self.joint_sliders]
         if hasattr(self, 'update_3d_callback') and self.update_3d_callback:
             self.update_3d_callback(angles)
             
     def on_joint_slider_released(self):
         """鬆開 Slider 或輸入數值時，送出 PTP 指令給實機"""
-        angles = [float(s.value()) / 100 for s in self.joint_sliders]
+        angles = [float(s.value()) / 100.0 for s in self.joint_sliders]
         
         # 取得當前面板設定的速度比例 (1~4 檔位轉為 0.25~1.0)
         speed_factor = self.j_speed_ctrl.level * 0.25 
@@ -962,10 +964,10 @@ class JogWidget(BaseBlock):
 
     def _execute_joint_step(self, axis_idx, direction):
         """處理單次點擊 (Step)：固定每次點按 0.5 度，強制同步 UI 與實機"""
-        
+        import config
         step_deg = 0.5 * direction # 固定每次點按走 0.5 度
 
-        # 1. 計算目標新角度
+        # 1. 計算目標新角度 (除以 100 轉為真實角度)
         slider = self.joint_sliders[axis_idx]
         current_val = slider.value() / 100.0
         new_val = current_val + step_deg
@@ -993,12 +995,20 @@ class JogWidget(BaseBlock):
         axis = self.active_joint_axis
         if axis < 0 or axis > 5: return
 
-        speed_deg = self._get_axis_speed_deg(axis, self.get_jog_speed_factor(self.jog_widget.j_speed_level))
-        delta = self._joint_press_dir * speed_deg * real_dt 
+        speed_factor = self.j_speed_ctrl.level * 0.25
+        speed_deg = self._get_axis_speed_deg(axis, speed_factor)
         
-        # 更新滑桿與 3D 畫面
-        current_val = self.sliders[axis].value()
-        self.sliders[axis].setValue(current_val + delta)
+        delta = self.active_joint_sign * speed_deg * real_dt 
+        
+        slider = self.joint_sliders[axis]
+        current_val = slider.value() / 100.0  # 轉回真實角度
+        new_val = current_val + delta
+        
+        # 軟限位防護：避免視覺滑桿撞到底引發超出範圍錯誤
+        #min_lim, max_lim = config.JOINT_LIMITS[axis]
+        #new_val = max(min_lim, min(max_lim, new_val))
+        
+        slider.setValue(int(new_val * 100))   # 放大 100 倍寫回 Slider
 
     # ---------------------------------------------------------
     # 連動邏輯：Cartesian (Python IK 持續派發點位)
@@ -1053,84 +1063,111 @@ class JogWidget(BaseBlock):
         self.cart_jog_timer.start(10)
 
     def _cartesian_timer_tick(self):
-        """100Hz 串流引擎 (完美融合 Cont 與 Step 模式)"""
-        if not self.active_cart_axis: return
+        """100Hz 串流引擎 (加入真實時間補償與背壓凍結)"""
+        if not getattr(self, 'active_cart_axis', None): return
 
+        # 防護：時間凍結與背壓流量控制 (Backpressure)
+        if hasattr(self, 'serial_manager') and self.serial_manager.is_connected:
+            # 水池容量為 40，如果剩下不到 20 張牌，代表 MCU 已經囤積了至少 20 個點。
+            # 為了不把 MCU 塞爆，也不讓空間軌跡斷裂，我們「暫停 Python 的時間」！
+            if getattr(self.serial_manager.ok_semaphore, '_value', 0) < 20:
+                # 凍結時間戳，直接 return。
+                # 這樣就不會生成新點位，完美保證下一幀依然從原地出發，軌跡 100% 絕對連續！
+                self.cart_last_time = time.time() 
+                return 
+
+        current_time = time.time()
+        
+        # 防呆：如果距離上次執行超過 0.1 秒 (代表剛按下去)，重新初始化時間
+        if not hasattr(self, 'cart_last_time') or (current_time - self.cart_last_time) > 0.1:
+            self.cart_last_time = current_time - 0.01
+            self.cart_time_acc = 0.0
+            
+        # 計算距離上一次 Tick 流逝了多少真實時間
+        delta = current_time - self.cart_last_time
+        self.cart_last_time = current_time
+
+        # 將流逝時間加入累積器
+        acc = getattr(self, 'cart_time_acc', 0.0) + delta
+        dt = 0.01 # 核心物理演算法依然保持絕對的 10ms 計算
+
+        frame = "Tool" if self.btn_frame_toggle.isChecked() else "World"
         axis_str = self.active_cart_axis[:-1] 
         sign = 1 if self.active_cart_axis[-1] == '+' else -1
         is_rot = len(axis_str) > 1
         axis_arg = axis_str if is_rot else axis_str.lower()
         
-        dt = 0.01 
         max_speed = (100.0 if not is_rot else 25.0) * (self.c_speed_level / 4.0)
         accel = 200.0 
 
-        step_val = 0.0
-
-        if self.is_cartesian_continuous:
-            # 連續模式 (Cont) 
-            if not self.cart_is_stopping:
-                self.cart_current_speed += accel * dt
-                if self.cart_current_speed > max_speed: self.cart_current_speed = max_speed
-            else:
-                self.cart_current_speed -= accel * dt
-                if self.cart_current_speed <= 0:
-                    self.cart_current_speed = 0.0
-                    self.cart_jog_timer.stop()
-                    self.active_cart_axis = None
-                    if hasattr(self, 'cartesian_jog_stop_callback'):
-                        self.cartesian_jog_stop_callback()
-                    return 
+        # 關鍵迴圈：當累積時間超過 10ms (0.01s)，就執行點位生成！
+        # 如果因為系統延遲導致經過了 25ms，迴圈會連續跑 2 次 (生成 2 點)，留下 5ms 給下次。
+        while acc >= 0.01:
+            step_val = 0.0
             
-            step_val = sign * self.cart_current_speed * dt
-
-        else:
-            # 定距模式 (Step)
-            if self.cart_step_remaining > 0:
-                # 算出煞車距離 (物理公式: d = v^2 / 2a)
-                stop_dist = (self.cart_current_speed ** 2) / (2.0 * accel)
-                
-                if self.cart_step_remaining <= stop_dist:
-                    # 進入煞車區
-                    self.cart_current_speed -= accel * dt
-                    if self.cart_current_speed < 1.0: self.cart_current_speed = 1.0 # 保持微速直到摸到終點
-                else:
-                    # 繼續加速或巡航
+            if self.is_cartesian_continuous:
+                if not getattr(self, 'cart_is_stopping', False):
                     self.cart_current_speed += accel * dt
                     if self.cart_current_speed > max_speed: self.cart_current_speed = max_speed
-
-                # 算出這 10ms 該走的距離
-                move_dist = self.cart_current_speed * dt
+                else:
+                    self.cart_current_speed -= accel * dt
+                    if self.cart_current_speed <= 0:
+                        self.cart_current_speed = 0.0
+                        self.cart_jog_timer.stop()
+                        self.active_cart_axis = None
+                        self.cart_time_acc = 0.0 # 清零
+                        
+                        if hasattr(self, 'cartesian_jog_callback') and self.cartesian_jog_callback:
+                            for _ in range(5):
+                                self.cartesian_jog_callback(axis_arg, 0.0, frame, True)
+                        if hasattr(self, 'cartesian_jog_stop_callback'):
+                            self.cartesian_jog_stop_callback()
+                        return 
                 
-                # 如果這一步會超過終點，就精準截斷
-                if move_dist > self.cart_step_remaining:
-                    move_dist = self.cart_step_remaining
-                    
-                self.cart_step_remaining -= move_dist
-                step_val = sign * move_dist
+                step_val = sign * self.cart_current_speed * dt
 
-                # 抵達終點，關閉時鐘
-                if self.cart_step_remaining <= 0:
-                    self.cart_jog_timer.stop()
-                    self.active_cart_axis = None
-                    
-                    # 沖水機制 (Flush)：連發 5 包與最後位置一模一樣的點
-                    # 把 buffer 裡的有效軌跡硬擠出 STM32 的 5 點水位線！
-                    if hasattr(self, 'cartesian_jog_callback') and self.cartesian_jog_callback:
-                        for _ in range(5):
-                            # 發送距離為 0 的點
-                            self.cartesian_jog_callback(axis_arg, 0.0, frame, True)
-                            time.sleep(0.005) # 給一點點微小延遲避免擠爆 USB
-                            
-                    if hasattr(self, 'cartesian_jog_stop_callback'):
-                        self.cartesian_jog_stop_callback()
             else:
-                return
+                if self.cart_step_remaining > 0:
+                    stop_dist = (self.cart_current_speed ** 2) / (2.0 * accel)
+                    if self.cart_step_remaining <= stop_dist:
+                        self.cart_current_speed -= accel * dt
+                        if self.cart_current_speed < 1.0: self.cart_current_speed = 1.0 
+                    else:
+                        self.cart_current_speed += accel * dt
+                        if self.cart_current_speed > max_speed: self.cart_current_speed = max_speed
 
-        # 派發給 gui.py 計算 IK 並發送
-        frame = "Tool" if self.btn_frame_toggle.isChecked() else "World"
-        if hasattr(self, 'cartesian_jog_callback') and self.cartesian_jog_callback:
-            self.cartesian_jog_callback(axis_arg, step_val, frame, True)
+                    move_dist = self.cart_current_speed * dt
+                    if move_dist > self.cart_step_remaining:
+                        move_dist = self.cart_step_remaining
+                        
+                    self.cart_step_remaining -= move_dist
+                    step_val = sign * move_dist
+
+                    if self.cart_step_remaining <= 0:
+                        self.cart_jog_timer.stop()
+                        self.active_cart_axis = None
+                        self.cart_time_acc = 0.0 # 清零
+                        
+                        if hasattr(self, 'cartesian_jog_callback') and self.cartesian_jog_callback:
+                            self.cartesian_jog_callback(axis_arg, step_val, frame, True)
+                            for _ in range(5):
+                                self.cartesian_jog_callback(axis_arg, 0.0, frame, True)
+                                
+                        if hasattr(self, 'cartesian_jog_stop_callback'):
+                            self.cartesian_jog_stop_callback()
+                        return 
+                else:
+                    return
+
+            # 派發給 gui.py 計算 IK 並發送
+            if hasattr(self, 'cartesian_jog_callback') and self.cartesian_jog_callback:
+                self.cartesian_jog_callback(axis_arg, step_val, frame, True)
+            
+            # 成功生成一個點位，扣除 10ms 的累積時間
+            acc -= 0.01
+
+        # 迴圈結束，把剩下的零頭時間存起來給下一個 Timer Tick 使用
+        self.cart_time_acc = acc
 
     # ---------------------------------------------------------
     # 連動邏輯：Gripper

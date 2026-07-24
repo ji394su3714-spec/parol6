@@ -1,6 +1,5 @@
 #include "MotionEngine.h"
-#include "Config.h" 
-
+#include "Globals.h"
 constexpr float STEP_FREQ = 50000.0f;                 // TIM7 頻率 50kHz
 constexpr float ACCEL_DENOM = STEP_FREQ * STEP_FREQ;  
 constexpr uint32_t TICK_US = 20;                      
@@ -26,6 +25,8 @@ volatile BufPoint motion_buf[MOTION_BUF_SIZE];
 volatile int buf_head = 0;
 volatile int buf_tail = 0;
 volatile int buf_count = 0;
+volatile uint32_t diag_smooth_count = 0;
+volatile uint32_t diag_stop_count = 0;
 
 volatile uint32_t segment_ticks_total = 0;
 volatile uint32_t segment_ticks_current = 0;
@@ -77,7 +78,7 @@ bool pushMotionPoint(long t1, long t2, long t3, long t4, long t5, long t6, uint3
     buf_count++;
     
     if (!is_engine_running) {
-        if (buf_count >= 5) {
+        if (buf_count >= 15) {
             pvt_ticks_current = 0;
             pvt_ticks_total = 0;
             is_pvt_mode = true;       
@@ -328,11 +329,17 @@ void ISR_MotionPlanner() {
                 axes[i].v0 = axes[i].v1; 
 
                 if (buf_count > 1) {
+                    // 👑 走到這裡代表有下一個點，速度平滑相連
+                    diag_smooth_count++; 
+                    
                     int next_idx = (buf_tail + 1) % MOTION_BUF_SIZE;
                     volatile BufPoint* pt2 = &motion_buf[next_idx];
                     float T2_sec = pt2->interval_us * 1e-6f;
                     axes[i].v1 = ((float)pt2->targetSteps[i] - axes[i].p0_float) / (T1_sec + T2_sec);
                 } else {
+                    // 👑 走到這裡代表緩衝區見底，被迫強行減速至 0
+                    diag_stop_count++; 
+                    
                     axes[i].v1 = 0.0f; 
                 }
             }

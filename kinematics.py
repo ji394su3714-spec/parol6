@@ -1,9 +1,9 @@
-# kinematics.py
+# py
 import math
 import time
 import warnings
 import numpy as np
-from scipy.spatial.transform import Rotation as R, Slerp
+from scipy.spatial.transform import Rotation as R, RotationSpline, Slerp
 from scipy.signal import savgol_filter
 from scipy.interpolate import make_interp_spline
 
@@ -230,7 +230,7 @@ def _core_inverse_kinematics(target_matrix, seed_joints, max_retries=1):
                 print(f"[IK Rescue] 滿載保命 (耗盡迭代): {total_iters} iters | {dt_ms:.3f} ms | 殘留誤差: {err_mm:.3f} mm, {err_deg:.3f}°")
             return current_joints, (err_pos_norm * 1000.0)
             
-    print(f"[IK FAILED] 解算失敗，共掙扎 {total_iters} iters")
+    #print(f"[IK FAILED] 解算失敗，共掙扎 {total_iters} iters")
     return None, None
 
 def inverse_kinematics(target_matrix, seed_joints, max_retries=1):
@@ -847,82 +847,212 @@ class TrajectoryMathEngine:
         return circ_generator(), final_profile.T_total, msg, N
     
     @staticmethod
-    def calculate_spline_trajectory(start_joints, spline_waypoints, interval=0.010):
-        """終極完全體：笛卡爾 XYZ 五次樣條 + SO(3) 四元數旋轉樣條"""
+    def calculate_spline_trajectory(start_joints, spline_waypoints, interval=0.010, min_step_mm=0.0):
+        """終極完全體：笛卡爾 XYZ 五次樣條 + SO(3) 週期邊界旋轉樣條 (絕對恆速 + 控制器濾波版)"""
         from scipy.spatial.transform import Rotation as R, RotationSpline
+        from scipy.interpolate import make_interp_spline
+        import time
+
+        # ==========================================
+        # [控制台參數區] 供你手動隨時切換
+        # ==========================================
+        ENABLE_DEBUG_PRINT = True
+        MIN_STEP_MM = min_step_mm  
+        # ==========================================
 
         if not spline_waypoints:
             def empty_gen(): yield list(start_joints)
             return empty_gen(), 0.0, "Empty SPLINE array", 0
 
-        # 1. 取得 TCP 偏移矩陣
         tcp_mat = spline_waypoints[0].get('tcp_offset_mat', np.eye(4))
         inv_tcp_mat = np.linalg.inv(tcp_mat)
 
-        t_arr = [0.0]
-        xyz_pts = []
-        rot_matrices = []
-
-        # 初始點 (從關節推算回真實 TCP)
-        T_start_flange = forward_kinematics(start_joints)
-        T_start_tcp = T_start_flange @ tcp_mat
-        
-        prev_pos = T_start_tcp[:3, 3]
-        prev_rot = T_start_tcp[:3, :3]
-        
-        xyz_pts.append(prev_pos)
-        rot_matrices.append(prev_rot)
-        
-        current_t = 0.0
-        
-        # 2. 空間距離與時間規劃
+        # 1. 預先解析所有原始點位 (從關節推算回真實 TCP)
+        raw_poses = []
         for wp in spline_waypoints:
             target_joints = wp['target_joints']
             speed_factor = wp.get('speed_factor', 1.0)
             
             T_target_flange = forward_kinematics(target_joints)
             T_target_tcp = T_target_flange @ tcp_mat
+            raw_poses.append({
+                'pos': T_target_tcp[:3, 3],
+                'rot': T_target_tcp[:3, :3],
+                'speed_factor': speed_factor
+            })
+
+        # 2. 啟動微線段濾波 (控制器端動態整流)
+        T_start_flange = forward_kinematics(start_joints) 
+        T_start_tcp = T_start_flange @ tcp_mat
+        
+        filtered_poses = [{
+            'pos': T_start_tcp[:3, 3],
+            'rot': T_start_tcp[:3, :3],
+            'speed_factor': raw_poses[0]['speed_factor'] if raw_poses else 1.0
+        }]
+        
+        for i in range(len(raw_poses)):
+            is_last = (i == len(raw_poses) - 1)
+            curr = raw_poses[i]
             
-            curr_pos = T_target_tcp[:3, 3]
-            curr_rot = T_target_tcp[:3, :3]
+            # 計算目前點位到「上一個已通過審核的點」的距離
+            dist_to_last = np.linalg.norm(curr['pos'] - filtered_poses[-1]['pos']) * 1000.0
             
-            # 物理位移
+            if dist_to_last >= MIN_STEP_MM:
+                filtered_poses.append(curr)
+            elif is_last:
+                # 完美收尾邏輯：如果最後一點離上一點太近，我們直接用終點覆蓋上一個點。
+                # 這樣既殺死了末端微線段，又保證了軌跡 100% 精準到達 / 完美閉合！
+                if len(filtered_poses) > 1:
+                    filtered_poses[-1] = curr
+                else:
+                    filtered_poses.append(curr)
+
+        # 3. 計算空間距離與動力學時間 (Chordal Time Parameterization)
+        t_arr = [0.0]
+        xyz_pts = [filtered_poses[0]['pos']]
+        rot_matrices = [filtered_poses[0]['rot']]
+        current_t = 0.0
+        
+        if ENABLE_DEBUG_PRINT:
+            print(f"\n--- [恆速驗證：控制器端濾波啟動 | 濾波門檻 {MIN_STEP_MM}mm | 共 {len(filtered_poses)} 點] ---")
+        
+        for i in range(1, len(filtered_poses)):
+            curr_pos = filtered_poses[i]['pos']
+            curr_rot = filtered_poses[i]['rot']
+            prev_pos = filtered_poses[i-1]['pos']
+            prev_rot = filtered_poses[i-1]['rot']
+            speed_factor = filtered_poses[i]['speed_factor']
+            
             dist_mm = np.linalg.norm(curr_pos - prev_pos) * 1000.0
-            
-            # 使用四元數計算真實旋轉角度差
             rot_diff = R.from_matrix(prev_rot.T @ curr_rot).magnitude()
             dist_deg = np.degrees(rot_diff)
+            
+            if dist_mm < 1e-3 and dist_deg < 1e-2:
+                continue
             
             v_lin = config.MAX_LIN_SPEED * speed_factor if config.MAX_LIN_SPEED > 0 else 1e-6
             v_rot = config.MAX_ROT_SPEED * speed_factor if config.MAX_ROT_SPEED > 0 else 1e-6
             
-            dt = max(dist_mm / v_lin, dist_deg / v_rot)
-            if dt < 0.005: 
-                dt = 0.005
+            # 絕對恆速核心
+            if dist_mm > 1e-4:
+                dt = dist_mm / v_lin
+            else:
+                dt = dist_deg / v_rot
+            
+            if dt < 1e-5: 
+                dt = 1e-5
+                
+            if ENABLE_DEBUG_PRINT:
+                vel_deg = (dist_deg / dt) if dt > 0 else 0
+                vel_mm = (dist_mm / dt) if dt > 0 else 0
+                print(f"點 {len(t_arr):03d}: 距離 {dist_mm:.4f}mm, 角度差 {dist_deg:.4f}°, 分配時間 {dt:.5f}s | 局部角速度: {vel_deg:.2f} deg/s, 線速度: {vel_mm:.2f} mm/s")
                 
             current_t += dt
             t_arr.append(current_t)
             xyz_pts.append(curr_pos)
             rot_matrices.append(curr_rot)
-            
-            prev_pos = curr_pos
-            prev_rot = curr_rot
+
+        if ENABLE_DEBUG_PRINT:
+            print("-------------------------------------------\n")
 
         t_arr = np.array(t_arr)
         xyz_pts = np.array(xyz_pts)
-
-        # 3. 座標 XYZ 使用 5 次 B-樣條
+        rot_matrices = np.array(rot_matrices)
         num_points = len(t_arr)
+
         k = 5 if num_points > 5 else num_points - 1
         if k < 1: k = 1
-        spline_xyz = make_interp_spline(t_arr, xyz_pts, k=k)
 
-        # 4. 旋轉姿態使用專屬的 RotationSpline (SO3 四元數連續插值)
-        # 徹底免疫尤拉角萬向節死鎖 (Gimbal Lock) 導致的空間大甩尾
-        rotations = R.from_matrix(rot_matrices)
-        spline_rot = RotationSpline(t_arr, rotations)
+        is_closed = False
+        if num_points > 5:
+            dist_close = np.linalg.norm(xyz_pts[0] - xyz_pts[-1])
+            rot_close = R.from_matrix(rot_matrices[0].T @ rot_matrices[-1]).magnitude()
+            if dist_close < 1e-3 and rot_close < 1e-2:
+                is_closed = True
 
-        # 5. 時間軸採樣
+        is_closed = False
+        if num_points > 5:
+            dist_close = np.linalg.norm(xyz_pts[0] - xyz_pts[-1])
+            rot_close = R.from_matrix(rot_matrices[0].T @ rot_matrices[-1]).magnitude()
+            if dist_close < 1e-3 and rot_close < 1e-2:
+                is_closed = True
+
+        if is_closed:
+            # 👑 原始的封閉迴圈：週期邊界幽靈點 (Cyclic Padding)
+            pad = min(5, num_points - 2) 
+            
+            head_t, head_xyz, head_rot = [], [], []
+            curr_t_head = t_arr[0]
+            for i in range(1, pad + 1):
+                idx = -1 - i  
+                dt_step = t_arr[idx + 1] - t_arr[idx]
+                curr_t_head -= dt_step
+                head_t.insert(0, curr_t_head)
+                head_xyz.insert(0, xyz_pts[idx])
+                head_rot.insert(0, rot_matrices[idx])
+                
+            tail_t, tail_xyz, tail_rot = [], [], []
+            curr_t_tail = t_arr[-1]
+            for i in range(1, pad + 1):
+                idx = i  
+                dt_step = t_arr[idx] - t_arr[idx - 1]
+                curr_t_tail += dt_step
+                tail_t.append(curr_t_tail)
+                tail_xyz.append(xyz_pts[idx])
+                tail_rot.append(rot_matrices[idx])
+                
+            ext_t = np.concatenate((head_t, t_arr, tail_t))
+            ext_xyz = np.concatenate((head_xyz, xyz_pts, tail_xyz))
+            ext_rot = np.concatenate((head_rot, rot_matrices, tail_rot))
+            
+            spline_xyz = make_interp_spline(ext_t, ext_xyz, k=k)
+            spline_rot = RotationSpline(ext_t, R.from_matrix(ext_rot))
+            
+        else:
+            # 開放曲線/過切軌跡的「切線延伸幽靈點」(Tangent Padding)
+            # 徹底消滅 5 次樣條在開放邊界的 Runge 甩尾過衝現象！
+            pad = min(4, num_points - 2)
+            
+            head_t, head_xyz, head_rot = [], [], []
+            if pad > 0 and len(t_arr) >= 2:
+                dt_head = max(1e-5, t_arr[1] - t_arr[0])
+                v_head = xyz_pts[1] - xyz_pts[0]
+                # 計算起始角速度 (使用相對旋轉向量)
+                rot_diff_head = R.from_matrix(rot_matrices[0].T @ rot_matrices[1]).as_rotvec()
+                
+                for i in range(1, pad + 1):
+                    head_t.insert(0, t_arr[0] - i * dt_head)
+                    head_xyz.insert(0, xyz_pts[0] - i * v_head)
+                    # 姿態反向線性延伸
+                    r_ext = R.from_rotvec(-i * rot_diff_head)
+                    head_rot.insert(0, (R.from_matrix(rot_matrices[0]) * r_ext).as_matrix())
+                    
+            tail_t, tail_xyz, tail_rot = [], [], []
+            if pad > 0 and len(t_arr) >= 2:
+                dt_tail = max(1e-5, t_arr[-1] - t_arr[-2])
+                v_tail = xyz_pts[-1] - xyz_pts[-2]
+                # 計算終點角速度
+                rot_diff_tail = R.from_matrix(rot_matrices[-2].T @ rot_matrices[-1]).as_rotvec()
+                
+                for i in range(1, pad + 1):
+                    tail_t.append(t_arr[-1] + i * dt_tail)
+                    tail_xyz.append(xyz_pts[-1] + i * v_tail)
+                    # 姿態正向線性延伸
+                    r_ext = R.from_rotvec(i * rot_diff_tail)
+                    tail_rot.append((R.from_matrix(rot_matrices[-1]) * r_ext).as_matrix())
+
+            if pad > 0:
+                ext_t = np.concatenate((head_t, t_arr, tail_t))
+                ext_xyz = np.concatenate((head_xyz, xyz_pts, tail_xyz))
+                ext_rot = np.concatenate((head_rot, rot_matrices, tail_rot))
+                
+                spline_xyz = make_interp_spline(ext_t, ext_xyz, k=k)
+                spline_rot = RotationSpline(ext_t, R.from_matrix(ext_rot))
+            else:
+                spline_xyz = make_interp_spline(t_arr, xyz_pts, k=k)
+                spline_rot = RotationSpline(t_arr, R.from_matrix(rot_matrices))
+
         t_steps = np.arange(interval, t_arr[-1], interval)
         if len(t_steps) == 0 or t_steps[-1] < t_arr[-1]:
             t_steps = np.append(t_steps, t_arr[-1])
@@ -931,8 +1061,6 @@ class TrajectoryMathEngine:
         sampled_xyz = spline_xyz(t_steps)
         sampled_rot = spline_rot(t_steps).as_matrix()
 
-        # 6. 惰性生成器：將完美平滑的笛卡爾點位逆推回關節
-        # 6. 惰性生成器：將完美平滑的笛卡爾點位逆推回關節
         def spline_generator():
             seed = start_joints
             
@@ -943,7 +1071,7 @@ class TrajectoryMathEngine:
                     unwrapped.append(p + diff)
                 return unwrapped
 
-            total_ik_time = 0.0 # 用來累積這整段路徑的 IK 總耗時
+            total_ik_time = 0.0
 
             for i in range(N):
                 T_target_tcp = np.eye(4)
@@ -953,7 +1081,7 @@ class TrajectoryMathEngine:
                 T_target_flange = T_target_tcp @ inv_tcp_mat
                 
                 t0 = time.perf_counter() 
-                ik_res, ik_err = _core_inverse_kinematics(T_target_flange, seed)
+                ik_res, ik_err = _core_inverse_kinematics(T_target_flange, seed) 
                 total_ik_time += (time.perf_counter() - t0) 
                 
                 if ik_res is None:
@@ -961,15 +1089,6 @@ class TrajectoryMathEngine:
                 
                 ik_res = unwrap_joints(ik_res, seed)
                 seed = ik_res
-                
-                if i == N - 1 and config.DEBUG_IK_PROFILER:
-                    avg_ms = (total_ik_time / N) * 1000.0
-                    max_hz = 1000.0 / avg_ms if avg_ms > 0 else 0
-                    print(f"\n--- [SPLINE Profiler] ---")
-                    print(f"總採樣點數: {N} 點")
-                    print(f"平均 IK 耗時: {avg_ms:.3f} ms / 點")
-                    #print(f"極限串流能力: {max_hz:.0f} Hz")
-                    #print(f"-------------------------\n")
                 
                 yield list(ik_res)
 

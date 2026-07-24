@@ -1,6 +1,6 @@
 #include "Comms.h"
 #include "Globals.h"
-#include "Config.h"
+#include "TMC_RawSPI.h" 
 #include "MotionEngine.h" 
 #include <stdint.h>
 
@@ -65,52 +65,6 @@ void executeBinaryCommand() {
     }
 
     // ------------------------------------------
-    // Mode 4：急停 (E-STOP)
-    // ------------------------------------------
-    if (moveMode == 4) {
-        for(int i = 0; i < 6; i++) homingState[i] = 0;  
-        emergencyStopEngine(); 
-        
-        // 瞬間清空所有排隊中的點位！
-        pendingHead = 0;
-        pendingTail = 0;
-        pendingCount = 0; 
-        
-        normalMoveActive = false;
-        is_estop_latched = true; 
-        Serial.println("!!! E-STOP TRIGGERED & LATCHED !!!");
-        return;
-    }
-
-    // ------------------------------------------
-    // Mode 9：明確的人工解除急停復歸 (E-STOP RESET)
-    // ------------------------------------------
-    if (moveMode == 9) {
-        if (is_estop_latched) {
-            is_estop_latched = false;
-            Serial.println("SYS: E-STOP RESET SUCCESS. SYSTEM READY.");
-        } else {
-            Serial.println("SYS: SYSTEM ALREADY OPRATIONAL.");
-        }
-        return;
-    }
-
-    // 核心防禦：如果目前處於急停鎖存中，無條件彈回所有後續運動指令！
-    if (is_estop_latched) {
-        Serial.println("ERR: COMMAND REJECTED. SYSTEM LATCHED IN E-STOP!");
-        return;
-    }
-
-    // ------------------------------------------
-    // Mode 5：夾爪 (Gripper)
-    // ------------------------------------------
-    if (moveMode == 5) {
-        // ... 夾爪控制邏輯 ...
-        Serial.println("<EE_DONE>");
-        return;
-    }
-
-    // ------------------------------------------
     // Mode 3：歸零 (Homing)
     // ------------------------------------------
     if (moveMode == 3) {
@@ -141,6 +95,78 @@ void executeBinaryCommand() {
             Serial.println("OK");
         }
         return; 
+    }
+
+    // ------------------------------------------
+    // Mode 4：急停 (E-STOP)
+    // ------------------------------------------
+    if (moveMode == 4) {
+        for(int i = 0; i < 6; i++) homingState[i] = 0;  
+        emergencyStopEngine(); 
+        
+        // 瞬間清空所有排隊中的點位！
+        pendingHead = 0;
+        pendingTail = 0;
+        pendingCount = 0; 
+        
+        normalMoveActive = false;
+        is_estop_latched = true; 
+        Serial.println("!!! E-STOP TRIGGERED & LATCHED !!!");
+        return;
+    }
+
+    // ==========================================
+    // Mode 7: 暫停 (Pause) 
+    // ==========================================
+    if (moveMode == 7) {
+        is_paused = true;
+        Serial.println("SYS: PAUSE COMMAND RECEIVED. BRAKING...");
+        return;
+    }
+        
+    // ==========================================
+    // Mode 8: 繼續 (Resume)
+    // ==========================================
+    if (moveMode == 8) {
+        is_paused = false;
+        Serial.println("SYS: RESUME COMMAND RECEIVED. ACCELERATING...");
+        return;
+    }
+
+    // ------------------------------------------
+    // Mode 9：明確的人工解除急停復歸 (E-STOP RESET)
+    // ------------------------------------------
+    if (moveMode == 9) {
+        if (is_estop_latched) {
+            is_estop_latched = false;
+            Serial.println("SYS: E-STOP RESET SUCCESS. SYSTEM READY.");
+        } else {
+            Serial.println("SYS: SYSTEM ALREADY OPRATIONAL.");
+        }
+        return;
+    }
+
+    // ==========================================
+    // Mode 10: UI 主動請求溫度狀態
+    // ==========================================
+    if (moveMode == 10) {
+        reportSystemTemperatures();
+        return;
+    }
+
+    // 核心防禦：如果目前處於急停鎖存中，無條件彈回所有後續運動指令！
+    if (is_estop_latched) {
+        Serial.println("ERR: COMMAND REJECTED. SYSTEM LATCHED IN E-STOP!");
+        return;
+    }
+
+    // ------------------------------------------
+    // Mode 5：夾爪 (Gripper) - ⚠️ 原本在這裡！
+    // ------------------------------------------
+    if (moveMode == 5) {
+        // ... 夾爪控制邏輯 ...
+        Serial.println("<EE_DONE>");
+        return;
     }
         
     // ------------------------------------------
@@ -263,10 +289,33 @@ void executeBinaryCommand() {
 void receiveBinaryLoop() {
     // 1. 嘗試推送卡在排隊區的 Mode 1 點位 (能推多少推多少)
     while (pendingCount > 0) {
+        
+        // 實作「時間膨脹」煞車邏輯
+        if (is_paused) {
+            // 暫停狀態：快速放大倍率 (減速)
+            if (pause_multiplier < 5.0f) {
+                pause_multiplier += 0.5f; 
+            } else {
+                // 倍率達到 5.0 (速度剩下 20%)，直接卡死水管
+                // 不再拿出點位，保留剩下未執行的點位在 pendingBuf 內
+                break; 
+            }
+        } else {
+            // 恢復狀態：縮小倍率 (加速回原速)
+            if (pause_multiplier > 1.0f) {
+                pause_multiplier -= 0.5f;
+            } else {
+                pause_multiplier = 1.0f;
+            }
+        }
+
+        // 將原定執行時間乘上膨脹倍率
+        uint32_t current_interval = (uint32_t)(pendingBuf[pendingTail].interval * pause_multiplier);
+
         if (pushMotionPoint(pendingBuf[pendingTail].t[0], pendingBuf[pendingTail].t[1], 
                             pendingBuf[pendingTail].t[2], pendingBuf[pendingTail].t[3], 
                             pendingBuf[pendingTail].t[4], pendingBuf[pendingTail].t[5], 
-                            pendingBuf[pendingTail].interval)) {
+                            current_interval)) {
             
             pendingTail = (pendingTail + 1) % PENDING_BUF_SIZE;
             pendingCount--;
@@ -333,3 +382,4 @@ void receiveBinaryLoop() {
         }
     }
 }
+

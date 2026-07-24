@@ -5,10 +5,20 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 from PySide6.QtCore import QObject, Signal
 
+# ==========================================
+# 動態絕對路徑設定 (防止終端機啟動位置錯誤)
+# ==========================================
+# 取得目前這支 Python 檔案所在的「絕對資料夾路徑」
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 設定子資料夾名稱為 "config"
+CONFIG_DIR = os.path.join(BASE_DIR, "config")
+# 組合出絕對不會出錯的檔案路徑
+BASE_CONFIG_FILE = os.path.join(CONFIG_DIR, "base_config.json")
+
 class BaseManager(QObject):
     data_changed = Signal()
 
-    def __init__(self, filepath="base_config.json", parent=None):
+    def __init__(self, filepath=BASE_CONFIG_FILE, parent=None):
         super().__init__(parent)
         self.filepath = filepath
         self.current_index = 0
@@ -55,7 +65,7 @@ class BaseManager(QObject):
     def add_base(self, name, values, in_box=True):
         self.bases.append({
             "name": name,
-            "values": values,
+            "values": list(values), # 強制獨立拷貝
             "in_box": in_box,
             "is_locked": False
         })
@@ -67,10 +77,10 @@ class BaseManager(QObject):
         if 0 <= index < len(self.bases): 
             if index == 0:
                 # 絕對防護：如果是 Base 0，只能更新 XYZ/RxRyRz 數值，不能改名！
-                self.bases[index]["values"] = values 
+                self.bases[index]["values"] = list(values) 
             else:
                 self.bases[index]["name"] = name
-                self.bases[index]["values"] = values
+                self.bases[index]["values"] = list(values)
                 self.bases[index]["in_box"] = in_box
                 
             self.save_config()
@@ -86,15 +96,18 @@ class BaseManager(QObject):
 
     def save_config(self):
         try:
-            with open(self.filepath, 'w') as f:
-                json.dump(self.bases, f, indent=4)
+            # 關鍵防護：確保存檔前，子資料夾 "config" 絕對存在
+            os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
+            
+            with open(self.filepath, 'w', encoding='utf-8') as f:
+                json.dump(self.bases, f, indent=4, ensure_ascii=False)
         except Exception as e:
             print(f"Error saving Base config: {e}")
 
     def load_config(self):
         if os.path.exists(self.filepath):
             try:
-                with open(self.filepath, 'r') as f:
+                with open(self.filepath, 'r', encoding='utf-8') as f:
                     loaded_bases = json.load(f)
                     
                 # 確保第一個永遠是 World Base

@@ -72,6 +72,9 @@ void Init_MotionEngine(const uint8_t step_pins[6], const uint8_t dir_pins[6]);
 bool pushMotionPoint(long t1, long t2, long t3, long t4, long t5, long t6, uint32_t interval_us);
 int  getMotionBufferCount();
 bool isEngineMoving();
+// 診斷專用變數
+extern volatile uint32_t diag_smooth_count;
+extern volatile uint32_t diag_stop_count;
 
 // 高階控制 API
 void    emergencyStopEngine();
