@@ -9,7 +9,12 @@
 void setupTMC2240_RawSPI(uint8_t cs_pin, uint16_t run_mA, float hold_ratio, bool invert_dir = false);
 float readTMC2240Temp(uint8_t cs_pin);
 
+// 定義SPI 3 腳位
+#define TMC_MOSI PE14
+#define TMC_MISO PE13
+#define TMC_SCK  PE12
 
+// 定義每個軸的CS腳位
 #define X_CS_PIN  PE7
 #define Y_CS_PIN  PE15
 #define Z_CS_PIN  PD10

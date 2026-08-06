@@ -188,7 +188,7 @@ class BaseManagerDialog(QDialog):
             self.inputs[k].setText(f"{v:.3f}")
         self._is_loading = False
         
-        # 💡 動態保護：如果選到鎖定的 Base 0，不准刪除與改名，按鈕外觀也會變化
+        # 動態保護：如果選到鎖定的 Base 0，不准刪除與改名，按鈕外觀也會變化
         self.btn_del.setEnabled(not is_locked)
         self.btn_rename.setEnabled(not is_locked)
         self.btn_teach.setEnabled(not is_locked)

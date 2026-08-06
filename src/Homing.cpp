@@ -11,8 +11,7 @@ bool isAnyHoming() {
 float getAxisAccel(int axis, float rampRatio) {
     if (axis < 0 || axis >= 6) return 50000.0f;
     
-    // 絕妙修正：使用controlSpeed作為基準，算出「恆定且舒適」的加速度
-    // 不再隨目標速度亂飄，也不會被 20萬極速搞到變成火箭！
+    // 使用controlSpeed作為基準，算出「恆定且舒適」的加速度
     float ref_v = SPEED_CFG[axis].controlSpeed;
     float ramp = (float)HOMING_CFG[axis].rampSteps * rampRatio;        
     if (ramp <= 0.0f) return 50000.0f;                  
@@ -42,10 +41,16 @@ void updateHomingLogic() {
     const long J6_PREP_STEPS = -16000; 
     static unsigned long j6DelayStartTime = 0; 
     
+    // ==================================================
+    // 【新增】：J4 交接給 J6 的避震喘息計時變數
+    // ==================================================
+    static unsigned long j4DoneTime = 0;
+    static bool waitingToStartJ6 = false;
+
     for (int i = 0; i < 6; i++) {
         
         // ==================================================
-        // 🛑 【緩起硬停】狀態 1：第一段快速尋找開關 (碰到馬上停)
+        // 【緩起硬停】狀態 1：第一段快速尋找開關 (碰到馬上停)
         // ==================================================
         if (homingState[i] == 1 && JOINT_PINS[i].limitPin != 0) {
             if (digitalRead(JOINT_PINS[i].limitPin) == LIMIT_ACTIVE_STATE[i]) {
@@ -58,7 +63,7 @@ void updateHomingLogic() {
         }
         
         // ==================================================
-        // 🟢 【緩起緩停】狀態 2：離開開關的短距離反彈
+        // 【緩起緩停】狀態 2：離開開關的短距離反彈
         // ==================================================
         else if (homingState[i] == 2) {
             if (!isAxisMoving(i)) {
@@ -81,7 +86,7 @@ void updateHomingLogic() {
         }
         
         // ==================================================
-        // 🛑 【緩起硬停】狀態 12：準備進行第二段慢速尋找
+        // 【緩起硬停】狀態 12：準備進行第二段慢速尋找
         // ==================================================
         else if (homingState[i] == 12) {
             if (!isAxisMoving(i)) {
@@ -103,7 +108,7 @@ void updateHomingLogic() {
         }
         
         // ==================================================
-        // 🛑 【緩起硬停】狀態 13：第二段慢速尋找開關 (碰到馬上停)
+        // 【緩起硬停】狀態 13：第二段慢速尋找開關 (碰到馬上停)
         // ==================================================
         else if (homingState[i] == 13) {
             if (digitalRead(JOINT_PINS[i].limitPin) == LIMIT_ACTIVE_STATE[i]) {
@@ -116,7 +121,7 @@ void updateHomingLogic() {
         }
         
         // ==================================================
-        // 🟢 【緩起緩停】狀態 14：走到各自的 Home Offset 偏移值
+        // 【緩起緩停】狀態 14：走到各自的 Home Offset 偏移值
         // ==================================================
         else if (homingState[i] == 14) {
             if (!isAxisMoving(i)) {
@@ -142,7 +147,7 @@ void updateHomingLogic() {
                     if (i == 3) offsetSpeedSec = abs(HOMING_CFG[i].homingSpeed) * 1.5f;
                     long offsetSteps = HOMING_CFG[i].homingPos; 
                     
-                    //  J1~J4 在走 Offset 時改成 1.5f 讓動作放緩)
+                    // J1~J4 在走 Offset 時改成 1.5f 讓動作放緩
                     moveToRelative(i, offsetSteps, offsetSpeedSec, 1.5f); 
                     homingState[i] = 3; 
                 }
@@ -150,7 +155,7 @@ void updateHomingLogic() {
         }
         
         // ==================================================
-        // 🛑 【緩起硬停】狀態 3：群組等待與觸發後續軸
+        // 【緩起硬停】狀態 3：群組等待與觸發後續軸
         // ==================================================
         else if (homingState[i] == 3) {
             if (!isAxisMoving(i)) {
@@ -175,10 +180,13 @@ void updateHomingLogic() {
                         }
                     }
                 }
+                
+                // 【重點修改區】：J4 歸零完成，交接給 J6
                 if (i == 3 && homingState[5] == 10) {
-                    homingState[5] = 1;
-                    float speedSec = abs(HOMING_CFG[5].homingSpeed);
-                    jogAxis(5, (HOMING_CFG[5].homingSpeed > 0) ? 1 : -1, speedSec, getAxisAccel(5), true);
+                    j4DoneTime = millis();
+                    waitingToStartJ6 = true;
+                    // 將 J6 推入過渡等待狀態 11，防止重複啟動與在同個迴圈內讀取極限開關
+                    homingState[5] = 11; 
                 }
             }
         }
@@ -194,22 +202,25 @@ void updateHomingLogic() {
         }
         
         // ==================================================
-        // 🟢 【緩起緩停】狀態 6 & 15：J5/J6 補償聯動
+        // 【緩起緩停】狀態 6 & 15：J5/J6 補償聯動
         // ==================================================
         else if (homingState[i] == 6 && i == 4) {
-            if (homingState[5] == 5) {
+            // 【安全優化】：如果 J6 在等待 (State 5) 才連動；若無參與歸零 (State 0)，則直接放行
+            if (homingState[5] == 5 || homingState[5] == 0) {
                 float speedSec = abs(HOMING_CFG[4].homingSpeed) * 1.5f;
                 long offsetJ5 = HOMING_CFG[4].homingPos;
-                // 執行 J5 的 Offset 運動
                 moveToRelative(4, offsetJ5, speedSec, 1.0f);
                 homingState[4] = 3; 
-                homingState[5] = 15; 
-                j6DelayStartTime = millis(); 
+                
+                if (homingState[5] == 5) {
+                    homingState[5] = 15; 
+                    j6DelayStartTime = millis(); 
+                }
             }
         }
         else if (homingState[i] == 15 && i == 5) {
-            // 等待 J5 先行動 500 毫秒
-            if (millis() - j6DelayStartTime >= 500) { 
+            // 等待 J5 先行動 200 毫秒
+            if (millis() - j6DelayStartTime >= 200) { 
                 float speedSec = abs(HOMING_CFG[5].homingSpeed)* 1.5f;
                 long offsetJ6 = HOMING_CFG[5].homingPos - J6_PREP_STEPS;
                 // 明確加入 1.0f，確保 J6 最終補償步數時會平滑煞車
@@ -217,6 +228,16 @@ void updateHomingLogic() {
                 homingState[5] = 3; 
             }
         }
+    }
+
+    // ==================================================
+    // 【延遲啟動處理區】：脫離 `for` 迴圈陷阱，安全啟動 J6
+    // ==================================================
+    if (waitingToStartJ6 && (millis() - j4DoneTime >= 100)) { 
+        waitingToStartJ6 = false;
+        homingState[5] = 1; // 100ms 雜訊與震波消散後，正式推回尋歸狀態 1
+        float speedSec = abs(HOMING_CFG[5].homingSpeed);
+        jogAxis(5, (HOMING_CFG[5].homingSpeed > 0) ? 1 : -1, speedSec, getAxisAccel(5), true);
     }
 
     static bool wasHoming = false;

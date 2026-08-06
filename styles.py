@@ -30,14 +30,6 @@ BLOCK_STYLE = """
     QLabel { color: #ffffff; }
     QLabel#JointLabel { color: #aaa; }
     QTextEdit { background-color: transparent; color: #d4d4d4; border: none; }
-    
-    /* 預設 Joint 滑桿樣式 */
-    QSlider::groove:horizontal { border: 1px solid #444; height: 8px; background: #222; margin: 2px 0; border-radius: 4px; }
-    QSlider::handle:horizontal { background: #555; border: 1px solid #777; width: 12px; height: 12px; margin: -3px 0; border-radius: 6px; }
-    
-    /* 預設小按鈕 (如◀, ▶) */
-    QPushButton { background-color: #444; color: white; border: none; border-radius: 3px; }
-    QPushButton:hover { background-color: #555; }
 """
 
 NAVBAR_STYLE = """
@@ -94,9 +86,6 @@ SPIN_STEP_STYLE = """
 EDITABLE_LABEL_MODE_STYLE = """
     QLineEdit { background: transparent; color: #E0E0E0; border: none; padding: 0px; }
 """
-# ==========================================
-# 編輯模式專用樣式 (去藍框版)
-# ==========================================
 EDITABLE_EDITOR_MODE_STYLE = """
     QLineEdit {
         background-color: #2b2b2b; 
@@ -104,7 +93,7 @@ EDITABLE_EDITOR_MODE_STYLE = """
         border: none;       
         border-radius: 3px; 
         
-        /* 👇 關鍵黑魔法：上/右/下/左 
+        /* 關鍵：上/右/下/左 
            我們在底部 (Bottom) 強制墊上 1px 或 2px 的厚度，直接把文字往上頂！
            (你可以根據實際畫面在 1px~2px 之間微調，直到完全不跳動為止) */
         padding: 0px 0px 1px 0px; 
@@ -126,7 +115,7 @@ TCP_EDITOR_STYLE = """
         padding: 0px 2px;
         font-family: 'Segoe UI';
     }
-    /* 👇 關鍵魔法：當取得焦點(編輯中)時，維持原本的暗色邊框，殺死藍色高亮 */
+    /* 當取得焦點(編輯中)時，維持原本的暗色邊框 */
     QLineEdit:focus {
         border: 1px solid #555; 
         background-color: #2b2b2b; /* 編輯時背景稍微提亮一點點，增加層次感 */
@@ -148,9 +137,6 @@ BTN_GHOST_COPY_STYLE = """
 """
 
 # ==========================================
-# Jog 區專用控制樣式
-# ==========================================
-# ==========================================
 # 關節 Slider 區專用樣式
 # ==========================================
 BTN_JOG_SLIDER_STYLE = """
@@ -171,7 +157,7 @@ BTN_JOG_SLIDER_STYLE = """
 
 SLIDER_JOINT_STYLE = """
     QSlider { 
-        min-height: 22px; /* 👈 強制與旁邊的微動按鈕 (22x22) 等高，嚴防排版擠壓 */
+        min-height: 22px; /* 強制與旁邊的微動按鈕 (22x22) 等高，嚴防排版擠壓 */
         max-height: 22px;
     }
     
@@ -187,15 +173,7 @@ SLIDER_JOINT_STYLE = """
         border: 1px solid #333; 
         width: 12px;  /* 內部寬度 12 */
         height: 12px; /* 內部高度 12 */
-        
-        /* 💡 終極置中數學：
-           總高度 = 12 + 1(上邊框) + 1(下邊框) = 14px
-           軌道高度 = 4px
-           上下需要往外推 = (14 - 4) / 2 = 5px
-        */
         margin: -5px 0px;   
-        
-        /* 💡 完美正圓數學：總尺寸 14px 的一半就是 7px */
         border-radius: 7px; 
     }
     
@@ -245,8 +223,6 @@ SLIDER_GRIPPER_STYLE = """
         border: 1px solid #333; 
         width: 10px;  /* 寬度稍微窄一點 */
         height: 16px; /* 高度拉長，呈現矩形 */
-        
-        /* 置中數學：總高 18 (16+上下邊框) - 軌道 4 = 14，14 / 2 = 7px */
         margin: -7px 0px;   
         
         border-radius: 3px; /* 微小的圓角，保留矩形的俐落感 */
@@ -384,7 +360,7 @@ WAYPOINT_ROW_BTN_STYLE = """
     QPushButton:hover { background-color: #4a4a4a; border-radius: 4px; }
 """
 
-# 2. 路徑清單 - 區隔 Hover 與 Selected (純暗灰系)
+# 2. 路徑清單 - 區隔 Hover 與 Selected
 PATH_LIST_STYLE = """
     QListWidget { 
         background-color: transparent; 
@@ -397,7 +373,7 @@ PATH_LIST_STYLE = """
         border: none;  
         padding: 2px 0px; 
     }
-    /* 選中時：稍微提亮的暗灰底色 + 內斂的邊框，取代原本刺眼的藍色 */
+    /* 選中時：稍微提亮的暗灰底色 + 內斂的邊框 */
     QListWidget::item:selected { 
         background-color: #3a3d41; 
         border: 1px solid #555555;
@@ -414,6 +390,8 @@ PATH_LIST_STYLE = """
 WAYPOINT_FONT_BASE = "font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; background-color: transparent;"
 
 # 4. 分頁標籤 (Editor Tab) 樣式
+TAB_TITLE_STYLE = "background-color: transparent; border: none; font-family: 'Segoe UI', sans-serif; font-size: 13px;"
+
 EDITOR_TAB_ACTIVE_STYLE = """
     EditorTab {
         background-color: #161616;
@@ -432,7 +410,16 @@ EDITOR_TAB_INACTIVE_STYLE = """
     QLabel { color: #888888; background-color: transparent; border: none; }
 """
 
-# 5. 面板與 Tab Bar 背景樣式
+TAB_CLOSE_BTN_STYLE = """
+    QPushButton { border: none; background: transparent; border-radius: 4px; } 
+    QPushButton:hover { background-color: #555555; }
+"""
+
+TAB_NEW_BTN_STYLE = """
+    QPushButton { border: none; background: transparent; border-radius: 4px; }
+    QPushButton:hover { background-color: #3a3d41; }
+"""
+
 WAYPOINT_PANEL_BG_STYLE = "WaypointPanel { background-color: #161616; border-radius: 6px; }"
 
 TAB_BAR_FRAME_STYLE = """
@@ -442,6 +429,12 @@ TAB_BAR_FRAME_STYLE = """
         border-top-right-radius: 6px;
     }
 """
+
+WARNING_BTN_STYLE = """
+    QPushButton { background-color: #b37700; border: 1px solid #d99000; color: #ffffff; } 
+    QPushButton:hover { background-color: #cc8800; }
+"""
+
 # 3. 日誌控制台 (QTextEdit) 完美去背懸浮樣式
 LOG_CONSOLE_STYLE = """
     QTextEdit { 
@@ -530,29 +523,6 @@ PREFERENCES_DIALOG_STYLE = """
     }
     QPushButton#btn_apply:hover { 
         background-color: #054b7c; 
-    }
-"""
-# ==========================================
-# 輸入框樣式 (Line Edit)
-# ==========================================
-LINE_EDIT_STYLE = """
-    QLineEdit {
-        background-color: #2b2b2b;
-        color: #ffffff;
-        border: 1px solid #454545;
-        border-radius: 4px;
-        padding: 4px 8px;
-        font-family: 'Segoe UI';
-        font-size: 13px;
-    }
-    QLineEdit:focus {
-        border: 1px solid #00e6b8;  /* 取得焦點時顯示亮綠色邊框 */
-        background-color: #333333;
-    }
-    QLineEdit:read-only {
-        background-color: #1e1e1e;
-        color: #777777;
-        border: 1px solid #333333;
     }
 """
 

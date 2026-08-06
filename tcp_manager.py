@@ -12,7 +12,6 @@ from PySide6.QtCore import QObject, Signal
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # 設定子資料夾名稱為 "config"
 CONFIG_DIR = os.path.join(BASE_DIR, "config")
-# 組合出絕對不會出錯的檔案路徑
 TCP_CONFIG_FILE = os.path.join(CONFIG_DIR, "tcp_config.json")
 
 class TCPManager(QObject):

@@ -128,7 +128,7 @@ class TCPManagerDialog(QDialog):
         if current_idx < 0: 
             current_idx = 0
 
-        # 💡 阻斷訊號：在填入資料時，不要觸發 currentRowChanged
+        # 阻斷訊號：在填入資料時，不要觸發 currentRowChanged
         self.list_widget.blockSignals(True)
         self.list_widget.clear()
         

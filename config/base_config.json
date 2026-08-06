@@ -22,7 +22,7 @@
             0.0,
             0.0
         ],
-        "in_box": false,
+        "in_box": true,
         "is_locked": false
     },
     {
@@ -33,7 +33,7 @@
             0.0,
             0.0,
             0.0,
-            -135.0
+            -30.0
         ],
         "in_box": true,
         "is_locked": false

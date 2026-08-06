@@ -1,11 +1,5 @@
 #include "TMC_RawSPI.h"
 #include "MotionEngine.h" 
-// ==========================================
-// 定義 S6 專屬的馬達 SPI 腳位
-// ==========================================
-#define TMC_MOSI PE14
-#define TMC_MISO PE13
-#define TMC_SCK  PE12
 
 // 軟體 SPI 初始化旗標
 static bool spi_initialized = false;

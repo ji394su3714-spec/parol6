@@ -4,7 +4,7 @@
 #include <Arduino.h>
 
 // ==========================================
-// 引擎專屬鎖 (精密手術刀)
+// 引擎專屬鎖
 // ==========================================
 static inline void LockMotionEngine() {
     NVIC_DisableIRQ(TIM7_IRQn);
@@ -52,7 +52,7 @@ struct AxisState {
 };
 
 // ==========================================
-// 2. 全域變數宣告 (提供給外部檔案如 Comms.cpp 連結)
+// 2. 全域變數宣告
 // ==========================================
 extern volatile AxisState axes[6];
 extern volatile BufPoint  motion_buf[MOTION_BUF_SIZE];
@@ -72,9 +72,6 @@ void Init_MotionEngine(const uint8_t step_pins[6], const uint8_t dir_pins[6]);
 bool pushMotionPoint(long t1, long t2, long t3, long t4, long t5, long t6, uint32_t interval_us);
 int  getMotionBufferCount();
 bool isEngineMoving();
-// 診斷專用變數
-extern volatile uint32_t diag_smooth_count;
-extern volatile uint32_t diag_stop_count;
 
 // 高階控制 API
 void    emergencyStopEngine();
@@ -85,5 +82,6 @@ void    setAxisPosition(int axis, int32_t pos);
 void stopAxisInstant(int axis); 
 void jogAxis(int axis, int dir, float speedStepsPerSec, float accelStepsPerSec2, bool ignoreLimits);
 void moveAxisIndependent(int axis, long relativeSteps, float speedStepsPerSec, float accelStepsPerSec2);
+void updateAbsoluteTargets(long targets[6], float speedFactor);
 
 #endif

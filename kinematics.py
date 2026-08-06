@@ -849,14 +849,10 @@ class TrajectoryMathEngine:
     @staticmethod
     def calculate_spline_trajectory(start_joints, spline_waypoints, interval=0.010, min_step_mm=0.0):
         """終極完全體：笛卡爾 XYZ 五次樣條 + SO(3) 週期邊界旋轉樣條 (絕對恆速 + 控制器濾波版)"""
-        from scipy.spatial.transform import Rotation as R, RotationSpline
-        from scipy.interpolate import make_interp_spline
-        import time
 
         # ==========================================
         # [控制台參數區] 供你手動隨時切換
-        # ==========================================
-        ENABLE_DEBUG_PRINT = True
+        ENABLE_DEBUG_PRINT = False
         MIN_STEP_MM = min_step_mm  
         # ==========================================
 
@@ -901,8 +897,7 @@ class TrajectoryMathEngine:
             if dist_to_last >= MIN_STEP_MM:
                 filtered_poses.append(curr)
             elif is_last:
-                # 完美收尾邏輯：如果最後一點離上一點太近，我們直接用終點覆蓋上一個點。
-                # 這樣既殺死了末端微線段，又保證了軌跡 100% 精準到達 / 完美閉合！
+                # 完美收尾邏輯：如果最後一點離上一點太近，直接用終點覆蓋上一個點。
                 if len(filtered_poses) > 1:
                     filtered_poses[-1] = curr
                 else:
@@ -910,9 +905,11 @@ class TrajectoryMathEngine:
 
         # 3. 計算空間距離與動力學時間 (Chordal Time Parameterization)
         t_arr = [0.0]
+        u_arr = [0.0]  # 新增：純幾何參數 (確保軌跡絕對不變形)
         xyz_pts = [filtered_poses[0]['pos']]
         rot_matrices = [filtered_poses[0]['rot']]
         current_t = 0.0
+        current_u = 0.0
         
         if ENABLE_DEBUG_PRINT:
             print(f"\n--- [恆速驗證：控制器端濾波啟動 | 濾波門檻 {MIN_STEP_MM}mm | 共 {len(filtered_poses)} 點] ---")
@@ -932,13 +929,13 @@ class TrajectoryMathEngine:
                 continue
             
             v_lin = config.MAX_LIN_SPEED * speed_factor if config.MAX_LIN_SPEED > 0 else 1e-6
-            v_rot = config.MAX_ROT_SPEED * speed_factor if config.MAX_ROT_SPEED > 0 else 1e-6
             
-            # 絕對恆速核心
-            if dist_mm > 1e-4:
-                dt = dist_mm / v_lin
-            else:
-                dt = dist_deg / v_rot
+            # 永遠使用系統設定的最大角速度 (MAX_ROT_SPEED)，確保轉角時能瞬間完成姿態切換，避免原地過度停留。
+            v_rot = config.MAX_ROT_SPEED if config.MAX_ROT_SPEED > 0 else 1e-6
+            
+            dt_lin = dist_mm / v_lin if dist_mm > 1e-6 else 0.0
+            dt_rot = dist_deg / v_rot if dist_deg > 1e-6 else 0.0
+            dt = max(dt_lin, dt_rot)
             
             if dt < 1e-5: 
                 dt = 1e-5
@@ -950,6 +947,12 @@ class TrajectoryMathEngine:
                 
             current_t += dt
             t_arr.append(current_t)
+            
+            # 幾何參數：保證絕對單調遞增，將曲線死死釘在空間中！
+            du = max(dist_mm, 1e-3) + dist_deg * 0.1
+            current_u += du
+            u_arr.append(current_u)
+            
             xyz_pts.append(curr_pos)
             rot_matrices.append(curr_rot)
 
@@ -957,109 +960,68 @@ class TrajectoryMathEngine:
             print("-------------------------------------------\n")
 
         t_arr = np.array(t_arr)
+        u_arr = np.array(u_arr)
         xyz_pts = np.array(xyz_pts)
         rot_matrices = np.array(rot_matrices)
         num_points = len(t_arr)
 
-        k = 5 if num_points > 5 else num_points - 1
+        k = 3 if num_points > 3 else num_points - 1
         if k < 1: k = 1
 
         is_closed = False
-        if num_points > 5:
+        if num_points >= 4:
             dist_close = np.linalg.norm(xyz_pts[0] - xyz_pts[-1])
             rot_close = R.from_matrix(rot_matrices[0].T @ rot_matrices[-1]).magnitude()
-            if dist_close < 1e-3 and rot_close < 1e-2:
-                is_closed = True
-
-        is_closed = False
-        if num_points > 5:
-            dist_close = np.linalg.norm(xyz_pts[0] - xyz_pts[-1])
-            rot_close = R.from_matrix(rot_matrices[0].T @ rot_matrices[-1]).magnitude()
-            if dist_close < 1e-3 and rot_close < 1e-2:
+            if dist_close < 2e-4 and rot_close < 1e-2:
                 is_closed = True
 
         if is_closed:
-            # 👑 原始的封閉迴圈：週期邊界幽靈點 (Cyclic Padding)
-            pad = min(5, num_points - 2) 
+            pad = min(3, num_points - 2) 
             
-            head_t, head_xyz, head_rot = [], [], []
-            curr_t_head = t_arr[0]
+            head_u, head_xyz, head_rot = [], [], []
+            curr_u_head = u_arr[0]
             for i in range(1, pad + 1):
                 idx = -1 - i  
-                dt_step = t_arr[idx + 1] - t_arr[idx]
-                curr_t_head -= dt_step
-                head_t.insert(0, curr_t_head)
+                du_step = u_arr[idx + 1] - u_arr[idx]
+                curr_u_head -= du_step
+                head_u.insert(0, curr_u_head)
                 head_xyz.insert(0, xyz_pts[idx])
                 head_rot.insert(0, rot_matrices[idx])
                 
-            tail_t, tail_xyz, tail_rot = [], [], []
-            curr_t_tail = t_arr[-1]
+            tail_u, tail_xyz, tail_rot = [], [], []
+            curr_u_tail = u_arr[-1]
             for i in range(1, pad + 1):
                 idx = i  
-                dt_step = t_arr[idx] - t_arr[idx - 1]
-                curr_t_tail += dt_step
-                tail_t.append(curr_t_tail)
+                du_step = u_arr[idx] - u_arr[idx - 1]
+                curr_u_tail += du_step
+                tail_u.append(curr_u_tail)
                 tail_xyz.append(xyz_pts[idx])
                 tail_rot.append(rot_matrices[idx])
                 
-            ext_t = np.concatenate((head_t, t_arr, tail_t))
+            ext_u = np.concatenate((head_u, u_arr, tail_u))
             ext_xyz = np.concatenate((head_xyz, xyz_pts, tail_xyz))
             ext_rot = np.concatenate((head_rot, rot_matrices, tail_rot))
             
-            spline_xyz = make_interp_spline(ext_t, ext_xyz, k=k)
-            spline_rot = RotationSpline(ext_t, R.from_matrix(ext_rot))
+            # 樣條曲線改吃純幾何參數 (ext_u)，完全免疫物理時間的膨脹！
+            spline_xyz = make_interp_spline(ext_u, ext_xyz, k=k)
+            spline_rot = RotationSpline(ext_u, R.from_matrix(ext_rot))
             
         else:
-            # 開放曲線/過切軌跡的「切線延伸幽靈點」(Tangent Padding)
-            # 徹底消滅 5 次樣條在開放邊界的 Runge 甩尾過衝現象！
-            pad = min(4, num_points - 2)
-            
-            head_t, head_xyz, head_rot = [], [], []
-            if pad > 0 and len(t_arr) >= 2:
-                dt_head = max(1e-5, t_arr[1] - t_arr[0])
-                v_head = xyz_pts[1] - xyz_pts[0]
-                # 計算起始角速度 (使用相對旋轉向量)
-                rot_diff_head = R.from_matrix(rot_matrices[0].T @ rot_matrices[1]).as_rotvec()
-                
-                for i in range(1, pad + 1):
-                    head_t.insert(0, t_arr[0] - i * dt_head)
-                    head_xyz.insert(0, xyz_pts[0] - i * v_head)
-                    # 姿態反向線性延伸
-                    r_ext = R.from_rotvec(-i * rot_diff_head)
-                    head_rot.insert(0, (R.from_matrix(rot_matrices[0]) * r_ext).as_matrix())
-                    
-            tail_t, tail_xyz, tail_rot = [], [], []
-            if pad > 0 and len(t_arr) >= 2:
-                dt_tail = max(1e-5, t_arr[-1] - t_arr[-2])
-                v_tail = xyz_pts[-1] - xyz_pts[-2]
-                # 計算終點角速度
-                rot_diff_tail = R.from_matrix(rot_matrices[-2].T @ rot_matrices[-1]).as_rotvec()
-                
-                for i in range(1, pad + 1):
-                    tail_t.append(t_arr[-1] + i * dt_tail)
-                    tail_xyz.append(xyz_pts[-1] + i * v_tail)
-                    # 姿態正向線性延伸
-                    r_ext = R.from_rotvec(i * rot_diff_tail)
-                    tail_rot.append((R.from_matrix(rot_matrices[-1]) * r_ext).as_matrix())
-
-            if pad > 0:
-                ext_t = np.concatenate((head_t, t_arr, tail_t))
-                ext_xyz = np.concatenate((head_xyz, xyz_pts, tail_xyz))
-                ext_rot = np.concatenate((head_rot, rot_matrices, tail_rot))
-                
-                spline_xyz = make_interp_spline(ext_t, ext_xyz, k=k)
-                spline_rot = RotationSpline(ext_t, R.from_matrix(ext_rot))
-            else:
-                spline_xyz = make_interp_spline(t_arr, xyz_pts, k=k)
-                spline_rot = RotationSpline(t_arr, R.from_matrix(rot_matrices))
+            # 樣條曲線改吃純幾何參數 (u_arr)
+            spline_xyz = make_interp_spline(u_arr, xyz_pts, k=k)
+            spline_rot = RotationSpline(u_arr, R.from_matrix(rot_matrices))
 
         t_steps = np.arange(interval, t_arr[-1], interval)
         if len(t_steps) == 0 or t_steps[-1] < t_arr[-1]:
             t_steps = np.append(t_steps, t_arr[-1])
 
+        # 最終神技：時間映射 (Time to Geometry Parameter Mapping)
+        # 用插值法確保機器人嚴格按照分配的物理時間 (t) 在這條鐵軌 (u) 上前進
+        u_steps = np.interp(t_steps, t_arr, u_arr)
+
         N = len(t_steps)
-        sampled_xyz = spline_xyz(t_steps)
-        sampled_rot = spline_rot(t_steps).as_matrix()
+        sampled_xyz = spline_xyz(u_steps)
+        sampled_rot = spline_rot(u_steps).as_matrix()
 
         def spline_generator():
             seed = start_joints
@@ -1072,7 +1034,6 @@ class TrajectoryMathEngine:
                 return unwrapped
 
             total_ik_time = 0.0
-
             for i in range(N):
                 T_target_tcp = np.eye(4)
                 T_target_tcp[:3, :3] = sampled_rot[i]

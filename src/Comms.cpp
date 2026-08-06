@@ -22,9 +22,9 @@ uint8_t rxBuffer[sizeof(MotionPacket)];
 int rxIndex = 0;
 
 // ==========================================
-// 環狀暫存佇列 (取代單一 pendingMode1)
+// 環狀暫存佇列
 // ==========================================
-const int PENDING_BUF_SIZE = 10;
+const int PENDING_BUF_SIZE = 50;
 struct PendingPoint {
     long     t[6];
     uint32_t interval;
@@ -83,8 +83,7 @@ void executeBinaryCommand() {
                     else {
                         homingState[i] = 1; 
                         long homingSpdSec = abs(HOMING_CFG[i].homingSpeed);
-                        // 尋點第一下，套用 0.2f 的柔和緩啟動加速度！
-                        jogAxis(i, (HOMING_CFG[i].homingSpeed > 0) ? 1 : -1, (float)homingSpdSec, getAxisAccel(i, 0.2f), true); 
+                        jogAxis(i, (HOMING_CFG[i].homingSpeed > 0) ? 1 : -1, (float)homingSpdSec, getAxisAccel(i, 0.5f), true); 
                         homingTriggered = true;
                     }
                 } 
@@ -98,75 +97,97 @@ void executeBinaryCommand() {
     }
 
     // ------------------------------------------
-    // Mode 4：急停 (E-STOP)
+    // Mode 4：智慧停止 (E-STOP or Program Abort)
     // ------------------------------------------
     if (moveMode == 4) {
-        for(int i = 0; i < 6; i++) homingState[i] = 0;  
-        emergencyStopEngine(); 
-        
-        // 瞬間清空所有排隊中的點位！
-        pendingHead = 0;
-        pendingTail = 0;
-        pendingCount = 0; 
-        
-        normalMoveActive = false;
-        is_estop_latched = true; 
-        Serial.println("!!! E-STOP TRIGGERED & LATCHED !!!");
-        return;
-    }
-
-    // ==========================================
-    // Mode 7: 暫停 (Pause) 
-    // ==========================================
-    if (moveMode == 7) {
-        is_paused = true;
-        Serial.println("SYS: PAUSE COMMAND RECEIVED. BRAKING...");
-        return;
-    }
-        
-    // ==========================================
-    // Mode 8: 繼續 (Resume)
-    // ==========================================
-    if (moveMode == 8) {
-        is_paused = false;
-        Serial.println("SYS: RESUME COMMAND RECEIVED. ACCELERATING...");
-        return;
-    }
-
-    // ------------------------------------------
-    // Mode 9：明確的人工解除急停復歸 (E-STOP RESET)
-    // ------------------------------------------
-    if (moveMode == 9) {
-        if (is_estop_latched) {
-            is_estop_latched = false;
-            Serial.println("SYS: E-STOP RESET SUCCESS. SYSTEM READY.");
+        if (is_paused || (pendingCount == 0 && !normalMoveActive)) {
+            // 軟取消 (Abort)：不觸發硬體鎖死，保留歸零狀態
+            pendingHead = 0;
+            pendingTail = 0;
+            pendingCount = 0;
+            is_paused = false;      
+            normalMoveActive = false;
+            
+            Serial.println("ABORTED"); 
         } else {
-            Serial.println("SYS: SYSTEM ALREADY OPRATIONAL.");
+            // 硬急停 (Hard E-Stop)
+            for(int i = 0; i < 6; i++) homingState[i] = 0;  
+            emergencyStopEngine();                          
+            
+            pendingHead = 0;
+            pendingTail = 0;
+            pendingCount = 0; 
+            normalMoveActive = false;
+            is_estop_latched = true; 
+            
+            Serial.println("LATCHED"); // 對應 Python 攔截關鍵字
         }
         return;
     }
 
-    // ==========================================
+    // Mode 7: 暫停 (Pause) 
+    if (moveMode == 7) {
+        is_paused = true;
+        return;
+    }
+        
+    // Mode 8: 繼續 (Resume)
+    if (moveMode == 8) {
+        is_paused = false;
+        return;
+    }
+
+    // ------------------------------------------
+    // Mode 9：解除急停復歸 (E-STOP RESET)
+    // ------------------------------------------
+    if (moveMode == 9) {
+        if (is_estop_latched) {
+            is_estop_latched = false;
+            
+            // 強制將歸零狀態機「重置為閒置 (0)」
+            // 這樣 isAnyHoming() 才會回傳 false，正式解開全系統的運動封印！
+            for(int i = 0; i < 6; i++) {
+                homingState[i] = 0; 
+            }
+
+            Serial.println("RESET SUCCESS"); // 對應 Python 攔截關鍵字
+        }
+        return;
+    }
+
     // Mode 10: UI 主動請求溫度狀態
-    // ==========================================
     if (moveMode == 10) {
         reportSystemTemperatures();
         return;
     }
 
-    // 核心防禦：如果目前處於急停鎖存中，無條件彈回所有後續運動指令！
+    // 核心防禦：如果處於急停鎖存中，拒絕所有運動指令
     if (is_estop_latched) {
-        Serial.println("ERR: COMMAND REJECTED. SYSTEM LATCHED IN E-STOP!");
+        Serial.println("ERR: LATCHED");
         return;
     }
 
     // ------------------------------------------
-    // Mode 5：夾爪 (Gripper) - ⚠️ 原本在這裡！
+    // Mode 5：夾爪 (Gripper)
     // ------------------------------------------
     if (moveMode == 5) {
         // ... 夾爪控制邏輯 ...
         Serial.println("<EE_DONE>");
         return;
+    }
+    
+    // ------------------------------------------
+    // Mode 6：UI 主動請求真實物理座標 (步數)
+    // ------------------------------------------
+    if (moveMode == 6) {
+        Serial.print("[POS] ");
+        for (int i = 0; i < 6; i++) {
+            // 呼叫 MotionEngine 提供的 API 取得各軸當前的真實步數
+            Serial.print(getAxisPosition(i)); 
+            if (i < 5) Serial.print(",");
+        }
+        Serial.println();
+        return; 
     }
         
     // ------------------------------------------
@@ -174,13 +195,10 @@ void executeBinaryCommand() {
     // ------------------------------------------
     if (!isAnyHoming()) {
         
-        // ==========================================
         // Mode 1: PVT 串流
-        // ==========================================
         if (moveMode == 1) {
-            // 防線 1：如果發生緩衝區溢位，軌跡已損毀，直接觸發急停！
             if (pendingCount >= PENDING_BUF_SIZE) {
-                Serial.println("ERR: PENDING BUF OVERFLOW! LATCHING E-STOP!");
+                Serial.println("ERR: OVERFLOW");
                 emergencyStopEngine();
                 is_estop_latched = true;
                 pendingHead = 0; pendingTail = 0; pendingCount = 0;
@@ -190,79 +208,38 @@ void executeBinaryCommand() {
             for(int i = 0; i < 6; i++) {
                 long target_val = (targets[i] != 999999) ? targets[i] : getAxisPosition(i);
                 
-                // 防線 2：PVT 點位入列前的「絕對軟限位檢查」！
                 if (JOINT_PINS[i].limitPin != 0) {
                     if (target_val > AXIS_MAX_LIMIT[i] || target_val < AXIS_MIN_LIMIT[i]) {
-                        Serial.println("ERR: OUT OF BOUNDS! LATCHING E-STOP!");
+                        Serial.println("ERR: BOUNDS");
                         emergencyStopEngine();
                         is_estop_latched = true;
                         pendingHead = 0; pendingTail = 0; pendingCount = 0;
-                        return; // 拒絕收錄這個點，並全系統鎖死
+                        return;
                     }
                 }
                 pendingBuf[pendingHead].t[i] = target_val; 
             }
             
             pendingBuf[pendingHead].interval = 10000; 
-            
             pendingHead = (pendingHead + 1) % PENDING_BUF_SIZE;
             pendingCount++;
             return; 
         }
         
-        // ==========================================
-        // Mode 0：手動 / 點動模式 (PTP)
-        // ==========================================
+        // ------------------------------------------
+        // Mode 0：獨立絕對座標追蹤 (UI 滑桿專用)
+        // ------------------------------------------
         else if (moveMode == 0) {
             float speedFactor = (param7 <= 0.0) ? 1.0 : param7;
-            long t[6];
-            long delta[6];
-            float maxTime = 0.0;
-            bool needsMove = false;
-
-            for (int i = 0; i < 6; i++) {
-                long currentPos = getAxisPosition(i);
-                t[i] = (targets[i] != 999999) ? targets[i] : currentPos;
-                delta[i] = t[i] - currentPos;
-                
-                if (delta[i] != 0) {
-                    needsMove = true;
-                    float v_max = SPEED_CFG[i].controlSpeed * speedFactor;
-                    if (v_max > 0.0f) {
-                        float t_needed = (float)abs(delta[i]) / v_max;
-                        if (t_needed > maxTime) maxTime = t_needed;
-                    }
-                }
-            }
-
-            if (!needsMove) {
-                Serial.println("OK");
-                return;
-            }
-
-            for (int i = 0; i < 6; i++) {
-                if (delta[i] != 0) {
-                    float coordinatedSpeed = (maxTime > 0.0f) ? ((float)abs(delta[i]) / maxTime) : 1.0f;
-                    if (coordinatedSpeed < 0.1f) coordinatedSpeed = 0.1f; 
-                    
-                    float max_v_this_axis = SPEED_CFG[i].controlSpeed * speedFactor;
-                    float scaleRatio = (max_v_this_axis > 0.0f) ? (coordinatedSpeed / max_v_this_axis) : 1.0f;
-                    
-                    float baseAccel = getAxisAccel(i);
-                    float coordinatedAccel = baseAccel * scaleRatio;
-                    if (coordinatedAccel < 10.0f) coordinatedAccel = 10.0f; 
-
-                    moveAxisIndependent(i, delta[i], coordinatedSpeed, coordinatedAccel);
-                }
-            }
-
+            
+            // 直接交給底層獨立更新，不干涉未變動的軸
+            updateAbsoluteTargets(targets, speedFactor);
+            
             normalMoveActive = true;
             Serial.println("OK"); 
         }
         
-        // ==========================================
         // Mode 2: 連續寸動 (Joint Jogging)
-        // ==========================================
         else if (moveMode == 2) {
             int axis = targets[0]; 
             int dir = targets[1];  
@@ -287,21 +264,15 @@ void executeBinaryCommand() {
 // 二進制接收狀態機 (搭載逾時防死鎖與 CRC8)
 // ==========================================
 void receiveBinaryLoop() {
-    // 1. 嘗試推送卡在排隊區的 Mode 1 點位 (能推多少推多少)
+    // 1. 推送排隊中的 Mode 1 點位
     while (pendingCount > 0) {
-        
-        // 實作「時間膨脹」煞車邏輯
         if (is_paused) {
-            // 暫停狀態：快速放大倍率 (減速)
             if (pause_multiplier < 5.0f) {
                 pause_multiplier += 0.5f; 
             } else {
-                // 倍率達到 5.0 (速度剩下 20%)，直接卡死水管
-                // 不再拿出點位，保留剩下未執行的點位在 pendingBuf 內
                 break; 
             }
         } else {
-            // 恢復狀態：縮小倍率 (加速回原速)
             if (pause_multiplier > 1.0f) {
                 pause_multiplier -= 0.5f;
             } else {
@@ -309,7 +280,6 @@ void receiveBinaryLoop() {
             }
         }
 
-        // 將原定執行時間乘上膨脹倍率
         uint32_t current_interval = (uint32_t)(pendingBuf[pendingTail].interval * pause_multiplier);
 
         if (pushMotionPoint(pendingBuf[pendingTail].t[0], pendingBuf[pendingTail].t[1], 
@@ -319,18 +289,16 @@ void receiveBinaryLoop() {
             
             pendingTail = (pendingTail + 1) % PENDING_BUF_SIZE;
             pendingCount--;
-            
             normalMoveActive = true;
-            Serial.println("OK"); // 確定推進主引擎後，才發送 OK 給 Python
+            Serial.println("OK"); 
         } else {
-            break; // 引擎水池還是滿的，立刻跳出，等下一圈 UART 迴圈再試
+            break; 
         }
     }
 
     // 2. 逾時保護機制
     static uint32_t lastRxTime = 0;
     if (rxState != WAIT_HEADER_1 && (millis() - lastRxTime > 50)) {
-        Serial.println("WARN: RX Timeout! Dropping incomplete packet.");
         rxState = WAIT_HEADER_1;
         rxIndex = 0;
     }
@@ -338,7 +306,7 @@ void receiveBinaryLoop() {
     // 3. 正常讀取 UART
     while (Serial.available() > 0) {
         uint8_t c = Serial.read();
-        lastRxTime = millis(); // 只要有資料進來，就更新最後心跳時間
+        lastRxTime = millis(); 
 
         switch (rxState) {
             case WAIT_HEADER_1:
@@ -361,20 +329,16 @@ void receiveBinaryLoop() {
             case READ_PAYLOAD:
                 rxBuffer[rxIndex++] = c;
                 
-                // 收滿 32 Bytes
                 if (rxIndex >= sizeof(MotionPacket)) {
-                    
-                    // CRC8 校驗 (計算前 31 Bytes，與最後 1 Byte 比對)
                     uint8_t calculatedCRC = calculateCRC8(rxBuffer, sizeof(MotionPacket) - 1);
                     
                     if (calculatedCRC == rxBuffer[sizeof(MotionPacket) - 1]) {
                         memcpy(&currentPacket, rxBuffer, sizeof(MotionPacket));
                         executeBinaryCommand(); 
                     } else {
-                        Serial.println("ERR: CRC8 failed. Packet corrupted.");
+                        Serial.println("ERR: CRC");
                     }
                     
-                    // 正常收完一包，重置狀態機
                     rxState = WAIT_HEADER_1;
                     rxIndex = 0;
                 }
@@ -382,4 +346,3 @@ void receiveBinaryLoop() {
         }
     }
 }
-

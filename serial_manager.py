@@ -7,9 +7,11 @@ from PySide6.QtCore import QObject, Signal
 
 class SerialManager(QObject):
     log_signal = Signal(str)
-    connection_state_signal = Signal(bool) 
+    connection_state_signal = Signal(bool)
+    # 新增：接收到真實座標時觸發的訊號
+    real_pose_received = Signal(list)
 
-    # 新增：專門用來廣播「急停鎖存狀態」給 UI 的訊號 (True=鎖定中, False=已解除)
+    # 專門用來廣播「急停鎖存狀態」給 UI 的訊號 (True=鎖定中, False=已解除)
     estop_state_signal = Signal(bool)
 
     def __init__(self):
@@ -24,9 +26,10 @@ class SerialManager(QObject):
         self.running = False
         self.motion_done_event = threading.Event()
         
-        # 與 MCU (50+10) 完美搭配的令牌桶上限
+        # 與 MCU 完美搭配的令牌桶上限
         self.ok_semaphore = threading.Semaphore(40) 
         self.ee_done_event = threading.Event() 
+        self._latched_reported = False
 
     def list_ports(self):
         ports = serial.tools.list_ports.comports()
@@ -97,7 +100,7 @@ class SerialManager(QObject):
     # 二進制發送核心
     # ==========================================
     def _send_binary_packet(self, target_steps, speed_factor, move_mode):
-        """ 底層引擎：只負責將整數陣列與參數打包成 32 Bytes 送出 """
+        """ 負責將整數陣列與參數打包成 32 Bytes 送出 """
         if not self.is_connected or not self.ser: return False
         
         try:
@@ -137,19 +140,12 @@ class SerialManager(QObject):
             self.reset_semaphore()     
         else:
             if is_jog:
-                # ------------------------------------------------
                 # 路線 A：點動模式 (Jog) - 極速非阻塞檢查
-                # ------------------------------------------------
                 if not self.ok_semaphore.acquire(blocking=False):
                     return False
 
             else:
-                # ------------------------------------------------
                 # 路線 B：CAM 路徑串流 (StreamingPathExecutor) - 絕不丟點
-                # ------------------------------------------------
-                # 這裡什麼都不做！絕不扣除號碼牌！
-                # 讓外部的 run() 迴圈透過 wait_for_ok() 自己去排隊等待，
-                # 徹底解決「雙重扣除」與「靜默丟棄」的災難。
                 pass
         
         steps = []
@@ -162,8 +158,16 @@ class SerialManager(QObject):
                 
         return self._send_binary_packet(steps, speed_factor, move_mode)
 
+    def send_continuous_jog(self, axis_idx, direction, speed_factor):
+        """ 發送連續寸動 (Mode 2) """
+        if not self.is_connected: return False
+        self.reset_semaphore() # 執行前強制重置號碼牌，消滅通膨隱患！
+        
+        targets = [int(axis_idx), int(direction), 0, 0, 0, 0]
+        return self._send_binary_packet(targets, speed_factor, move_mode=2)
+
     def send_homing(self):
-        """ 觸發全軸歸零 (對應 C++ 的 Mode 3) """
+        """ 觸發全軸歸零 (Mode 3) """
         self.log_signal.emit("[System] 發送全軸歸零指令...")
         self.motion_done_event.clear()
         self.reset_semaphore()
@@ -171,29 +175,50 @@ class SerialManager(QObject):
         return self._send_binary_packet([999999] * 6, 1.0, 3)
 
     def send_stop(self):
-        """ 觸發硬體急停 (對應 C++ 的 Mode 4) """
+        """ 觸發硬體急停 (Mode 4) """
         self.log_signal.emit("[System] 發送急停指令！")
+        
+        if self.ser and self.ser.is_open:
+            try:
+                self.ser.reset_output_buffer()
+            except Exception:
+                pass
+                
         return self._send_binary_packet([0] * 6, 1.0, 4)
-    
-    # ==========================================
-    # 暫停與繼續 API (對接 Mode 7 & 8)
-    # ==========================================
-    def send_pause(self):
-        """發送暫停指令 (Mode 5)"""
+
+    def request_real_pose(self):
+        """透過標準二進制通訊，發送 Mode 6 查詢硬體絕對步數"""
         if self.is_connected:
-            self.log_signal.emit(">>> [SYS] 發送暫停指令，機台減速中...")
+            self._send_binary_packet([0, 0, 0, 0, 0, 0], speed_factor=1.0, move_mode=6)
+
+    def send_pause(self):
+        """發送暫停指令 (Mode 7)"""
+        if self.is_connected:
+            self.log_signal.emit(">>> [SYS] 機台減速中...")
             # 步數陣列全填 0 即可，因為 Mode 5 只看 Mode 標籤
             self._send_binary_packet([0, 0, 0, 0, 0, 0], speed_factor=1.0, move_mode=7)
 
     def send_resume(self):
-        """發送繼續指令 (Mode 6)"""
+        """發送繼續指令 (Mode 8)"""
         if self.is_connected:
-            self.log_signal.emit(">>> [SYS] 發送繼續指令，機台恢復運作...")
+            self.log_signal.emit(">>> [SYS] 機台恢復運作...")
             self._send_binary_packet([0, 0, 0, 0, 0, 0], speed_factor=1.0, move_mode=8)
     
     def send_estop_reset(self):
-        """ 明確向 MCU 發送人工解鎖指令 (Mode 9) """
-        self.log_signal.emit("[System] 正在發送解除急停復歸訊號...")
+        """ 發送人工解鎖指令 (Mode 9) """
+        self.log_signal.emit("[System] 發送解除急停復歸訊號...")
+        
+        if self.ser and self.ser.is_open:
+            try:
+                self.ser.reset_output_buffer()
+                self.ser.reset_input_buffer()
+            except Exception:
+                pass
+                
+        self.reset_semaphore() 
+        self.motion_done_event.clear()
+        self.ee_done_event.clear()
+        
         return self._send_binary_packet([0] * 6, 1.0, 9)
 
     def send_gripper(self, ee_value):
@@ -208,46 +233,78 @@ class SerialManager(QObject):
     def _read_loop(self):
         while self.running and self.ser and self.ser.is_open:
             try:
-                if self.ser.in_waiting:
-                    line = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                    if line: 
-                        if line == "Done":
-                            self.motion_done_event.set() 
-                            continue 
-
-                        if line == "HomingDone":
-                            self.motion_done_event.set() 
-                            self.log_signal.emit(">> [HW] All Axes Homing Completed!") 
-                            continue 
-
-                        if line == "OK":
-                            self.ok_semaphore.release()
-                            continue
-                            
-                        if line == "<EE_DONE>":
-                            self.ee_done_event.set()
-                            continue
-
-                        # 攔截急停鎖存的錯誤與觸發訊息
-                        if "LATCHED" in line:
-                            self.estop_state_signal.emit(True) # 廣播給 UI：系統鎖死了！
-                            self.log_signal.emit("[警告] 機器處於「急停鎖存狀態」！請按「解除急停」恢復運作。")
-                            
-                            # 如果是因為被拒絕而產生的錯誤，釋放一個號碼牌，避免 Python 端的 Semaphore 卡死
-                            if "REJECTED" in line:
-                                self.ok_semaphore.release()
-                            continue
-                            
-                        # 攔截急停解除訊息
-                        if "RESET SUCCESS" in line:
-                            self.estop_state_signal.emit(False) # 廣播給 UI：警報解除！
-                            self.log_signal.emit("[系統] 急停鎖存已解除，系統恢復就緒。")
-                            continue
-
-                        # 其他未攔截的訊息，當作一般 Log 印出
-                        self.log_signal.emit(f"[HW] {line}")
-                else:
+                if not self.ser.in_waiting:
                     time.sleep(0.01)
+                    continue
+
+                line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                
+                if not line:
+                    continue 
+
+                # ==========================================
+                # 遙測攔截：攔截 MCU 回傳的真實物理步數，並轉為角度
+                # ==========================================
+                if line.startswith("[POS]"):
+                    try:
+                        import config
+                        # 擷取字串如 "[POS] 12800, -3200, 0, 0, 0, 0"
+                        data_str = line.replace("[POS]", "").strip()
+                        steps = [float(x) for x in data_str.split(",")]
+                        
+                        if len(steps) == 6:
+                            # 將底層步數除以齒輪比設定，還原為UI需要的精準角度
+                            angles = [steps[i] / config.STEPS_PER_DEG[i] for i in range(6)]
+                            
+                            # 廣播給系統大腦進行畫面同步
+                            self.real_pose_received.emit(angles)
+                    except Exception as e:
+                        self.log_signal.emit(f"座標解析錯誤: {e}")
+                    
+                    continue
+
+                # ==========================================
+                # 主邏輯：平坦化的條件攔截 (Early Return / Continue)
+                # ==========================================
+                if line == "Done":
+                    self.motion_done_event.set() 
+                    continue 
+
+                if line == "HomingDone":
+                    self.motion_done_event.set() 
+                    self.log_signal.emit(">> [HW] All Axes Homing Completed!") 
+                    continue 
+
+                if line == "OK":
+                    self.ok_semaphore.release()
+                    continue
+                    
+                if line == "<EE_DONE>":
+                    self.ee_done_event.set()
+                    continue
+
+                # 攔截急停鎖存的錯誤與觸發訊息
+                if "LATCHED" in line:
+                    if not self._latched_reported:
+                        self.estop_state_signal.emit(True) 
+                        self.log_signal.emit("[警告] 機器處於「急停鎖存狀態」！請按「解除急停」恢復運作。")
+                        self._latched_reported = True
+                    
+                    if "REJECTED" in line:
+                        self.ok_semaphore.release()
+                    continue
+                    
+                # 攔截急停解除訊息
+                if "RESET SUCCESS" in line:
+                    if self._latched_reported:
+                        self.estop_state_signal.emit(False) 
+                        self.log_signal.emit("[系統] 急停鎖存已解除，系統恢復就緒。")
+                        self._latched_reported = False
+                    continue
+
+                # 其他未攔截的訊息，當作一般 Log 印出
+                self.log_signal.emit(f"[HW] {line}")
+                
             except Exception as e:
                 if self.running: 
                     self.log_signal.emit(f"Read Error: {e}")

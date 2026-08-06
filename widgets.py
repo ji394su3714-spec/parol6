@@ -5,9 +5,11 @@ import datetime
 import os
 import time
 
-from PySide6.QtWidgets import (QDoubleSpinBox, QGridLayout, QSizePolicy, QSpacerItem, QWidget, QVBoxLayout, QHBoxLayout, 
-                               QFrame, QLabel, QPushButton, QSlider, QTextEdit, QLineEdit, QApplication, QMenu, QMessageBox)
-from PySide6.QtCore import QTimer, Qt, QObject, QEvent, QSize, Signal, QRunnable, QThreadPool
+from PySide6.QtWidgets import (QDoubleSpinBox, QGridLayout, QSizePolicy, QSpacerItem, 
+                               QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, 
+                               QPushButton, QSlider, QTextEdit, QLineEdit, QApplication, 
+                               QMenu, QMessageBox)
+from PySide6.QtCore import QThread, QTimer, Qt, QObject, QEvent, QSize, Signal, QRunnable, QThreadPool
 from PySide6.QtGui import QAction, QCursor, QDoubleValidator, QImage, QResizeEvent, QPainter, QPen, QColor
 import qtawesome as qta
 
@@ -15,9 +17,9 @@ import styles
 import config
 from config import Robot3DView
 
-# ==========================================
-# UI 核心工具箱
-# ==========================================
+# =========================================================
+# [1] 系統全域工具 (Global Utilities & Settings)
+# =========================================================
 def apply_windows_dark_titlebar(window):
     """將傳入的視窗 (window) 標題列強制轉換為沉浸式深色"""
     try:
@@ -31,16 +33,11 @@ def apply_windows_dark_titlebar(window):
         DWMWA_CAPTION_COLOR = 35
         bg_color = ctypes.c_int(0x002B2B2B)
         set_window_attribute(hwnd, DWMWA_CAPTION_COLOR, ctypes.byref(bg_color), ctypes.sizeof(bg_color))
-
     except Exception as e:
         print(f"Windows 標題列修改失敗: {e}")
 
-# ==========================================
-# 全域設定大腦 (Settings Manager)
-# ==========================================
 class SettingsManager(QObject):
     setting_changed = Signal(str, object)
-
     def __init__(self):
         super().__init__()
         self._settings = {
@@ -50,10 +47,7 @@ class SettingsManager(QObject):
             "default_list_mode": False,  
             "theme_style": "dark"
         }
-
-    def get(self, key):
-        return self._settings.get(key)
-
+    def get(self, key): return self._settings.get(key)
     def set(self, key, value):
         if self._settings.get(key) != value:
             self._settings[key] = value
@@ -61,9 +55,130 @@ class SettingsManager(QObject):
 
 app_settings = SettingsManager()
 
-# ==========================================
-# 工具類元件 (Event Filters)
-# ==========================================
+# =========================================================
+# [2.5] 笛卡爾空間運動引擎 (Pure Math & QThread Worker)
+# =========================================================
+class CartesianMathEngine:
+    """專門負責運算梯形加減速與積分，完全不依賴 UI 元件 (純數學)"""
+    def __init__(self):
+        self.current_speed = 0.0
+        self.step_remaining = 0.0
+        self.is_stopping = False
+        self.is_continuous = True
+
+    def reset(self, is_continuous, fixed_step=0.0):
+        self.current_speed = 0.0
+        self.step_remaining = abs(fixed_step)
+        self.is_stopping = False
+        self.is_continuous = is_continuous
+
+    def stop(self):
+        self.is_stopping = True
+
+    def compute_step(self, dt, max_speed, accel, sign):
+        step_val = 0.0
+        is_finished = False
+
+        if self.is_continuous:
+            if not self.is_stopping:
+                self.current_speed += accel * dt
+                if self.current_speed > max_speed:
+                    self.current_speed = max_speed
+            else:
+                self.current_speed -= accel * dt
+                if self.current_speed <= 0:
+                    self.current_speed = 0.0
+                    is_finished = True
+            step_val = sign * self.current_speed * dt
+        else:
+            if self.step_remaining > 0:
+                stop_dist = (self.current_speed ** 2) / (2.0 * accel)
+                if self.step_remaining <= stop_dist:
+                    self.current_speed -= accel * dt
+                    if self.current_speed < 1.0: 
+                        self.current_speed = 1.0 
+                else:
+                    self.current_speed += accel * dt
+                    if self.current_speed > max_speed:
+                        self.current_speed = max_speed
+
+                move_dist = min(self.current_speed * dt, self.step_remaining)
+                self.step_remaining -= move_dist
+                step_val = sign * move_dist
+
+                if self.step_remaining <= 0:
+                    self.current_speed = 0.0
+                    is_finished = True
+            else:
+                is_finished = True
+
+        return step_val, is_finished
+
+class CartesianJogWorker(QThread):
+    """獨立的 100Hz 背景執行緒，專職負責數學計算並發送信號"""
+    step_computed_signal = Signal(float, bool) # (算出的單步距離, 是否完全煞停)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.math_engine = CartesianMathEngine()
+        self._is_running = True
+        self._is_active = False 
+        
+        self.dt = 0.01
+        self.max_speed = 0.0
+        self.accel = 0.0
+        self.sign = 1
+
+    def run(self):
+        import time
+        absolute_target_time = time.perf_counter()
+        
+        while self._is_running:
+            if self._is_active:
+                # 目標時間往後推 10ms (維持完美的 100Hz 基準)
+                absolute_target_time += self.dt
+                
+                # 委託數學大腦算微積分
+                step_val, is_finished = self.math_engine.compute_step(
+                    self.dt, self.max_speed, self.accel, self.sign
+                )
+                
+                # 透過信號槽投遞給 UI 執行緒 (絕對安全，不會引發崩潰)
+                self.step_computed_signal.emit(step_val, is_finished)
+                
+                if is_finished:
+                    self._is_active = False
+                    
+                # 智慧等待：如果有餘裕就睡覺，如果落後 (被系統卡頓) 就跳過睡覺補上
+                sleep_time = absolute_target_time - time.perf_counter()
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                else:
+                    absolute_target_time = time.perf_counter() 
+            else:
+                time.sleep(0.01) # 閒置時的低耗能待命
+                absolute_target_time = time.perf_counter()
+
+    def start_move(self, is_continuous, fixed_step, max_speed, accel, sign):
+        """外部呼叫：設定參數並啟動引擎"""
+        self.max_speed = max_speed
+        self.accel = accel
+        self.sign = sign
+        self.math_engine.reset(is_continuous, fixed_step)
+        self._is_active = True
+        
+    def stop_move(self):
+        """外部呼叫：啟動煞車減速"""
+        self.math_engine.stop()
+        
+    def stop_thread(self):
+        """徹底銷毀執行緒 (關閉程式時使用)"""
+        self._is_running = False
+        self.wait()
+
+# =========================================================
+# [2] 全域事件過濾器 (Event Filters)
+# =========================================================
 class SplitterDoubleClickListener(QObject):
     def __init__(self, splitter, default_sizes):
         super().__init__(splitter)
@@ -99,18 +214,16 @@ class SplitButtonHoverFilter(QObject):
             target.setProperty("dim", True)
             target.style().unpolish(target)
             target.style().polish(target)
-            
         elif event.type() == QEvent.Type.Leave:
             target = self.right_btn if obj == self.left_btn else self.left_btn
             target.setProperty("dim", False)
             target.style().unpolish(target)
             target.style().polish(target)
-            
         return False
 
-# ==========================================
-# 基礎 & 微型 UI 元件
-# ==========================================
+# =========================================================
+# [3] 原子級 UI 元件 (Atomic UI Components)
+# =========================================================
 class EditableValueLabel(QLineEdit):
     def __init__(self, default_text="0.00", parent=None):
         super().__init__(default_text, parent)
@@ -141,10 +254,8 @@ class EditableValueLabel(QLineEdit):
         if self.isReadOnly(): return
         try:
             val = float(self.text())
-            if self.slider:
-                self.slider.setValue(int(val * 100.0))
-            if self.on_commit_cb:  
-                self.on_commit_cb()
+            if self.slider: self.slider.setValue(int(val * 100.0))
+            if self.on_commit_cb: self.on_commit_cb()
         except ValueError:
             pass
         self.set_label_mode()
@@ -152,6 +263,26 @@ class EditableValueLabel(QLineEdit):
     def focusOutEvent(self, event):
         super().focusOutEvent(event)
         self.commit_value()
+
+class MonitorLineEdit(QLineEdit):
+    def __init__(self, contents="0.00", parent=None):
+        super().__init__(contents, parent)
+        self.setReadOnly(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.is_locked = False 
+
+    def mousePressEvent(self, event):
+        if self.is_locked:
+            event.ignore()
+            return
+        super().mousePressEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton and self.isReadOnly():
+            self.setReadOnly(False)
+            QTimer.singleShot(0, self.selectAll)
+
+    def focusOutEvent(self, event):
+        self.setReadOnly(True)
+        super().focusOutEvent(event)
 
 class GripperSlider(QSlider):
     def paintEvent(self, event):
@@ -165,17 +296,64 @@ class GripperSlider(QSlider):
         margin = 7 
         track_width = self.width() - 2 * margin
         y_bottom = self.height() - 2
-        y_long_top = y_bottom - 5
-        y_short_top = y_bottom - 3
         
         steps = 20
         for i in range(steps + 1):
             x = margin + int(i * (track_width / steps))
-            if i % 2 == 0:
-                painter.drawLine(x, y_long_top, x, y_bottom)
-            else:
-                painter.drawLine(x, y_short_top, x, y_bottom)
+            if i % 2 == 0: painter.drawLine(x, y_bottom - 5, x, y_bottom)
+            else: painter.drawLine(x, y_bottom - 3, x, y_bottom)
         painter.end()
+
+class SpeedControlWidget(QFrame):
+    def __init__(self, parent=None, initial_level=4, max_level=4):
+        super().__init__(parent)
+        self.level = initial_level
+        self.max_level = max_level
+        self.setFixedHeight(22)
+        self.setStyleSheet(styles.SPEED_CAPSULE_STYLE)
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self.btn_minus = QPushButton("−")
+        self.btn_minus.setFixedSize(30, 22)
+        self.btn_minus.setStyleSheet(styles.SPEED_MINUS_STYLE)
+        self.btn_minus.clicked.connect(self.decrease)
+        layout.addWidget(self.btn_minus)
+
+        seg_container = QWidget()
+        seg_layout = QHBoxLayout(seg_container)
+        seg_layout.setContentsMargins(0, 0, 0, 0)
+        seg_layout.setSpacing(2)
+        self.segments = []
+        for _ in range(self.max_level):
+            seg = QFrame()
+            seg.setFixedSize(10, 4) 
+            seg_layout.addWidget(seg)
+            self.segments.append(seg)
+        layout.addWidget(seg_container)
+
+        self.btn_plus = QPushButton("+")
+        self.btn_plus.setFixedSize(30, 22)
+        self.btn_plus.setStyleSheet(styles.SPEED_PLUS_STYLE)
+        self.btn_plus.clicked.connect(self.increase)
+        layout.addWidget(self.btn_plus)
+        self.update_display()
+
+    def decrease(self):
+        if self.level > 1:
+            self.level -= 1
+            self.update_display()
+
+    def increase(self):
+        if self.level < self.max_level:
+            self.level += 1
+            self.update_display()
+
+    def update_display(self):
+        for i, seg in enumerate(self.segments):
+            seg.setStyleSheet(styles.SPEED_SEG_ON_STYLE if i < self.level else styles.SPEED_SEG_OFF_STYLE)
 
 class FloatingNavBar(QFrame):
     def __init__(self, config, parent=None):
@@ -187,7 +365,6 @@ class FloatingNavBar(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 0, 8, 0)
         layout.setSpacing(8)
-        
         self.nav_buttons = []
         
         for item in config:
@@ -239,60 +416,6 @@ class FloatingNavBar(QFrame):
                 layout.addWidget(btn)
                 self.nav_buttons.append(btn)
 
-class SpeedControlWidget(QFrame):
-    def __init__(self, parent=None, initial_level=4, max_level=4):
-        super().__init__(parent)
-        self.level = initial_level
-        self.max_level = max_level
-        
-        self.setFixedHeight(22)
-        self.setStyleSheet(styles.SPEED_CAPSULE_STYLE)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-
-        self.btn_minus = QPushButton("−")
-        self.btn_minus.setFixedSize(30, 22)
-        self.btn_minus.setStyleSheet(styles.SPEED_MINUS_STYLE)
-        self.btn_minus.clicked.connect(self.decrease)
-        layout.addWidget(self.btn_minus)
-
-        seg_container = QWidget()
-        seg_layout = QHBoxLayout(seg_container)
-        seg_layout.setContentsMargins(0, 0, 0, 0)
-        seg_layout.setSpacing(2)
-        self.segments = []
-        for _ in range(self.max_level):
-            seg = QFrame()
-            seg.setFixedSize(10, 4) 
-            seg_layout.addWidget(seg)
-            self.segments.append(seg)
-        layout.addWidget(seg_container)
-
-        self.btn_plus = QPushButton("+")
-        self.btn_plus.setFixedSize(30, 22)
-        self.btn_plus.setStyleSheet(styles.SPEED_PLUS_STYLE)
-        self.btn_plus.clicked.connect(self.increase)
-        layout.addWidget(self.btn_plus)
-        self.update_display()
-
-    def decrease(self):
-        if self.level > 1:
-            self.level -= 1
-            self.update_display()
-
-    def increase(self):
-        if self.level < self.max_level:
-            self.level += 1
-            self.update_display()
-
-    def update_display(self):
-        for i, seg in enumerate(self.segments):
-            seg.setStyleSheet(styles.SPEED_SEG_ON_STYLE if i < self.level else styles.SPEED_SEG_OFF_STYLE)
-
-# ==========================================
-# 大型面板區塊 (Blocks)
-# ==========================================
 class BaseBlock(QFrame):
     def __init__(self, parent=None, nav_config=None):
         super().__init__(parent)
@@ -309,6 +432,9 @@ class BaseBlock(QFrame):
         self.nav_bar.setGeometry((self.width() - nav_w) // 2, self.height() - nav_h - 10, nav_w, nav_h)
         self.nav_bar.raise_()
 
+# =========================================================
+# [4] 獨立系統面板 (Standalone Panels)
+# =========================================================
 class CustomTopBar(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -336,12 +462,12 @@ class CustomTopBar(QFrame):
 
         self.btn_stop = self._create_btn('mdi.stop-circle-outline')
         self.btn_stop.setToolTip("全面停止 (E-Stop)")
-        self.btn_stop.setEnabled(False) # 預設關閉，等連線才打開
+        self.btn_stop.setEnabled(False) 
         layout.addWidget(self.btn_stop)
 
         self.btn_estop_reset = self._create_btn('mdi.lock-open-variant-outline')
         self.btn_estop_reset.setToolTip("解除急停鎖定")
-        self.btn_estop_reset.setEnabled(False) # 預設關閉
+        self.btn_estop_reset.setEnabled(False) 
         layout.addWidget(self.btn_estop_reset)
         
         self.btn_home = self._create_btn('mdi.home-search')
@@ -349,8 +475,15 @@ class CustomTopBar(QFrame):
         layout.addWidget(self.btn_home)
 
         self.btn_soft_home = self._create_btn('mdi.home-outline')
-        self.btn_soft_home.setToolTip("Soft Home (Reset all axes to 0)")
+        self.btn_soft_home.setToolTip("Soft Home")
         layout.addWidget(self.btn_soft_home)
+
+        layout.addWidget(self._create_separator())
+
+        self.btn_simulation = self._create_btn('mdi.safety-goggles')
+        self.btn_simulation.setToolTip("開啟純模擬模式 (Simulation Mode)")
+        self.btn_simulation.setCheckable(True) 
+        layout.addWidget(self.btn_simulation)
 
         layout.addWidget(self._create_separator())
         self.btn_connect = self._create_btn('mdi.connection')
@@ -384,8 +517,7 @@ class CustomTopBar(QFrame):
             from preferences import PreferencesDialog
             dialog = PreferencesDialog(self)
             dialog.exec()
-        except ImportError:
-            pass
+        except ImportError: pass
 
     def show_homing_warning(self):        
         msg_box = QMessageBox(self)
@@ -396,50 +528,23 @@ class CustomTopBar(QFrame):
             "The robotic arm will perform physical calibration movements.\n"
             "Please ensure the arm's pose and workspace are safe."
         )
-        
         msg_box.setStyleSheet(styles.DARK_MESSAGE_BOX_STYLE)
         msg_box.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
         msg_box.setDefaultButton(QMessageBox.StandardButton.Cancel)
         
         ok_btn = msg_box.button(QMessageBox.StandardButton.Ok)
         ok_btn.setText("Proceed")
-        ok_btn.setStyleSheet("""
-            QPushButton {background-color: #b37700; border: 1px solid #d99000; color: #ffffff;}
-            QPushButton:hover {background-color: #cc8800;}
-        """)
+        ok_btn.setStyleSheet(styles.WARNING_BTN_STYLE)
         
         if msg_box.exec() == QMessageBox.StandardButton.Ok:
             main_win = self.window()
-                        
-            if hasattr(main_win, 'serial_manager') and main_win.serial_manager.is_connected:
-                main_win.serial_manager.send_homing() 
-                
-                if hasattr(main_win, 'log_widget'):
-                    main_win.log_widget.append_log("[System] Homing sequence initiated...")
-            else:
-                if hasattr(main_win, 'log_widget'):
-                    main_win.log_widget.append_log("[ERROR] Homing failed: Controller not connected.")
-
-class MonitorLineEdit(QLineEdit):
-    def __init__(self, contents="0.00", parent=None):
-        super().__init__(contents, parent)
-        self.setReadOnly(True)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.is_locked = False 
-
-    def mousePressEvent(self, event):
-        if self.is_locked:
-            event.ignore()
-            return
             
-        super().mousePressEvent(event)
-        if event.button() == Qt.MouseButton.LeftButton and self.isReadOnly():
-            self.setReadOnly(False)
-            QTimer.singleShot(0, self.selectAll)
-
-    def focusOutEvent(self, event):
-        self.setReadOnly(True)
-        super().focusOutEvent(event)
+            if main_win.serial_manager.is_connected:
+                main_win.serial_manager.send_homing() 
+                main_win.handle_system_pose_update([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                main_win.log_widget.append_log("[System] Homing sequence initiated...")
+            else:
+                main_win.log_widget.append_log("[ERROR] Homing failed: Controller not connected.")
 
 class MonitorWidget(QFrame):
     tcp_edit_requested = Signal(str, float)    
@@ -523,8 +628,7 @@ class MonitorWidget(QFrame):
         text = line_edit.text()
         if text:
             try:
-                val = float(text)
-                self.tcp_edit_requested.emit(name, val)
+                self.tcp_edit_requested.emit(name, float(text))
             except ValueError: pass
         line_edit.clearFocus() 
 
@@ -532,8 +636,7 @@ class MonitorWidget(QFrame):
         text = line_edit.text()
         if text:
             try:
-                val = float(text)
-                self.joint_edit_requested.emit(index, val)
+                self.joint_edit_requested.emit(index, float(text))
             except ValueError: pass
         line_edit.clearFocus() 
 
@@ -561,14 +664,217 @@ class MonitorWidget(QFrame):
 
     def copy_tcp_to_clipboard(self):
         if hasattr(self, 'current_tcp_str'): QApplication.clipboard().setText(self.current_tcp_str)
-
     def copy_joints_to_clipboard(self):
         if hasattr(self, 'current_joints_str'): QApplication.clipboard().setText(self.current_joints_str)
 
-# ==========================================
-# 重構清理版 JogWidget (全獨立時鐘連發架構) 
-# ==========================================
+class LogWidget(BaseBlock):
+    def __init__(self, parent=None):
+        nav_config = [{'icon': 'mdi.delete-outline'}, {'icon': 'mdi.export'}, {'icon': 'mdi.dots-vertical'}]
+        super().__init__(parent=parent, nav_config=nav_config)
+        self.setMinimumHeight(0) 
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 60)
+        
+        self.log_console = QTextEdit()
+        self.log_console.setReadOnly(True)
+        try: self.log_console.setFont(styles.FONT_LOG)
+        except AttributeError: pass
+            
+        self.log_console.setStyleSheet(styles.LOG_CONSOLE_STYLE)
+        layout.addWidget(self.log_console)
+
+        self.btn_clear = self.nav_bar.nav_buttons[0]
+        self.btn_clear.setToolTip("Clear Log")
+        self.btn_clear.clicked.connect(self.log_console.clear)
+
+        self.append_log("[System] Parol Stream OS initialized.")
+
+    def append_log(self, msg):
+        color = "#d4d4d4" 
+        safe_msg = str(msg).replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+        msg_upper = safe_msg.upper()
+
+        if "[ERROR]" in msg_upper or "[STOP]" in msg_upper or "錯誤" in msg_upper or "FAILED" in msg_upper: color = "#ff4444" 
+        elif "[WARNING]" in msg_upper or "警告" in msg_upper or "TIMEOUT" in msg_upper: color = "#e6a800" 
+        elif "[SYSTEM]" in msg_upper or "系統" in msg_upper: color = "#00a8e6" 
+        elif "[HW]" in msg_upper or "CONNECTED" in msg_upper or "DISCONNECTED" in msg_upper: color = "#c63bbb" 
+        elif "RECORDED" in msg_upper or "UPDATED" in msg_upper or "DELETED" in msg_upper or "[CODE]" in msg_upper: color = "#00e6b8" 
+        elif "&GT;&GT;" in safe_msg: color = "#d7ba7d" 
+
+        html_msg = f'<span style="color: {color};">{safe_msg}</span>'
+        self.log_console.append(html_msg)
+
+# =========================================================
+# [5] 3D 預覽面板 (3D View Widget & Screenshot Task)
+# =========================================================
+class _ScreenshotSaveSignals(QObject):
+    finished = Signal(str)
+    error = Signal(str)
+
+class _ScreenshotSaveTask(QRunnable):
+    def __init__(self, image: QImage, filepath: str):
+        super().__init__()
+        self.image = image 
+        self.filepath = filepath
+        self.signals = _ScreenshotSaveSignals()
+
+    def run(self):
+        try:
+            ok = self.image.save(self.filepath, "PNG")
+            if ok: self.signals.finished.emit(self.filepath)
+            else: self.signals.error.emit(f"儲存失敗: {self.filepath}")
+        except Exception as e:
+            self.signals.error.emit(str(e))
+
+class View3DWidget(BaseBlock):    
+    def __init__(self, parent=None):
+        nav_config = [
+            {'icon': 'mdi.axis-arrow', 'toggle_icon': 'mdi.axis-arrow', 'toggle_color': '#00e6b8'},
+            {'icon': 'mdi.rotate-orbit', 'toggle_icon': 'mdi.rotate-orbit', 'toggle_color': '#e6a800'},
+            {'icon': 'mdi.camera-outline'}, 
+            {'icon': 'mdi.dots-vertical'}
+        ]
+        super().__init__(parent=parent, nav_config=nav_config)
+        self.setMinimumHeight(200) 
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4) 
+        layout.setSpacing(0) 
+        
+        self.monitor_widget = MonitorWidget()
+        layout.addWidget(self.monitor_widget)
+        
+        self.robot_view = Robot3DView()
+        layout.addWidget(self.robot_view)
+        
+        self.robot_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.robot_view.customContextMenuRequested.connect(lambda pos: self.show_context_menu())
+        
+        self.btn_translate = self.nav_bar.nav_buttons[0]
+        self.btn_rotate = self.nav_bar.nav_buttons[1]
+        self.btn_camera = self.nav_bar.nav_buttons[2] 
+        self.btn_camera.clicked.connect(self.on_camera_clicked) 
+
+        self._screenshot_pool = QThreadPool() 
+        self._active_menu = None
+        self._updating_btns = False 
+        self.btn_translate.toggled.connect(self.on_translate_toggled)
+        self.btn_rotate.toggled.connect(self.on_rotate_toggled)
+
+    def set_base_manager(self, base_manager):
+        self.robot_view.set_base_manager(base_manager)
+
+    def _handle_spacebar(self):
+        focus_w = QApplication.focusWidget()
+        if focus_w:
+            if focus_w.inherits("QLineEdit") or focus_w.inherits("QAbstractSpinBox") or focus_w.inherits("QTextEdit"): return
+        
+        local_pos = self.mapFromGlobal(QCursor.pos())
+        if not self.rect().contains(local_pos): return 
+        if getattr(self, '_active_menu', None) is not None:
+            self._active_menu.close()
+            self._active_menu = None
+            return
+        self.show_context_menu(pos=None)
+
+    def on_translate_toggled(self, checked):
+        if self._updating_btns: return
+        self._updating_btns = True
+        if checked:
+            self.btn_rotate.setChecked(False) 
+            self.robot_view.set_gizmo_mode('translate')
+        else:
+            if not self.btn_rotate.isChecked(): self.robot_view.set_gizmo_mode('free') 
+        self._updating_btns = False
+
+    def on_rotate_toggled(self, checked):
+        if self._updating_btns: return
+        self._updating_btns = True
+        if checked:
+            self.btn_translate.setChecked(False) 
+            self.robot_view.set_gizmo_mode('rotate')
+        else:
+            if not self.btn_translate.isChecked(): self.robot_view.set_gizmo_mode('free') 
+        self._updating_btns = False
+
+    def reset_gizmo_buttons(self):
+        if self.btn_translate.isChecked() or self.btn_rotate.isChecked():
+            self.btn_translate.setChecked(False)
+            self.btn_rotate.setChecked(False)
+
+    def on_camera_clicked(self):
+        QApplication.processEvents() 
+        pixmap = self.grab() 
+        image = pixmap.toImage() 
+        screenshot_dir = os.path.join(os.getcwd(), "screenshots")
+        os.makedirs(screenshot_dir, exist_ok=True)
+        filename = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3] + ".png"
+        filepath = os.path.join(screenshot_dir, filename)
+        task = _ScreenshotSaveTask(image, filepath)
+        task.signals.error.connect(lambda msg: print(f"[截圖錯誤] {msg}"))
+        self._screenshot_pool.start(task)
+        self._flash_camera_icon('#00e6b8', duration=80)
+
+    def _flash_camera_icon(self, color: str, duration: int = 80):
+        if not hasattr(self, '_camera_btn_original_style'):
+            self._camera_btn_original_style = self.btn_camera.styleSheet()
+        self.btn_camera.setStyleSheet(f"QToolButton {{ background-color: {color} !important; border-radius: 4px; }}")
+        QTimer.singleShot(duration, self._restore_camera_icon)
+
+    def _restore_camera_icon(self):
+        self.btn_camera.setStyleSheet(self._camera_btn_original_style)
+
+    def show_context_menu(self, pos=None):        
+        menu_pos = QCursor.pos()
+        menu = QMenu(self.window())
+        self._active_menu = menu
+        menu.setStyleSheet(styles.MENU_STYLE)
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        
+        action_reset = QAction(qta.icon('mdi.camera-retake', color='#e0e0e0'), "Reset Camera", self)
+        grid_visible = self.robot_view.floor_grid.visible
+        action_grid = QAction(qta.icon('mdi.grid', color='#e0e0e0'), "Hide Grid" if grid_visible else "Show Grid", self)
+        is_drag_active = getattr(self.robot_view, '_show_drag_sphere', False)
+        action_toggle_drag = QAction(qta.icon('mdi.cursor-move', color='#e0e0e0'), "Disable Drag Sphere" if is_drag_active else "Enable Drag Sphere", self)
+        path_visible = getattr(self.robot_view, 'show_trajectory', True)
+        action_path = QAction(qta.icon('mdi.vector-polyline', color='#e0e0e0'), "Hide Trajectory" if path_visible else "Show Trajectory", self)
+        
+        menu.addAction(action_reset)
+        menu.addSeparator() 
+        menu.addAction(action_grid)
+        menu.addAction(action_toggle_drag)
+        menu.addAction(action_path) 
+        
+        try: selected_action = menu.exec(menu_pos)
+        finally: self._active_menu = None
+            
+        if not selected_action: return
+        
+        if selected_action == action_reset:
+            self.robot_view.view.camera.center = (0, 0, 0.15)
+            self.robot_view.view.camera.elevation = 30
+            self.robot_view.view.camera.azimuth = -225
+            self.robot_view.view.camera.distance = 2.5
+        elif selected_action == action_grid:
+            new_state = not grid_visible
+            self.robot_view.floor_grid.visible = new_state
+            self.robot_view.floor.visible = new_state 
+            self.robot_view.canvas.update()
+        elif selected_action == action_toggle_drag:
+            self.robot_view._show_drag_sphere = not is_drag_active
+            self.robot_view._update_gizmo_visuals()
+        elif selected_action == action_path:
+            self.robot_view.show_trajectory = not path_visible
+            if hasattr(self.robot_view, 'path_actor'):
+                has_data = getattr(self.robot_view.path_actor, 'pos', None) is not None and len(self.robot_view.path_actor.pos) > 1
+                self.robot_view.path_actor.visible = self.robot_view.show_trajectory and has_data
+            self.robot_view.canvas.update()
+
+# =========================================================
+# [6] 操作面板 (JogWidget)
+# =========================================================
 class JogWidget(BaseBlock):
+    # --- 初始化與時鐘 ---
     def __init__(self, parent=None):
         nav_config = [
             {'icon': 'mdi.tune-variant', 'color': '#e6a800', 'toggle_icon': 'mdi.camera-control', 'toggle_color': '#00e6b8'},
@@ -579,56 +885,54 @@ class JogWidget(BaseBlock):
         super().__init__(parent=parent, nav_config=nav_config)
         self.setMinimumWidth(260)
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        # 初始化三大獨立心跳時鐘 (100hz)
         self._init_timers()
-        
-        # 建立 UI 區塊
         self._setup_joint_ui()
         self._setup_cartesian_ui()
         self._setup_gripper_ui()
 
-    # MCU 韌體中的真實物理速度 (對應 C++ 的 controlSpeed)
-    MCU_CTRL_STEPS = [4800.0, 6800.0, 6800.0, 6000.0, 6000.0, 8000.0]
-
-    def _get_axis_speed_deg(self, axis_idx, speed_factor):
-        """將 MCU 引擎的『步數/秒』，精準換算為 UI 需要的『度數/秒』"""
-        steps_per_sec = self.MCU_CTRL_STEPS[axis_idx] * speed_factor
-        return abs(steps_per_sec / config.STEPS_PER_DEG[axis_idx])
-
     def _init_timers(self):
-        # Joint 虛擬時鐘 (只更新 3D 畫面，實體已由 MCU 接管連續轉動)
-        self.joint_jog_timer = QTimer()
-        self.joint_jog_timer.timeout.connect(self._update_joint_simulation)
+        # 1. 關節時鐘
+        self.joint_query_timer = QTimer(self)
+        self.joint_query_timer.timeout.connect(self._poll_real_pose)
+        
+        self.joint_sim_timer = QTimer(self)
+        self.joint_sim_timer.timeout.connect(self._update_joint_simulation)
+        
         self.active_joint_axis = -1
         self.active_joint_sign = 0
         
-        # 智慧按鍵的長按計時器 (250ms)
-        self.joint_hold_timer = QTimer()
+        self.joint_hold_timer = QTimer(self)
         self.joint_hold_timer.setSingleShot(True)
         self.joint_hold_timer.timeout.connect(self._on_joint_hold_timeout)
         self._joint_press_axis = -1
         self._joint_press_dir = 0
 
-        # Cartesian 實體連發時鐘 (Python 持續算 IK 並發送 PTP 點位給 MCU)
-        self.cart_jog_timer = QTimer()
-        self.cart_jog_timer.timeout.connect(self._cartesian_timer_tick)
+        # ==========================================
+        # 2. 升級：Cartesian 專屬背景執行緒引擎
+        # ==========================================
+        self.cart_worker = CartesianJogWorker(self)
+        self.cart_worker.step_computed_signal.connect(self._on_step_computed)
+        self.cart_worker.start() # 啟動背景待命
+        
+        # 關閉程式時，優雅地結束背景執行緒，避免跳紅字警告
+        QApplication.instance().aboutToQuit.connect(self.cart_worker.stop_thread)
+        
         self.active_cart_axis = None
 
-        # Cartesian 的長按計時器 (智慧按鍵專用)
-        self.cart_hold_timer = QTimer()
+        self.cart_hold_timer = QTimer(self)
         self.cart_hold_timer.setSingleShot(True)
         self.cart_hold_timer.timeout.connect(self._on_cart_hold_timeout)
         self._cart_press_axis = None
         
-        # Gripper 實體連發時鐘
-        self.gripper_jog_timer = QTimer()
+        # 3. Gripper 時鐘
+        self.gripper_jog_timer = QTimer(self)
         self.gripper_jog_timer.timeout.connect(self._gripper_timer_tick)
         self.active_gripper_sign = 0
 
+    # --- UI 建設函式 ---
     def _create_separator(self):
         sep_layout = QHBoxLayout()
         sep_layout.setContentsMargins(15, 5, 15, 5) 
@@ -653,20 +957,26 @@ class JogWidget(BaseBlock):
             btn_add.setFixedSize(22, 22)
             btn_add.setStyleSheet(styles.BTN_ACTION_STYLE)
             row.addWidget(btn_add)
-        
         self.main_layout.addLayout(row)
 
     def _create_jog_btn(self, icon_name):
-        """純按鈕建立 (無 autoRepeat，交給外部接 pressed/released 事件)"""
         btn = QPushButton(qta.icon(icon_name, color='#ffffff'), "")
         btn.setIconSize(QSize(16, 16))
         btn.setFixedSize(22, 22)
         btn.setStyleSheet(styles.BTN_JOG_SLIDER_STYLE)
         return btn
 
-    # ---------------------------------------------------------
-    # UI 建立區塊
-    # ---------------------------------------------------------
+    def _bind_joint_controls(self, axis_idx, slider, val_lbl, btn_minus, btn_plus):
+        slider.valueChanged.connect(lambda val: val_lbl.setText(f"{val/100:.1f}"))
+        btn_minus.pressed.connect(lambda: self._start_joint_jog(axis_idx, -1))
+        btn_minus.released.connect(lambda: self._stop_joint_jog(axis_idx))
+        btn_plus.pressed.connect(lambda: self._start_joint_jog(axis_idx, 1))
+        btn_plus.released.connect(lambda: self._stop_joint_jog(axis_idx))
+
+    def _bind_cartesian_button(self, btn, base_label):
+        btn.pressed.connect(lambda: self._start_cartesian_jog(base_label))
+        btn.released.connect(lambda: self._stop_cartesian_jog())
+
     def _setup_joint_ui(self):
         self.j_speed_ctrl = SpeedControlWidget()
         self._create_header("Joint Jogging", self.j_speed_ctrl)
@@ -708,26 +1018,22 @@ class JogWidget(BaseBlock):
             self.joint_sliders.append(slider)
             val_lbl.slider = slider
             
-            # 拖動更新 3D / 放開更新實機
             slider.valueChanged.connect(self.on_joint_slider_changed)
-            slider.valueChanged.connect(lambda val, label=val_lbl: label.setText(f"{val/100:.1f}"))
             slider.sliderReleased.connect(self.on_joint_slider_released)
             val_lbl.on_commit_cb = self.on_joint_slider_released
 
-            # 綁定 pressed 與 released 到自建連發引擎
             btn_minus = self._create_jog_btn('mdi.transfer-left')
-            btn_minus.pressed.connect(lambda *args, idx=i-1: self._start_joint_jog(idx, -1))
-            btn_minus.released.connect(lambda *args, idx=i-1: self._stop_joint_jog(idx))
             row.addWidget(btn_minus)
             row.addWidget(slider)
 
             btn_plus = self._create_jog_btn('mdi.transfer-right')
-            btn_plus.pressed.connect(lambda *args, idx=i-1: self._start_joint_jog(idx, 1))
-            btn_plus.released.connect(lambda *args, idx=i-1: self._stop_joint_jog(idx))
             row.addWidget(btn_plus)
 
             row.insertSpacerItem(1, QSpacerItem(5, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum))
             row.insertSpacerItem(3, QSpacerItem(5, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum))
+
+            # 呼叫綁定器
+            self._bind_joint_controls(i-1, slider, val_lbl, btn_minus, btn_plus)
 
             joint_container.addLayout(row)
             jog_area.addLayout(joint_container)
@@ -785,12 +1091,10 @@ class JogWidget(BaseBlock):
         step_layout.addWidget(self.spin_step)
         self.step_container.setVisible(False)
         cart_ctrl_tower.addWidget(self.step_container)
-
         cart_main_layout.addLayout(cart_ctrl_tower)
 
         cart_grid = QGridLayout()
         cart_grid.setSpacing(6)
-        
         cartesian_labels = [
             ("X+", "X-", "Rx+", "Rx-"), 
             ("Y+", "Y-", "Ry+", "Ry-"), 
@@ -804,9 +1108,8 @@ class JogWidget(BaseBlock):
                 btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
                 btn.setStyleSheet(styles.BTN_CARTESIAN_STYLE)
                 
-                # 加入 *args 防護罩
-                btn.pressed.connect(lambda *args, bl=base_label: self._start_cartesian_jog(bl))
-                btn.released.connect(lambda *args: self._stop_cartesian_jog())
+                # 呼叫綁定器
+                self._bind_cartesian_button(btn, base_label)
                 
                 cart_grid.addWidget(btn, row_idx, col_idx)
                 self.cart_buttons.append((btn, base_label))
@@ -873,9 +1176,7 @@ class JogWidget(BaseBlock):
         lower_layout.addLayout(gripper_area)
         self.main_layout.addLayout(lower_layout) 
 
-    # ---------------------------------------------------------
-    # 屬性與狀態同步
-    # ---------------------------------------------------------
+    # --- 屬性與 UI 狀態同步 ---
     @property
     def j_speed_level(self): return self.j_speed_ctrl.level
     @property
@@ -888,7 +1189,7 @@ class JogWidget(BaseBlock):
             slider.blockSignals(True)
             slider.setValue(int(round(float_angles[i] * 100)))
             slider.blockSignals(False)
-            if hasattr(self, 'joint_labels') and i < len(self.joint_labels):
+            if i < len(self.joint_labels):
                 self.joint_labels[i].setText(f"{float_angles[i]:.1f}")
 
     def toggle_cartesian_frame(self, checked):
@@ -902,284 +1203,178 @@ class JogWidget(BaseBlock):
         self.btn_jog_mode.setText("Step" if checked else "Cont")
         self.step_container.setVisible(checked)
 
-    # ---------------------------------------------------------
-    # 連動邏輯：Joint (Mode 2 MCU 連續寸動)
-    # ---------------------------------------------------------
+    def _get_axis_speed_deg(self, axis_idx, speed_factor):
+        return config.JOG_SPEEDS_DEG[axis_idx] * speed_factor
+
+    # --- Joint 運動控制 ---
     def on_joint_slider_changed(self):
-        """拖動 Slider 時，只負責更新 3D 畫面"""
         angles = [float(s.value()) / 100.0 for s in self.joint_sliders]
-        if hasattr(self, 'update_3d_callback') and self.update_3d_callback:
-            self.update_3d_callback(angles)
+        cb = getattr(self, 'update_3d_callback', None)
+        if cb: cb(angles)
             
     def on_joint_slider_released(self):
-        """鬆開 Slider 或輸入數值時，送出 PTP 指令給實機"""
         angles = [float(s.value()) / 100.0 for s in self.joint_sliders]
-        
-        # 取得當前面板設定的速度比例 (1~4 檔位轉為 0.25~1.0)
         speed_factor = self.j_speed_ctrl.level * 0.25 
-        
-        if hasattr(self, 'send_jog_callback') and self.send_jog_callback:
-            self.send_jog_callback(angles, speed_factor)
+        cb = getattr(self, 'send_jog_callback', None)
+        if cb: cb(angles, speed_factor)
 
     def _start_joint_jog(self, axis_idx, direction):
-        """按下按鈕：先不發送，啟動 250ms 的長按偵測計時器"""
         self._joint_press_axis = axis_idx
         self._joint_press_dir = direction
-        self.joint_hold_timer.start(250) # 250 毫秒的決斷點
+        self.joint_hold_timer.start(250) 
 
     def _on_joint_hold_timeout(self):
-        """長按觸發：超過 250ms，確認使用者是想要『連續寸動』"""
         axis_idx = self._joint_press_axis
         direction = self._joint_press_dir
         speed_factor = self.j_speed_ctrl.level * 0.25 
-
         self.active_joint_axis = axis_idx
         self.active_joint_sign = direction
 
-        # 發送連續寸動給 STM32 (moveMode = 2)
-        if hasattr(self, 'continuous_jog_callback') and self.continuous_jog_callback:
-            self.continuous_jog_callback(axis_idx, direction, speed_factor)
-        
-        # 記錄真實啟動時間戳記
-        self._last_joint_tick = time.perf_counter()
-        
-        self.joint_jog_timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self.joint_jog_timer.start(10)
+        is_hardware_sent = False
+        cb = getattr(self, 'continuous_jog_callback', None)
+        if cb:
+            is_hardware_sent = cb(axis_idx, direction, speed_factor)
+
+        if is_hardware_sent: 
+            self.joint_query_timer.start(20)
+        else:
+            self._last_joint_tick = time.perf_counter()
+            self.joint_sim_timer.setTimerType(Qt.TimerType.PreciseTimer)
+            self.joint_sim_timer.start(10)
+
+    def _poll_real_pose(self):
+        cb = getattr(self, 'request_pose_callback', None)
+        if cb: cb()
 
     def _stop_joint_jog(self, axis_idx):
-        """放開按鈕：判定是短按還是長按結束"""
         if self.joint_hold_timer.isActive():
-            # 情況 A【短按】：計時器還沒結束就被放開了 -> 執行單步點動！
             self.joint_hold_timer.stop()
             self._execute_joint_step(axis_idx, self._joint_press_dir)
+            if not getattr(self, 'is_simulation_mode', False):
+                QTimer.singleShot(500, self._poll_real_pose)
         else:
-            # 情況 B【長按結束】：送出煞車指令，停止連續寸動
-            if hasattr(self, 'continuous_jog_callback') and self.continuous_jog_callback:
-                self.continuous_jog_callback(axis_idx, 0, 0.0) 
+            is_hardware_stopped = False
+            cb = getattr(self, 'continuous_jog_callback', None)
+            if cb:
+                is_hardware_stopped = cb(axis_idx, 0, 0.0)
+
+            if is_hardware_stopped: QTimer.singleShot(500, self.joint_query_timer.stop)
+            else: self.joint_sim_timer.stop()
             
             if self.active_joint_axis == axis_idx:
                 self.active_joint_axis = -1
-                self.active_joint_sign = 0
-                self.joint_jog_timer.stop()
-
-    def _execute_joint_step(self, axis_idx, direction):
-        """處理單次點擊 (Step)：固定每次點按 0.5 度，強制同步 UI 與實機"""
-        import config
-        step_deg = 0.5 * direction # 固定每次點按走 0.5 度
-
-        # 1. 計算目標新角度 (除以 100 轉為真實角度)
-        slider = self.joint_sliders[axis_idx]
-        current_val = slider.value() / 100.0
-        new_val = current_val + step_deg
-
-        # 2. 限制在關節的安全極限內
-        min_lim, max_lim = config.JOINT_LIMITS[axis_idx]
-        new_val = max(min_lim, min(max_lim, new_val))
-
-        # 3. 強制更新 UI (這會自動觸發 3D 畫面的同步)
-        slider.setValue(int(new_val * 100))
-
-        # 4. 直接呼叫「放開滑桿」事件，發送 PTP 指令給 STM32
-        self.on_joint_slider_released()
 
     def _update_joint_simulation(self):
-        """UI 視覺更新時鐘 (試圖追趕 MCU 的物理位置)"""
         now = time.perf_counter()
         real_dt = now - self._last_joint_tick
         self._last_joint_tick = now
-        
-        # 防呆機制：如果拖曳視窗導致嚴重卡頓，限制單次最大跳躍時間，防止滑桿飛掉
-        if real_dt > 0.1: 
-            real_dt = 1.0 / 60.0 
+        if real_dt > 0.1: real_dt = 1.0 / 60.0 
 
         axis = self.active_joint_axis
         if axis < 0 or axis > 5: return
 
         speed_factor = self.j_speed_ctrl.level * 0.25
         speed_deg = self._get_axis_speed_deg(axis, speed_factor)
-        
         delta = self.active_joint_sign * speed_deg * real_dt 
         
         slider = self.joint_sliders[axis]
-        current_val = slider.value() / 100.0  # 轉回真實角度
+        current_val = slider.value() / 100.0  
         new_val = current_val + delta
         
-        # 軟限位防護：避免視覺滑桿撞到底引發超出範圍錯誤
-        #min_lim, max_lim = config.JOINT_LIMITS[axis]
-        #new_val = max(min_lim, min(max_lim, new_val))
-        
-        slider.setValue(int(new_val * 100))   # 放大 100 倍寫回 Slider
+        min_lim, max_lim = config.JOINT_LIMITS[axis]
+        new_val = max(min_lim, min(max_lim, new_val))
+        slider.setValue(int(new_val * 100))
 
-    # ---------------------------------------------------------
-    # 連動邏輯：Cartesian (Python IK 持續派發點位)
-    # ---------------------------------------------------------
+    def _execute_joint_step(self, axis_idx, direction):
+        step_deg = 0.5 * direction 
+        slider = self.joint_sliders[axis_idx]
+        current_val = slider.value() / 100.0
+        new_val = current_val + step_deg
+
+        min_lim, max_lim = config.JOINT_LIMITS[axis_idx]
+        new_val = max(min_lim, min(max_lim, new_val))
+
+        slider.setValue(int(new_val * 100))
+        self.on_joint_slider_released()
+
+    # --- Cartesian 運動控制 ---
     def _start_cartesian_jog(self, base_label):
-        """按下按鍵"""
         self._cart_press_axis = base_label
-        
-        if self.is_cartesian_continuous:
-            # Cont 模式：啟動 250ms 長按偵測計時器
-            self.cart_hold_timer.start(250)
-        else:
-            # Step 模式：不啟動連發，純粹等待使用者放開按鈕
-            pass
+        if self.is_cartesian_continuous: self.cart_hold_timer.start(250)
 
     def _on_cart_hold_timeout(self):
-        """長按確認：超過 250ms，正式啟動軟體加減速連續串流"""
         self.active_cart_axis = self._cart_press_axis
-        self.cart_current_speed = 0.0 
-        self.cart_is_stopping = False 
-        
-        self.cart_jog_timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self.cart_jog_timer.start(10) 
+        self._start_worker_move(is_continuous=True) 
 
     def _stop_cartesian_jog(self):
-        """放開按鍵"""
         if self.is_cartesian_continuous:
             if self.cart_hold_timer.isActive():
-                # 計時器未結束就放開，直接停止計時，不執行任何動作
                 self.cart_hold_timer.stop()
                 return
             else:
-                # 進入軟體煞車階段
-                self.cart_is_stopping = True
+                self.cart_worker.stop_move() # 通知背景引擎開始煞車
         else:
-            # Step 模式：放開時直接讀取輸入框數值並發送定距移動
             self._execute_cartesian_step(self._cart_press_axis, fixed_step=self.spin_step.value())
 
     def _execute_cartesian_step(self, base_label, fixed_step):
-        """啟動定距移動"""
         if not base_label: return
-        
-        self.active_cart_axis = base_label
-        self.cart_current_speed = 0.0 # 初始速度 0，保證平滑起步
-        self.cart_is_stopping = False
-        
-        # 記錄還要走多遠 (取絕對值)
-        self.cart_step_remaining = abs(fixed_step)
-        
-        # 啟動 100Hz 引擎
-        self.cart_jog_timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self.cart_jog_timer.start(10)
-
-    def _cartesian_timer_tick(self):
-        """100Hz 串流引擎 (加入真實時間補償與背壓凍結)"""
-        if not getattr(self, 'active_cart_axis', None): return
-
-        # 防護：時間凍結與背壓流量控制 (Backpressure)
-        if hasattr(self, 'serial_manager') and self.serial_manager.is_connected:
-            # 水池容量為 40，如果剩下不到 20 張牌，代表 MCU 已經囤積了至少 20 個點。
-            # 為了不把 MCU 塞爆，也不讓空間軌跡斷裂，我們「暫停 Python 的時間」！
-            if getattr(self.serial_manager.ok_semaphore, '_value', 0) < 20:
-                # 凍結時間戳，直接 return。
-                # 這樣就不會生成新點位，完美保證下一幀依然從原地出發，軌跡 100% 絕對連續！
-                self.cart_last_time = time.time() 
-                return 
-
-        current_time = time.time()
-        
-        # 防呆：如果距離上次執行超過 0.1 秒 (代表剛按下去)，重新初始化時間
-        if not hasattr(self, 'cart_last_time') or (current_time - self.cart_last_time) > 0.1:
-            self.cart_last_time = current_time - 0.01
-            self.cart_time_acc = 0.0
+        if self.cart_worker._is_active or getattr(self, 'active_cart_axis', None) is not None: return
             
-        # 計算距離上一次 Tick 流逝了多少真實時間
-        delta = current_time - self.cart_last_time
-        self.cart_last_time = current_time
+        self.active_cart_axis = base_label
+        self._start_worker_move(is_continuous=False, fixed_step=fixed_step)
 
-        # 將流逝時間加入累積器
-        acc = getattr(self, 'cart_time_acc', 0.0) + delta
-        dt = 0.01 # 核心物理演算法依然保持絕對的 10ms 計算
-
+    # 專門負責「讀取 UI 參數並派發任務」的經理
+    def _start_worker_move(self, is_continuous, fixed_step=0.0):
         frame = "Tool" if self.btn_frame_toggle.isChecked() else "World"
         axis_str = self.active_cart_axis[:-1] 
         sign = 1 if self.active_cart_axis[-1] == '+' else -1
         is_rot = len(axis_str) > 1
-        axis_arg = axis_str if is_rot else axis_str.lower()
         
-        max_speed = (100.0 if not is_rot else 25.0) * (self.c_speed_level / 4.0)
-        accel = 200.0 
+        cfg_max_speed = config.MAX_ROT_SPEED if is_rot else config.MAX_LIN_SPEED
+        cfg_max_accel = config.MAX_ROT_ACCEL if is_rot else config.MAX_LIN_ACCEL
+        max_speed = (cfg_max_speed * 0.5) * (self.c_speed_level / 4.0)
+        accel = cfg_max_accel * 1.0 
+        
+        self._current_frame = frame
+        self._current_axis_arg = axis_str if is_rot else axis_str.lower()
+        self.cart_worker.start_move(is_continuous, fixed_step, max_speed, accel, sign)
 
-        # 關鍵迴圈：當累積時間超過 10ms (0.01s)，就執行點位生成！
-        # 如果因為系統延遲導致經過了 25ms，迴圈會連續跑 2 次 (生成 2 點)，留下 5ms 給下次。
-        while acc >= 0.01:
-            step_val = 0.0
-            
-            if self.is_cartesian_continuous:
-                if not getattr(self, 'cart_is_stopping', False):
-                    self.cart_current_speed += accel * dt
-                    if self.cart_current_speed > max_speed: self.cart_current_speed = max_speed
-                else:
-                    self.cart_current_speed -= accel * dt
-                    if self.cart_current_speed <= 0:
-                        self.cart_current_speed = 0.0
-                        self.cart_jog_timer.stop()
-                        self.active_cart_axis = None
-                        self.cart_time_acc = 0.0 # 清零
-                        
-                        if hasattr(self, 'cartesian_jog_callback') and self.cartesian_jog_callback:
-                            for _ in range(5):
-                                self.cartesian_jog_callback(axis_arg, 0.0, frame, True)
-                        if hasattr(self, 'cartesian_jog_stop_callback'):
-                            self.cartesian_jog_stop_callback()
-                        return 
+    # 專門負責「接收信號並發送 MCU」的窗口
+    def _on_step_computed(self, step_val, is_finished):
+        """接收來自背景執行緒的計算結果，安全發送給大腦"""
+        axis_arg = getattr(self, '_current_axis_arg', None)
+        frame = getattr(self, '_current_frame', "World")
+
+        if is_finished:
+            self.active_cart_axis = None
+            cb = getattr(self, 'cartesian_jog_callback', None)
+            if cb:
+                if not self.is_cartesian_continuous:
+                    cb(axis_arg, step_val, frame, True)
                 
-                step_val = sign * self.cart_current_speed * dt
+                # 發送 5 個空點位，完美清空 MCU 緩衝區讓馬達煞停
+                for _ in range(5): 
+                    cb(axis_arg, 0.0, frame, True)
+                    
+            if getattr(self, 'cartesian_jog_stop_callback', None): 
+                self.cartesian_jog_stop_callback()
+            if not getattr(self, 'is_simulation_mode', False): 
+                QTimer.singleShot(500, self._poll_real_pose)
+            return 
 
-            else:
-                if self.cart_step_remaining > 0:
-                    stop_dist = (self.cart_current_speed ** 2) / (2.0 * accel)
-                    if self.cart_step_remaining <= stop_dist:
-                        self.cart_current_speed -= accel * dt
-                        if self.cart_current_speed < 1.0: self.cart_current_speed = 1.0 
-                    else:
-                        self.cart_current_speed += accel * dt
-                        if self.cart_current_speed > max_speed: self.cart_current_speed = max_speed
+        # 正常運算中，發送點位給 IK 引擎
+        if getattr(self, 'cartesian_jog_callback', None):
+            self.cartesian_jog_callback(axis_arg, step_val, frame, True)
 
-                    move_dist = self.cart_current_speed * dt
-                    if move_dist > self.cart_step_remaining:
-                        move_dist = self.cart_step_remaining
-                        
-                    self.cart_step_remaining -= move_dist
-                    step_val = sign * move_dist
-
-                    if self.cart_step_remaining <= 0:
-                        self.cart_jog_timer.stop()
-                        self.active_cart_axis = None
-                        self.cart_time_acc = 0.0 # 清零
-                        
-                        if hasattr(self, 'cartesian_jog_callback') and self.cartesian_jog_callback:
-                            self.cartesian_jog_callback(axis_arg, step_val, frame, True)
-                            for _ in range(5):
-                                self.cartesian_jog_callback(axis_arg, 0.0, frame, True)
-                                
-                        if hasattr(self, 'cartesian_jog_stop_callback'):
-                            self.cartesian_jog_stop_callback()
-                        return 
-                else:
-                    return
-
-            # 派發給 gui.py 計算 IK 並發送
-            if hasattr(self, 'cartesian_jog_callback') and self.cartesian_jog_callback:
-                self.cartesian_jog_callback(axis_arg, step_val, frame, True)
-            
-            # 成功生成一個點位，扣除 10ms 的累積時間
-            acc -= 0.01
-
-        # 迴圈結束，把剩下的零頭時間存起來給下一個 Timer Tick 使用
-        self.cart_time_acc = acc
-
-    # ---------------------------------------------------------
-    # 連動邏輯：Gripper
-    # ---------------------------------------------------------
+    # --- Gripper 運動控制 ---
     def on_gripper_slider_released(self):
-        if hasattr(self, 'send_gripper_callback') and self.send_gripper_callback:
-            self.send_gripper_callback(self.g_slider.value())
+        cb = getattr(self, 'send_gripper_callback', None)
+        if cb: cb(self.g_slider.value())
 
     def _start_gripper_jog(self, sign):
         self.active_gripper_sign = sign
         self._gripper_timer_tick() 
-        self.gripper_jog_timer.start(10) # 100Hz 更新頻率
+        self.gripper_jog_timer.start(10) 
 
     def _stop_gripper_jog(self):
         self.gripper_jog_timer.stop()
@@ -1190,225 +1385,4 @@ class JogWidget(BaseBlock):
         new_val = self.g_slider.value() + self.active_gripper_sign * 5
         new_val = max(self.g_slider.minimum(), min(self.g_slider.maximum(), new_val))
         self.g_slider.setValue(new_val)
-        self.on_gripper_slider_released() # 夾爪允許密集發送 PWM
-
-# ==========================================
-# View3DWidget & LogWidget
-# ==========================================
-class _ScreenshotSaveSignals(QObject):
-    finished = Signal(str)
-    error = Signal(str)
-
-class _ScreenshotSaveTask(QRunnable):
-    def __init__(self, image: QImage, filepath: str):
-        super().__init__()
-        self.image = image 
-        self.filepath = filepath
-        self.signals = _ScreenshotSaveSignals()
-
-    def run(self):
-        try:
-            ok = self.image.save(self.filepath, "PNG")
-            if ok:
-                self.signals.finished.emit(self.filepath)
-            else:
-                self.signals.error.emit(f"儲存失敗: {self.filepath}")
-        except Exception as e:
-            self.signals.error.emit(str(e))
-
-class View3DWidget(BaseBlock):    
-    def __init__(self, parent=None):
-        nav_config = [
-            {'icon': 'mdi.axis-arrow', 'toggle_icon': 'mdi.axis-arrow', 'toggle_color': '#00e6b8'},
-            {'icon': 'mdi.rotate-orbit', 'toggle_icon': 'mdi.rotate-orbit', 'toggle_color': '#e6a800'},
-            {'icon': 'mdi.camera-outline'}, 
-            {'icon': 'mdi.dots-vertical'}
-        ]
-        super().__init__(parent=parent, nav_config=nav_config)
-        self.setMinimumHeight(200) 
-        
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4) 
-        layout.setSpacing(0) 
-        
-        self.monitor_widget = MonitorWidget()
-        layout.addWidget(self.monitor_widget)
-        
-        self.robot_view = Robot3DView()
-        layout.addWidget(self.robot_view)
-        
-        self.robot_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.robot_view.customContextMenuRequested.connect(lambda pos: self.show_context_menu())
-        
-        self.btn_translate = self.nav_bar.nav_buttons[0]
-        self.btn_rotate = self.nav_bar.nav_buttons[1]
-        self.btn_camera = self.nav_bar.nav_buttons[2] 
-        self.btn_camera.clicked.connect(self.on_camera_clicked) 
-
-        self._screenshot_pool = QThreadPool() 
-        
-        self._active_menu = None
-        self._updating_btns = False 
-        self.btn_translate.toggled.connect(self.on_translate_toggled)
-        self.btn_rotate.toggled.connect(self.on_rotate_toggled)
-
-    def set_base_manager(self, base_manager):
-        self.robot_view.set_base_manager(base_manager)
-
-    def _handle_spacebar(self):
-        focus_w = QApplication.focusWidget()
-        if focus_w:
-            if focus_w.inherits("QLineEdit") or focus_w.inherits("QAbstractSpinBox") or focus_w.inherits("QTextEdit"):
-                return
-        local_pos = self.mapFromGlobal(QCursor.pos())
-        if not self.rect().contains(local_pos):
-            return 
-        if getattr(self, '_active_menu', None) is not None:
-            self._active_menu.close()
-            self._active_menu = None
-            return
-        self.show_context_menu(pos=None)
-
-    def on_translate_toggled(self, checked):
-        if self._updating_btns: return
-        self._updating_btns = True
-        if checked:
-            self.btn_rotate.setChecked(False) 
-            self.robot_view.set_gizmo_mode('translate')
-        else:
-            if not self.btn_rotate.isChecked(): 
-                self.robot_view.set_gizmo_mode('free') 
-        self._updating_btns = False
-
-    def on_rotate_toggled(self, checked):
-        if self._updating_btns: return
-        self._updating_btns = True
-        if checked:
-            self.btn_translate.setChecked(False) 
-            self.robot_view.set_gizmo_mode('rotate')
-        else:
-            if not self.btn_translate.isChecked():
-                self.robot_view.set_gizmo_mode('free') 
-        self._updating_btns = False
-
-    def reset_gizmo_buttons(self):
-        if self.btn_translate.isChecked() or self.btn_rotate.isChecked():
-            self.btn_translate.setChecked(False)
-            self.btn_rotate.setChecked(False)
-
-    def on_camera_clicked(self):
-        QApplication.processEvents() 
-        pixmap = self.grab() 
-        image = pixmap.toImage() 
-        screenshot_dir = os.path.join(os.getcwd(), "screenshots")
-        os.makedirs(screenshot_dir, exist_ok=True)
-        filename = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3] + ".png"
-        filepath = os.path.join(screenshot_dir, filename)
-        task = _ScreenshotSaveTask(image, filepath)
-        task.signals.error.connect(lambda msg: print(f"[截圖錯誤] {msg}"))
-        self._screenshot_pool.start(task)
-        self._flash_camera_icon('#00e6b8', duration=80)
-
-    def _flash_camera_icon(self, color: str, duration: int = 80):
-        if not hasattr(self, '_camera_btn_original_style'):
-            self._camera_btn_original_style = self.btn_camera.styleSheet()
-        self.btn_camera.setStyleSheet(
-            f"QToolButton {{ background-color: {color} !important; border-radius: 4px; }}"
-        )
-        QTimer.singleShot(duration, self._restore_camera_icon)
-
-    def _restore_camera_icon(self):
-        self.btn_camera.setStyleSheet(self._camera_btn_original_style)
-
-    def show_context_menu(self, pos=None):        
-        menu_pos = QCursor.pos()
-        menu = QMenu(self.window())
-        self._active_menu = menu
-        menu.setStyleSheet(styles.MENU_STYLE)
-        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        
-        action_reset = QAction(qta.icon('mdi.camera-retake', color='#e0e0e0'), "Reset Camera", self)
-        grid_visible = self.robot_view.floor_grid.visible
-        action_grid = QAction(qta.icon('mdi.grid', color='#e0e0e0'), "Hide Grid" if grid_visible else "Show Grid", self)
-        is_drag_active = getattr(self.robot_view, '_show_drag_sphere', False)
-        action_toggle_drag = QAction(qta.icon('mdi.cursor-move', color='#e0e0e0'), "Disable Drag Sphere" if is_drag_active else "Enable Drag Sphere", self)
-        path_visible = getattr(self.robot_view, 'show_trajectory', True)
-        action_path = QAction(qta.icon('mdi.vector-polyline', color='#e0e0e0'), "Hide Trajectory" if path_visible else "Show Trajectory", self)
-        
-        menu.addAction(action_reset)
-        menu.addSeparator() 
-        menu.addAction(action_grid)
-        menu.addAction(action_toggle_drag)
-        menu.addAction(action_path) 
-        
-        try:
-            selected_action = menu.exec(menu_pos)
-        finally:
-            self._active_menu = None
-            
-        if not selected_action: return
-        
-        if selected_action == action_reset:
-            self.robot_view.view.camera.center = (0, 0, 0.15)
-            self.robot_view.view.camera.elevation = 30
-            self.robot_view.view.camera.azimuth = -225
-            self.robot_view.view.camera.distance = 2.5
-        elif selected_action == action_grid:
-            new_state = not grid_visible
-            self.robot_view.floor_grid.visible = new_state
-            self.robot_view.floor.visible = new_state 
-            self.robot_view.canvas.update()
-        elif selected_action == action_toggle_drag:
-            self.robot_view._show_drag_sphere = not is_drag_active
-            self.robot_view._update_gizmo_visuals()
-        elif selected_action == action_path:
-            self.robot_view.show_trajectory = not path_visible
-            if hasattr(self.robot_view, 'path_actor'):
-                has_data = getattr(self.robot_view.path_actor, 'pos', None) is not None and len(self.robot_view.path_actor.pos) > 1
-                self.robot_view.path_actor.visible = self.robot_view.show_trajectory and has_data
-            self.robot_view.canvas.update()
-
-class LogWidget(BaseBlock):
-    def __init__(self, parent=None):
-        nav_config = [{'icon': 'mdi.delete-outline'}, {'icon': 'mdi.export'}, {'icon': 'mdi.dots-vertical'}]
-        super().__init__(parent=parent, nav_config=nav_config)
-        self.setMinimumHeight(0) 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 15, 15, 60)
-        
-        self.log_console = QTextEdit()
-        self.log_console.setReadOnly(True)
-        try:
-            self.log_console.setFont(styles.FONT_LOG)
-        except AttributeError:
-            pass
-            
-        self.log_console.setStyleSheet(styles.LOG_CONSOLE_STYLE)
-        layout.addWidget(self.log_console)
-
-        self.btn_clear = self.nav_bar.nav_buttons[0]
-        self.btn_clear.setToolTip("Clear Log")
-        self.btn_clear.clicked.connect(self.log_console.clear)
-
-        self.append_log("[System] Parol Stream OS initialized.")
-
-    def append_log(self, msg):
-        color = "#d4d4d4" 
-        safe_msg = str(msg).replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
-        msg_upper = safe_msg.upper()
-
-        if "[ERROR]" in msg_upper or "[STOP]" in msg_upper or "錯誤" in msg_upper or "FAILED" in msg_upper:
-            color = "#ff4444" 
-        elif "[WARNING]" in msg_upper or "警告" in msg_upper or "TIMEOUT" in msg_upper:
-            color = "#e6a800" 
-        elif "[SYSTEM]" in msg_upper or "系統" in msg_upper:
-            color = "#00a8e6" 
-        elif "[HW]" in msg_upper or "CONNECTED" in msg_upper or "DISCONNECTED" in msg_upper:
-            color = "#c63bbb" 
-        elif "RECORDED" in msg_upper or "UPDATED" in msg_upper or "DELETED" in msg_upper or "[CODE]" in msg_upper:
-            color = "#00e6b8" 
-        elif "&GT;&GT;" in safe_msg: 
-            color = "#d7ba7d" 
-
-        html_msg = f'<span style="color: {color};">{safe_msg}</span>'
-        self.log_console.append(html_msg)
+        self.on_gripper_slider_released()

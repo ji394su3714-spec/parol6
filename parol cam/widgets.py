@@ -2,13 +2,14 @@
 import qtawesome as qta
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                                QLabel, QComboBox, QDoubleSpinBox, QGridLayout, 
-                               QScrollArea, QListWidget, QSlider, QSizePolicy)
+                               QScrollArea, QListWidget, QSlider, QSizePolicy, 
+                               QTextEdit, QSpinBox, QButtonGroup, QStackedWidget)
 from PySide6.QtCore import Qt, QSize
+from PySide6.QtGui import QTextCursor
 import styles
 import sys
 
 def apply_windows_dark_titlebar(window):
-    """將 Windows 原生標題列設為深色模式"""
     if sys.platform == "win32":
         try:
             import ctypes
@@ -28,7 +29,8 @@ class CollapsibleSection(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.btn_toggle = QPushButton(f"▼ {title}")
+        self.btn_toggle = QPushButton(f" {title}")
+        self.btn_toggle.setIcon(qta.icon('mdi.chevron-down', color='#ffffff'))
         self.btn_toggle.setCheckable(True)
         self.btn_toggle.setChecked(True)
         self.btn_toggle.setCursor(Qt.PointingHandCursor)
@@ -46,9 +48,81 @@ class CollapsibleSection(QWidget):
 
     def toggle_content(self, checked):
         self.content_area.setVisible(checked)
-        title_text = self.btn_toggle.text()[2:] 
-        self.btn_toggle.setText(f"▼ {title_text}" if checked else f"▶ {title_text}")
+        icon_name = 'mdi.chevron-down' if checked else 'mdi.chevron-right'
+        icon_color = '#ffffff' if checked else '#dddddd'
+        self.btn_toggle.setIcon(qta.icon(icon_name, color=icon_color))
 
+
+class LogPanelWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.text_edit = QTextEdit()
+        self.text_edit.setReadOnly(True)
+        self.text_edit.setFixedSize(450, 250)
+        self.text_edit.setStyleSheet(styles.STYLE_LOG_PANEL)
+        self.text_edit.setVisible(False)
+        layout.addWidget(self.text_edit)
+        
+    def toggle_log(self, checked):
+        self.text_edit.setVisible(checked)
+        
+    def append_log(self, text):
+        self.text_edit.moveCursor(QTextCursor.End)
+        self.text_edit.insertPlainText(text)
+        self.text_edit.moveCursor(QTextCursor.End)
+
+# (在 widgets.py 裡面，完全替換 ModelTransformWidget)
+
+class ModelTransformWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.container = QWidget()
+        self.container.setObjectName("TransformContainer")
+        self.container.setStyleSheet(styles.STYLE_TRANSFORM_PANEL)
+        self.container.setVisible(False)
+        self.container.setFixedWidth(250) # 👑 嚴格限制整個面板的寬度為 250px
+        
+        grid = QGridLayout(self.container)
+        grid.setContentsMargins(12, 12, 12, 12)
+        grid.setSpacing(8)
+        
+        self.spins = []
+        labels = ["X:", "Y:", "Z:", "Rx:", "Ry:", "Rz:"]
+        
+        # 👑 變更為 2欄 3列 的排版 (左欄: XYZ, 右欄: RxRyRz)
+        for i in range(6):
+            lbl = QLabel(labels[i])
+            lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            
+            spin = QDoubleSpinBox()
+            spin.setRange(-2000.0 if i < 3 else -180.0, 2000.0 if i < 3 else 180.0)
+            spin.setSingleStep(10.0 if i < 3 else 5.0)
+            spin.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed) # 👑 彈性填滿剩餘空間，防止爆框
+            
+            self.spins.append(spin)
+            
+            row = i % 3  # 會變成 0, 1, 2, 0, 1, 2
+            col = i // 3 # 會變成 0, 0, 0, 1, 1, 1
+            
+            grid.addWidget(lbl, row, col * 2)
+            grid.addWidget(spin, row, col * 2 + 1)
+            
+        layout.addWidget(self.container)
+        
+    def set_panel_visible(self, visible):
+        self.container.setVisible(visible)
+        
+    @property
+    def is_panel_visible(self):
+        return self.container.isVisible()
 
 class FloatingToolbarWidget(QWidget):
     def __init__(self, parent=None):
@@ -56,27 +130,46 @@ class FloatingToolbarWidget(QWidget):
         self.setObjectName("FloatingToolbar")
         self.setStyleSheet(styles.STYLE_TOOLBAR)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 5, 8, 5) 
-        layout.setSpacing(5)
+        layout.setContentsMargins(4, 4, 4, 4) 
+        layout.setSpacing(4)
+        
+        self.btn_load_stl = QPushButton(qta.icon('mdi.folder-open', color='white'), "")
+        self.btn_load_stl.setToolTip("載入 STL 模型")
+        
+        self.cb_tool_select = QComboBox()
+        self.cb_tool_select.setToolTip("選擇工作刀具")
+        self.cb_tool_select.setStyleSheet(styles.STYLE_TOOLBAR_COMBO)
+        
+        self.btn_tcp_config = QPushButton(qta.icon('mdi.wrench', color='white'), "")
+        self.btn_tcp_config.setToolTip("打開 TCP Manager")
+        
+        self.btn_zero_joints = QPushButton(qta.icon('mdi.home', color='white'), "")
+        self.btn_zero_joints.setToolTip("手臂歸零 (Home Pose)")
+        
+        for btn in [self.btn_load_stl, self.btn_tcp_config, self.btn_zero_joints]:
+            btn.setFixedSize(32, 32)
+            btn.setIconSize(QSize(18, 18))
+            btn.setStyleSheet(styles.STYLE_TOOLBAR_BTN)
+            layout.addWidget(btn)
+            
+        layout.insertWidget(1, self.cb_tool_select)
+        
+        sep1 = QWidget()
+        sep1.setFixedSize(1, 20)
+        sep1.setStyleSheet("background-color: #444;")
+        layout.addWidget(sep1)
         
         self.cb_mode = QComboBox()
         self.cb_mode.addItems(["平面特徵", "3D 輪廓"])
-        self.cb_mode.setStyleSheet("""
-            QComboBox { background-color: #333; color: white; border-radius: 4px; padding: 4px 8px; font-weight: bold; border: 1px solid #555; }
-            QComboBox::drop-down { border: none; }
-        """)
+        self.cb_mode.setStyleSheet(styles.STYLE_TOOLBAR_COMBO)
 
-        # 新增：封閉/開放強制切換選單
         self.cb_loop_mode = QComboBox()
         self.cb_loop_mode.addItems(["自動判定", "強制封閉", "強制開放"])
-        self.cb_loop_mode.setStyleSheet("""
-            QComboBox { background-color: #2c3e50; color: #ecf0f1; border-radius: 4px; padding: 4px 8px; font-weight: bold; border: 1px solid #34495e; }
-            QComboBox::drop-down { border: none; }
-        """)
+        self.cb_loop_mode.setStyleSheet(styles.STYLE_TOOLBAR_COMBO_HIGHLIGHT)
         
         self.btn_magic = QPushButton(qta.icon('mdi.auto-fix', color='white'), "")
         self.btn_magic.setCheckable(True) 
-        self.btn_magic.setToolTip("幾何萃取")
+        self.btn_magic.setToolTip("啟用幾何萃取魔術棒")
         
         self.btn_move = QPushButton(qta.icon('mdi.cursor-move', color='white'), "")
         self.btn_scale = QPushButton(qta.icon('mdi.arrow-expand-all', color='white'), "")
@@ -87,12 +180,36 @@ class FloatingToolbarWidget(QWidget):
         layout.addWidget(self.cb_loop_mode) 
         
         for btn in [self.btn_magic, self.btn_move, self.btn_scale, self.btn_mirror, self.btn_add]:
-            btn.setFixedSize(40, 40)       
-            btn.setIconSize(QSize(22, 22)) 
+            btn.setFixedSize(32, 32)       
+            btn.setIconSize(QSize(18, 18)) 
             btn.setStyleSheet(styles.STYLE_TOOLBAR_BTN)
             layout.addWidget(btn)
             
         layout.addStretch()
+
+
+class FloatingPlaybackWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("FloatingPlayback")
+        self.setStyleSheet(styles.STYLE_PLAYBACK_PANEL)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(15, 8, 15, 8) 
+        layout.setSpacing(15)
+        
+        self.btn_play = QPushButton("▶️ 播放")
+        self.btn_play.setEnabled(False)
+        self.btn_play.setFixedSize(85, 26)
+        
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setMinimumWidth(300)
+        self.slider.setEnabled(False)
+        
+        self.lbl_frame = QLabel("0 / 0")
+        
+        layout.addWidget(self.btn_play)
+        layout.addWidget(self.slider)
+        layout.addWidget(self.lbl_frame)
 
 
 class PreparePanelWidget(QWidget):
@@ -113,106 +230,93 @@ class PreparePanelWidget(QWidget):
         scroll_layout.setContentsMargins(0, 0, 0, 0)
         scroll_layout.setSpacing(0)
 
-        # 1. 系統與刀具
-        sec_sys = CollapsibleSection("系統與刀具 (TCP) 綁定")
-        btn_layout = QVBoxLayout() 
-        btn_layout.setSpacing(5)
-        self.btn_tcp_config = QPushButton("打開 TCP Manager")
-        self.btn_tcp_config.setStyleSheet(styles.STYLE_BTN_NORMAL)
-        self.btn_zero_joints = QPushButton("手臂歸零 (Home Pose)")
-        self.btn_zero_joints.setStyleSheet(styles.STYLE_BTN_NORMAL)
-        btn_layout.addWidget(self.btn_tcp_config)
-        btn_layout.addWidget(self.btn_zero_joints)
+        # 1. 參數區塊 (單欄排列 + 底部橫線風格)
+        sec_params = CollapsibleSection("特徵參數設定 (Properties)")
         
-        tool_layout = QHBoxLayout()
-        tool_layout.addWidget(QLabel("綁定刀具:"))
-        self.cb_tool_select = QComboBox()
-        self.cb_tool_select.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        tool_layout.addWidget(self.cb_tool_select) 
-        sec_sys.content_layout.addLayout(btn_layout)
-        sec_sys.content_layout.addLayout(tool_layout)
-        scroll_layout.addWidget(sec_sys)
-
-        # 2. 模型位置 (增加網格面數顯示)
-        sec_model = CollapsibleSection("模型位置與姿態校正")
-        self.btn_load_stl = QPushButton("📂 載入 STL 檔案")
-        self.btn_load_stl.setStyleSheet(styles.STYLE_BTN_LOAD)
+        # --- 小標籤切換列 ---
+        tab_layout = QHBoxLayout()
+        tab_layout.setSpacing(0)
+        tab_layout.setContentsMargins(5, 0, 5, 5) # 底部留一點間隙
         
-        self.lbl_face_count = QLabel("網格面數: 尚未載入")
-        self.lbl_face_count.setStyleSheet("color: #AAAAAA; font-size: 12px; padding-left: 2px;")
+        self.btn_tab_tcp = QPushButton("TCP 姿態")
+        self.btn_tab_geo = QPushButton("幾何路徑")
+        self.btn_tab_spd = QPushButton("速度動態")
         
-        sec_model.content_layout.addWidget(self.btn_load_stl)
-        sec_model.content_layout.addWidget(self.lbl_face_count)
+        self.param_tab_group = QButtonGroup(self)
+        self.param_tab_group.setExclusive(True)
         
-        grid = QGridLayout()
-        grid.setSpacing(5) 
-        grid.setContentsMargins(0, 5, 0, 0)
-        self.model_spins = []
-        labels_model = ["X", "Y", "Z", "Rx", "Ry", "Rz"]
-        for i in range(6):
-            lbl = QLabel(labels_model[i])
-            lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            lbl.setFixedWidth(20) 
-            spin = QDoubleSpinBox()
-            spin.setRange(-2000.0 if i < 3 else -180.0, 2000.0 if i < 3 else 180.0)
-            spin.setSingleStep(10.0 if i < 3 else 5.0)
-            spin.setMinimumWidth(50)
-            spin.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            self.model_spins.append(spin)
-            row = i // 2
-            col = i % 2
-            grid.addWidget(lbl, row, 2 * col)
-            grid.addWidget(spin, row, 2 * col + 1)
-        sec_model.content_layout.addLayout(grid)
-        scroll_layout.addWidget(sec_model)
-
-        # 3. 加工參數
-        sec_offset = CollapsibleSection("加工姿態微調與過渡參數")
+        for i, btn in enumerate([self.btn_tab_tcp, self.btn_tab_geo, self.btn_tab_spd]):
+            btn.setCheckable(True)
+            btn.setStyleSheet(styles.STYLE_INNER_TAB)
+            self.param_tab_group.addButton(btn, i)
+            tab_layout.addWidget(btn)
+            
+        tab_layout.addStretch() # 將標籤靠左對齊
+        self.btn_tab_tcp.setChecked(True)
+        
+        # 加上一條細細的分隔線，讓版面更像專業的分頁
+        line = QWidget()
+        line.setFixedHeight(1)
+        line.setStyleSheet("background-color: #333;")
+        
+        sec_params.content_layout.addLayout(tab_layout)
+        sec_params.content_layout.addWidget(line)
+        
+        self.param_stacked = QStackedWidget()
+        
+        # ==========================================
+        # Page 1: TCP 姿態
+        # ==========================================
+        page_tcp = QWidget()
+        layout_tcp = QVBoxLayout(page_tcp)
+        layout_tcp.setContentsMargins(5, 10, 5, 0)
+        layout_tcp.setSpacing(8)
+        
         align_layout = QHBoxLayout()
         align_layout.addWidget(QLabel("姿態計算:"))
         self.cb_align_mode = QComboBox()
-        self.cb_align_mode.addItems(["最小扭轉 (雷射/塗膠/銑削)", "切線對齊 (銲接/指向性刀具)"])
+        self.cb_align_mode.addItems(["最小扭轉 (雷射/塗膠)", "切線對齊 (銲接/指向)"])
         self.cb_align_mode.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         align_layout.addWidget(self.cb_align_mode)
-        sec_offset.content_layout.addLayout(align_layout)
+        layout_tcp.addLayout(align_layout)
         
         safe_z_layout = QHBoxLayout()
         safe_z_layout.addWidget(QLabel("安全抬刀 (mm):"))
         self.spin_safe_z = QDoubleSpinBox()
         self.spin_safe_z.setRange(0.0, 200.0)
         self.spin_safe_z.setValue(20.0) 
-        self.spin_safe_z.setMinimumWidth(50)
         self.spin_safe_z.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         safe_z_layout.addWidget(self.spin_safe_z)
-        sec_offset.content_layout.addLayout(safe_z_layout)
+        layout_tcp.addLayout(safe_z_layout)
         
         grid_offset = QGridLayout()
         grid_offset.setSpacing(5) 
-        grid_offset.setContentsMargins(0, 5, 0, 0)
         self.offset_spins = []
         labels_offset = ["Rx", "Ry", "Rz"]
         for i in range(3):
             lbl = QLabel(labels_offset[i])
             lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            lbl.setFixedWidth(20)
             spin = QDoubleSpinBox()
             spin.setRange(-180.0, 180.0)
             spin.setSingleStep(5.0) 
-            spin.setMinimumWidth(50)
             spin.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             self.offset_spins.append(spin)
-            row = i // 2
-            col = i % 2
-            grid_offset.addWidget(lbl, row, 2 * col)
-            grid_offset.addWidget(spin, row, 2 * col + 1)
-        sec_offset.content_layout.addLayout(grid_offset)
-        scroll_layout.addWidget(sec_offset)
+            grid_offset.addWidget(lbl, i, 0)
+            grid_offset.addWidget(spin, i, 1)
+        layout_tcp.addLayout(grid_offset)
+        layout_tcp.addStretch()
+        self.param_stacked.addWidget(page_tcp)
 
-        # 4. 進階路徑與動態參數
-        sec_adv = CollapsibleSection("進階幾何與路徑參數")
+        # ==========================================
+        # Page 2: 幾何路徑
+        # ==========================================
+        page_geo = QWidget()
+        layout_geo = QVBoxLayout(page_geo)
+        layout_geo.setContentsMargins(5, 10, 5, 0)
+        layout_geo.setSpacing(5)
+        
         grid_adv = QGridLayout()
         grid_adv.setSpacing(5)
-        grid_adv.setContentsMargins(0, 5, 0, 0)
         
         def create_spin(val, min_v, max_v, step, decimals=2):
             s = QDoubleSpinBox()
@@ -221,7 +325,6 @@ class PreparePanelWidget(QWidget):
             s.setDecimals(decimals)
             s.setValue(val)
             s.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            s.setMinimumWidth(60)
             return s
             
         self.spin_chordal = create_spin(0.05, 0.001, 5.0, 0.01, 3)
@@ -232,12 +335,12 @@ class PreparePanelWidget(QWidget):
         self.spin_overcut = create_spin(2.0, 0.0, 50.0, 0.5)
         
         adv_params = [
-            ("弦向誤差 (Chordal):", self.spin_chordal),
-            ("最大點距 (Max Step):", self.spin_max_step),
-            ("微段濾波 (Min Step):", self.spin_min_step),
-            ("引入距離 (Lead-in):", self.spin_lead_dist),
-            ("引入角度 (Angle):", self.spin_lead_angle),
-            ("過切距離 (Overcut):", self.spin_overcut),
+            ("弦向誤差:", self.spin_chordal),
+            ("最大點距:", self.spin_max_step),
+            ("微段濾波:", self.spin_min_step),
+            ("引入距離:", self.spin_lead_dist),
+            ("引入角度:", self.spin_lead_angle),
+            ("過切距離:", self.spin_overcut),
         ]
         
         for i, (label_text, spin_widget) in enumerate(adv_params):
@@ -246,10 +349,60 @@ class PreparePanelWidget(QWidget):
             grid_adv.addWidget(lbl, i, 0)
             grid_adv.addWidget(spin_widget, i, 1)
             
-        sec_adv.content_layout.addLayout(grid_adv)
-        scroll_layout.addWidget(sec_adv)
+        layout_geo.addLayout(grid_adv)
+        layout_geo.addStretch()
+        self.param_stacked.addWidget(page_geo)
 
-        # 5. 路徑管理
+        # ==========================================
+        # Page 3: 速度動態
+        # ==========================================
+        page_spd = QWidget()
+        layout_spd = QVBoxLayout(page_spd)
+        layout_spd.setContentsMargins(5, 10, 5, 0)
+        layout_spd.setSpacing(5)
+        
+        grid_spd = QGridLayout()
+        grid_spd.setSpacing(5)
+        
+        def create_spin_int(val):
+            s = QSpinBox()
+            s.setRange(1, 100)
+            s.setValue(val)
+            s.setSuffix(" %")
+            s.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            return s
+            
+        self.spin_cut_speed = create_spin_int(10)
+        self.spin_cut_accel = create_spin_int(100)
+        self.spin_move_speed = create_spin_int(100)
+        self.spin_move_accel = create_spin_int(100)
+        
+        spd_params = [
+            ("切削速度:", self.spin_cut_speed),
+            ("切削加速:", self.spin_cut_accel),
+            ("空駛速度:", self.spin_move_speed),
+            ("空駛加速:", self.spin_move_accel),
+        ]
+        
+        for i, (label_text, spin_widget) in enumerate(spd_params):
+            lbl = QLabel(label_text)
+            lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            grid_spd.addWidget(lbl, i, 0)
+            grid_spd.addWidget(spin_widget, i, 1)
+        
+        layout_spd.addLayout(grid_spd)
+        layout_spd.addStretch()
+        self.param_stacked.addWidget(page_spd)
+
+        # 將 StackedWidget 加入面板，並連接翻頁訊號
+        sec_params.content_layout.addWidget(self.param_stacked)
+        self.param_tab_group.idClicked.connect(self.param_stacked.setCurrentIndex)
+        
+        scroll_layout.addWidget(sec_params)
+
+        # ==========================================
+        # 路徑管理區
+        # ==========================================
         sec_path = CollapsibleSection("特徵路徑清單 (Feature Manager)")
         path_btn_layout = QHBoxLayout()
         path_btn_layout.setSpacing(5)
@@ -265,7 +418,7 @@ class PreparePanelWidget(QWidget):
             path_btn_layout.addWidget(btn)
             
         self.list_paths = QListWidget()
-        self.list_paths.setMinimumHeight(180) 
+        self.list_paths.setMinimumHeight(250) 
         self.list_paths.setStyleSheet(styles.STYLE_LIST_WIDGET)
         self.list_paths.setSelectionMode(QListWidget.ExtendedSelection) 
         
@@ -276,9 +429,6 @@ class PreparePanelWidget(QWidget):
         scroll_layout.addStretch() 
         scroll.setWidget(scroll_content)
         layout.addWidget(scroll)
-
-
-from PySide6.QtWidgets import QSpinBox # 確保頂部 import 有包含 QSpinBox
 
 class PreviewPanelWidget(QWidget):
     def __init__(self, parent=None):
@@ -298,65 +448,8 @@ class PreviewPanelWidget(QWidget):
         scroll_layout.setContentsMargins(0, 0, 0, 0)
         scroll_layout.setSpacing(0)
 
-        sec_calc = CollapsibleSection("軌跡運算與編譯")
-        
-        # 動態百分比控制區 (取代寫死的參數)
-        grid_spd = QGridLayout()
-        grid_spd.setSpacing(5)
-        grid_spd.setContentsMargins(0, 5, 0, 10)
-        
-        def create_spin(val):
-            s = QSpinBox()
-            s.setRange(1, 100)
-            s.setValue(val)
-            s.setSuffix(" %")
-            s.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            return s
-            
-        self.spin_cut_speed = create_spin(30)
-        self.spin_cut_accel = create_spin(100)
-        self.spin_move_speed = create_spin(100)
-        self.spin_move_accel = create_spin(100)
-        
-        grid_spd.addWidget(QLabel("切削速度 (Cut):"), 0, 0)
-        grid_spd.addWidget(self.spin_cut_speed, 0, 1)
-        grid_spd.addWidget(QLabel("切削加速度:"), 1, 0)
-        grid_spd.addWidget(self.spin_cut_accel, 1, 1)
-        
-        grid_spd.addWidget(QLabel("空駛速度 (Move):"), 2, 0)
-        grid_spd.addWidget(self.spin_move_speed, 2, 1)
-        grid_spd.addWidget(QLabel("空駛加速度:"), 3, 0)
-        grid_spd.addWidget(self.spin_move_accel, 3, 1)
-        
-        sec_calc.content_layout.addLayout(grid_spd)
-
-        # 按鈕與狀態標籤
-        self.btn_bake_ik = QPushButton("計算 IK 並編譯腳本 (暫存)")
-        self.btn_bake_ik.setStyleSheet(styles.STYLE_BTN_PRIMARY)
-        self.lbl_bake_status = QLabel("狀態：等待運算...")
-        sec_calc.content_layout.addWidget(self.btn_bake_ik)
-        sec_calc.content_layout.addWidget(self.lbl_bake_status)
-        scroll_layout.addWidget(sec_calc)
-
-        sec_preview = CollapsibleSection("軌跡動畫預覽")
-        slider_layout = QHBoxLayout()
-        self.lbl_frame = QLabel("0 / 0")
-        self.slider = QSlider(Qt.Horizontal)
-        self.slider.setMinimum(0)
-        self.slider.setMaximum(0)
-        self.slider.setEnabled(False) 
-        slider_layout.addWidget(self.slider)
-        slider_layout.addWidget(self.lbl_frame)
-        
-        self.btn_play = QPushButton("▶️ 播放預覽")
-        self.btn_play.setStyleSheet(styles.STYLE_BTN_NORMAL)
-        self.btn_play.setEnabled(False)
-        sec_preview.content_layout.addLayout(slider_layout)
-        sec_preview.content_layout.addWidget(self.btn_play)
-        scroll_layout.addWidget(sec_preview)
-
-        sec_export = CollapsibleSection("檔案匯出 (Save)")
-        self.btn_save_script = QPushButton("💾 另存腳本 (匯出 JSON)")
+        sec_export = CollapsibleSection("機器腳本匯出 (Export)")
+        self.btn_save_script = QPushButton("💾 另存機器腳本 (匯出 JSON)")
         self.btn_save_script.setStyleSheet(styles.STYLE_BTN_SUCCESS)
         sec_export.content_layout.addWidget(self.btn_save_script)
         scroll_layout.addWidget(sec_export)

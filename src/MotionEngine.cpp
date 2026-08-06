@@ -1,11 +1,15 @@
 #include "MotionEngine.h"
 #include "Globals.h"
-constexpr float STEP_FREQ = 50000.0f;                 // TIM7 頻率 50kHz
+constexpr float STEP_FREQ = 100000.0f;                 // 升級為 100kHz
 constexpr float ACCEL_DENOM = STEP_FREQ * STEP_FREQ;  
-constexpr uint32_t TICK_US = 20;                      
+constexpr uint32_t TICK_US = 10;                       // 100kHz 對應的週期是 10us
+
+// 將 100kHz 降頻 100 倍，讓梯形加減速依然在 1kHz 的頻率下運算
+constexpr int MATH_PRESCALER = 100;
+
 constexpr int32_t JOG_INFINITY = 2000000000;          
 
-// TIM6 (Hermite 插補器) 降為 1000Hz 確保運算餘裕
+// TIM6 (Hermite 插補器) 升級為 1000Hz
 constexpr float TIM6_FREQ = 1000.0f;
 constexpr float T_TIM6 = 1.0f / TIM6_FREQ;            // 0.001s
 
@@ -25,8 +29,6 @@ volatile BufPoint motion_buf[MOTION_BUF_SIZE];
 volatile int buf_head = 0;
 volatile int buf_tail = 0;
 volatile int buf_count = 0;
-volatile uint32_t diag_smooth_count = 0;
-volatile uint32_t diag_stop_count = 0;
 
 volatile uint32_t segment_ticks_total = 0;
 volatile uint32_t segment_ticks_current = 0;
@@ -187,6 +189,56 @@ void moveAxisIndependent(int axis, long relativeSteps, float speedStepsPerSec, f
     UnlockMotionEngine(); 
 }
 
+// ==========================================
+// 全新：多軸絕對座標獨立更新 (Independent Absolute Tracking)
+// ==========================================
+void updateAbsoluteTargets(long targets[6], float speedFactor) {
+    LockMotionEngine(); 
+    is_pvt_mode = false; 
+    bool needs_engine_start = false;
+
+    for (int i = 0; i < 6; i++) {
+        // 真正的互不干涉：如果是 999999，完全不要碰這個軸！
+        // 讓它保留原本的 target_pos 與 current_vel 繼續跑它自己的路
+        if (targets[i] == 999999) {
+            continue; 
+        }
+
+        long currentPos = axes[i].current_pos;
+        long targetPos = targets[i];
+        
+        // 直接更新為最新的絕對終點
+        axes[i].target_pos = targetPos; 
+        
+        long delta = targetPos - currentPos;
+
+        if (delta != 0) {
+            // 決定方向
+            axes[i].dir_state = (delta > 0) ? 1 : -1;
+            if (axes[i].dir_state > 0) axes[i].dir_port->BSRR = axes[i].dir_pin_mask;
+            else axes[i].dir_port->BSRR = (axes[i].dir_pin_mask << 16);
+
+            // 套用該軸自己的性能極限，不跟別人同步
+            float v_max = SPEED_CFG[i].controlSpeed * speedFactor;
+            if (v_max < 10.0f) v_max = 10.0f;
+            
+            axes[i].target_vel = v_max / STEP_FREQ;
+            axes[i].accel_tick = getAxisAccel(i) / ACCEL_DENOM;
+            axes[i].auto_decel = true; 
+            
+            needs_engine_start = true;
+        }
+    }
+
+    if (needs_engine_start) {
+        // 重置全域計時保護，並確保引擎啟動
+        segment_ticks_current = 0;
+        segment_ticks_total = 0xFFFFFFFF; 
+        is_engine_running = true; 
+    }
+    UnlockMotionEngine(); 
+}
+
 void jogAxis(int axis, int dir, float speedStepsPerSec, float accelStepsPerSec2, bool ignoreLimits) {
     if (axis < 0 || axis >= 6) return;
 
@@ -239,75 +291,95 @@ void jogAxis(int axis, int dir, float speedStepsPerSec, float accelStepsPerSec2,
 }
 
 // ==========================================
-// 3. 小腦中斷：50kHz 極速脈衝發射器 (TIM7)
+// 3. 小腦中斷：100kHz 極速脈衝發射器 (TIM7)
 // ==========================================
 void ISR_StepGenerator() {
-    if (!is_engine_running) return;
-
-    if (!is_pvt_mode) {
-        bool is_active = false; // 用來監視有沒有馬達還在動
-        
-        if (segment_ticks_current < segment_ticks_total) {
-            segment_ticks_current++;
-            for (int i = 0; i < 6; i++) {
-                
-                if (axes[i].current_vel != axes[i].target_vel) {
-                    if (axes[i].current_vel < axes[i].target_vel) {
-                        axes[i].current_vel += axes[i].accel_tick;
-                        if (axes[i].current_vel > axes[i].target_vel) axes[i].current_vel = axes[i].target_vel;
-                    } else {
-                        axes[i].current_vel -= axes[i].accel_tick;
-                        if (axes[i].current_vel < axes[i].target_vel) axes[i].current_vel = axes[i].target_vel;
-                    }
-                }
-
-                if (axes[i].auto_decel) {
-                    int32_t dist = abs(axes[i].target_pos - axes[i].current_pos);
-                    if (dist == 0) {
-                        axes[i].target_vel = 0.0f; axes[i].current_vel = 0.0f; axes[i].auto_decel = false;
-                    } else {
-                        if (axes[i].current_vel > 0.0f && axes[i].accel_tick > 0.0f) {
-                            float decel_dist = (axes[i].current_vel * axes[i].current_vel) / (2.0f * axes[i].accel_tick);
-                            if ((float)dist <= decel_dist) axes[i].target_vel = 0.0f; 
-                        }
-                        if (axes[i].target_vel == 0.0f) {
-                            float min_vel = 10.0f / STEP_FREQ; 
-                            if (axes[i].current_vel < min_vel) axes[i].current_vel = min_vel;
-                        }
-                    }
-                }
-
-                // 檢查：只要有任何一軸的速度還大於 0，引擎就必須保持運行
-                if (axes[i].current_vel > 0.0f || axes[i].target_vel > 0.0f) {
-                    is_active = true;
-                }
-            }
-        }
-        
-        // 自動熄火機制：如果所有軸都停死，解除引擎運行狀態！
-        if (!is_active) {
-            is_engine_running = false;
-            return; // 提早結束，等待下次新指令喚醒
-        }
+    // ==========================================
+    // 優化 1：零時脈耗損脈衝 (Zero-Delay Pulse)
+    // 進入中斷的第一件事，先把上次中斷拉高的 Step 腳位全部拉低。
+    // 這會自然產生一個近乎 10us 的完美高電位脈衝，
+    // 徹底消滅原本卡死 CPU 的 delay_1us_DWT() 迴圈等待！
+    // ==========================================
+    for (int i = 0; i < 6; i++) {
+        axes[i].step_port->BSRR = (axes[i].step_pin_mask << 16); 
     }
 
-    bool need_pulse = false;
+    if (!is_engine_running) return;
+
+    // 宣告靜態計數器，用來分頻
+    static int math_tick = 0;
+
+    if (!is_pvt_mode) {
+        
+        // ==========================================
+        // 優化 2：時間切片降頻 (Decimation)
+        // 讓沉重的浮點加減速運算，從 100,000Hz 降頻到 1,000Hz 執行
+        // ==========================================
+        math_tick++;
+        if (math_tick >= MATH_PRESCALER) {
+            math_tick = 0; // 重置計數器
+            bool is_active = false;
+            
+            if (segment_ticks_current < segment_ticks_total) {
+                segment_ticks_current += MATH_PRESCALER; // 一次補齊流失的 tick 數
+                
+                for (int i = 0; i < 6; i++) {
+                    // 因為降頻了，單次迴圈要加上的加速度必須按比例放大，物理曲線才會不變
+                    float effective_accel = axes[i].accel_tick * MATH_PRESCALER;
+
+                    if (axes[i].current_vel != axes[i].target_vel) {
+                        if (axes[i].current_vel < axes[i].target_vel) {
+                            axes[i].current_vel += effective_accel;
+                            if (axes[i].current_vel > axes[i].target_vel) axes[i].current_vel = axes[i].target_vel;
+                        } else {
+                            axes[i].current_vel -= effective_accel;
+                            if (axes[i].current_vel < axes[i].target_vel) axes[i].current_vel = axes[i].target_vel;
+                        }
+                    }
+
+                    if (axes[i].auto_decel) {
+                        int32_t dist = abs(axes[i].target_pos - axes[i].current_pos);
+                        if (dist == 0) {
+                            axes[i].target_vel = 0.0f; axes[i].current_vel = 0.0f; axes[i].auto_decel = false;
+                        } else {
+                            if (axes[i].current_vel > 0.0f && axes[i].accel_tick > 0.0f) {
+                                // 這裡是最耗 CPU 的浮點乘法與除法！
+                                // 現在它一秒鐘只會被執行 1000 次，徹底解放 TIM7！
+                                float decel_dist = (axes[i].current_vel * axes[i].current_vel) / (2.0f * axes[i].accel_tick);
+                                if ((float)dist <= decel_dist) axes[i].target_vel = 0.0f; 
+                            }
+                            if (axes[i].target_vel == 0.0f) {
+                                float min_vel = 10.0f / STEP_FREQ; 
+                                if (axes[i].current_vel < min_vel) axes[i].current_vel = min_vel;
+                            }
+                        }
+                    }
+
+                    if (axes[i].current_vel > 0.0f || axes[i].target_vel > 0.0f) {
+                        is_active = true;
+                    }
+                }
+            }
+            
+            if (!is_active) {
+                is_engine_running = false;
+                return; 
+            }
+        } 
+    }
+
+    // ==========================================
+    // 核心 DDA 步進產生器
+    // ==========================================
     for (int i = 0; i < 6; i++) {
+        // 這個區塊只有非常輕量的 1 次浮點加法與 1 次比較
         if (axes[i].current_vel > 0.0f) {
             axes[i].accumulator += axes[i].current_vel;
             if (axes[i].accumulator >= 1.0f) {
                 axes[i].accumulator -= 1.0f;
                 axes[i].current_pos += axes[i].dir_state;
-                axes[i].step_port->BSRR = axes[i].step_pin_mask; 
-                need_pulse = true;
+                axes[i].step_port->BSRR = axes[i].step_pin_mask; // 拉高 Step 腳位
             }
-        }
-    }
-
-    if (need_pulse) {
-        delay_1us_DWT();
-        for (int i = 0; i < 6; i++) {
-            axes[i].step_port->BSRR = (axes[i].step_pin_mask << 16); 
         }
     }
 }
@@ -329,17 +401,11 @@ void ISR_MotionPlanner() {
                 axes[i].v0 = axes[i].v1; 
 
                 if (buf_count > 1) {
-                    // 👑 走到這裡代表有下一個點，速度平滑相連
-                    diag_smooth_count++; 
-                    
                     int next_idx = (buf_tail + 1) % MOTION_BUF_SIZE;
                     volatile BufPoint* pt2 = &motion_buf[next_idx];
                     float T2_sec = pt2->interval_us * 1e-6f;
                     axes[i].v1 = ((float)pt2->targetSteps[i] - axes[i].p0_float) / (T1_sec + T2_sec);
                 } else {
-                    // 👑 走到這裡代表緩衝區見底，被迫強行減速至 0
-                    diag_stop_count++; 
-                    
                     axes[i].v1 = 0.0f; 
                 }
             }
@@ -370,18 +436,35 @@ void ISR_MotionPlanner() {
     float h11 = t3 - t2;
     float T_sec = (float)pvt_ticks_total * T_TIM6;
 
+    // 核心優化 1：對 Hermite 基準函數進行一階微分，求取速度導函數
+    float dh01_dt = -6.0f * t2 + 6.0f * t;
+    float dh10_dt = 3.0f * t2 - 4.0f * t + 1.0f;
+    float dh11_dt = 3.0f * t2 - 2.0f * t;
+
     // 最佳化：在「鎖外」預先算好速度需求，避免佔用 TIM7 時間
     float next_v_req[6];
     for (int i = 0; i < 6; i++) {
         float D = axes[i].p1_float - axes[i].p0_float;
+        
+        // 1. 理論理想位置 (用於計算誤差)
         float delta_p = h01 * D + h10 * axes[i].v0 * T_sec + h11 * axes[i].v1 * T_sec;
         float target_pos_exact = axes[i].p0_float + delta_p;
+        
+        // 核心優化 2：理論前饋速度 (Feedforward Velocity)
+        // 直接使用微積分求出的絕對平滑速度，完全不受「整數步」的雜訊干擾！
+        float v_feedforward = (dh01_dt * D + dh10_dt * axes[i].v0 * T_sec + dh11_dt * axes[i].v1 * T_sec) / T_sec;
+
+        // 核心優化 3：柔性位置回授 (Soft P-Controller)
+        // 修正物理累積誤差，將原先殘暴的 Kp=1000 降至溫和的 Kp=15
         float step_diff = target_pos_exact - (float)axes[i].current_pos;
-        next_v_req[i] = step_diff * TIM6_FREQ; 
+        float v_feedback = step_diff * 15.0f; 
+
+        // 最終要求的平滑速度
+        next_v_req[i] = v_feedforward + v_feedback; 
     }
 
     // TIM7 局部防護鎖，解決 ISR 競態條件
-    NVIC_DisableIRQ(TIM7_IRQn); 
+    NVIC_DisableIRQ(TIM7_IRQn);
     
     for (int i = 0; i < 6; i++) {
         float v_req = next_v_req[i];
@@ -425,14 +508,17 @@ void Init_MotionEngine(const uint8_t step_pins[6], const uint8_t dir_pins[6]) {
     timer_planner = new HardwareTimer(TIM6);
     timer_step = new HardwareTimer(TIM7);
     
-    // 降頻 1000Hz 初始化
+    // TIM6 1000Hz 初始化
     timer_planner->setOverflow(1000, HERTZ_FORMAT); 
     timer_planner->attachInterrupt(ISR_MotionPlanner);
-    timer_step->setOverflow(50000, HERTZ_FORMAT); 
+    
+    // 直接綁定 STEP_FREQ 常數，100kHz！
+    timer_step->setOverflow((uint32_t)STEP_FREQ, HERTZ_FORMAT); 
+    
     timer_step->attachInterrupt(ISR_StepGenerator);
     NVIC_SetPriority(TIM7_IRQn, 1); 
     NVIC_SetPriority(TIM6_DAC_IRQn, 2); 
     timer_planner->resume();
     timer_step->resume();
-    Serial.println("[System] Hermite Spline Engine (1000Hz) Online!");
+    //Serial.println("[System] Motion Engine Initialized.");
 }

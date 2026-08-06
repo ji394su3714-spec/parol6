@@ -83,8 +83,8 @@ class PreferencesDialog(QDialog):
     def save_and_accept(self):
         app_settings.set("sync_sliders", self.chk_sync.isChecked())
         app_settings.set("lock_splitters", self.chk_lock.isChecked())
-        app_settings.set("show_comments", self.chk_comments.isChecked())       # 💥 儲存
-        app_settings.set("default_list_mode", self.chk_default_list.isChecked()) # 💥 儲存
+        app_settings.set("show_comments", self.chk_comments.isChecked())
+        app_settings.set("default_list_mode", self.chk_default_list.isChecked())
         self.accept()
 
     def showEvent(self, event):

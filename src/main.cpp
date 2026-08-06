@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 
-// 引入拆分出來的模組
+// 引入自訂標頭檔
 #include "Globals.h"
 #include "Comms.h"
 #include "MotionEngine.h"
@@ -27,9 +27,9 @@ const bool LIMIT_ACTIVE_STATE[6] = {
 const HomingConfig HOMING_CFG[6] = {
     { 1400, -13426, 1000, 1200}, // J1 (-118 度)
     {-2400,  17778, 2000, 1400}, // J2 (  50 度)
-    { 3000, -22518, 2400, 1400}, // J3 ( -70 度)
+    { 2800, -23161, 2400, 1400}, // J3 ( -72 度)
     { 3800, -10240, 1600, 1200}, // J4 (-144 度)
-    { 2800,  -8889, 1200, 1200}, // J5 (-125 度)
+    { 2800,  -8782, 1200, 1200}, // J5 (-123.5 度)
     { 5000,    356, 1600, 1400}  // J6 (   2 度)
 };
 
@@ -53,12 +53,12 @@ const int32_t AXIS_MAX_LIMIT[6] = { 29013,  24889,  22518,  13156,  7822 ,21333}
 const int32_t AXIS_MIN_LIMIT[6] = {-8533, -17778, -22518, -6756, -7822, -37333};
 
 // ==========================================
-// 3. 主程式 Setup & Loop
+// 主程式 Setup & Loop
 // ==========================================
 void setup() {
     Serial.begin(250000); 
     delay(1000);
-    Serial.println("\n--- S6 Controller Booting ---");
+    //Serial.println("\n--- S6 Controller Booting ---");
 
     initEndEffector();
 
@@ -86,8 +86,6 @@ void setup() {
 
     // 啟動雙核心運動引擎
     Init_MotionEngine(engine_step_pins, engine_dir_pins);
-
-    Serial.println("<S6 Controller OS Ready>");
 }
 
 void loop() {
@@ -107,31 +105,7 @@ void loop() {
         normalMoveActive = false;    
     }
     
-    // 背景 30 秒自動輪詢與 80 度過熱警報網
+    // 背景 10 秒自動輪詢與 80 度過熱警報網
     checkThermalAlarms(isArmIdle);
-    /*
-    // ==========================================
-    // 效能診斷印出 (每 1 秒印一次)
-    // ==========================================
-    static unsigned long lastDiagTime = 0;
-    if (millis() - lastDiagTime >= 1000) {
-        lastDiagTime = millis();
-        
-        // 為了避免中斷干擾，快速複製一份數值
-        NVIC_DisableIRQ(TIM6_DAC_IRQn);
-        uint32_t smooth = diag_smooth_count;
-        uint32_t stop = diag_stop_count;
-        diag_smooth_count = 0;
-        diag_stop_count = 0;
-        NVIC_EnableIRQ(TIM6_DAC_IRQn);
-        
-        if (smooth > 0 || stop > 0) {
-            Serial.print("[Diag] 平滑相連 (buf>1): ");
-            Serial.print(smooth);
-            Serial.print(" 次 | 被迫煞停 (buf=1): ");
-            Serial.print(stop);
-            Serial.println(" 次");
-        }
-    }
-    */
+    
 }

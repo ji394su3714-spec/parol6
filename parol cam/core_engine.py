@@ -37,12 +37,10 @@ class CAMEngine:
     def move_segment_down(self, index):
         if index < len(self.segments) - 1: self.segments[index], self.segments[index+1] = self.segments[index+1], self.segments[index]
 
-    def add_segment(self, hit_face_idx, hit_pos_world, offset_rx=0, offset_ry=0, offset_rz=0, mode=None, align_mode=None, lead_in_dist=2.0, lead_in_angle=45.0, overcut_dist=2.0, chordal_error=0.05, max_step=5.0, loop_mode=0):
+    def add_segment(self, hit_face_idx, hit_pos_world, **kwargs):
         if self.workpiece_mesh is None: raise ValueError("請先載入 STL 模型！")
         
-        current_mode = mode if mode else self.extraction_mode
-        current_align = align_mode if align_mode else self.tcp_align_mode
-
+        current_mode = self.extraction_mode
         if current_mode == "planar":
             facet_idx = self.mesh_manager.face_to_facet.get(hit_face_idx)
             if facet_idx is None: raise ValueError("目前為「平面」模式，請點擊平坦面。欲抓取倒角請切換為「3D輪廓」。")
@@ -74,26 +72,38 @@ class CAMEngine:
             rep_normal = avg_normal / norm_val if norm_val > 1e-6 else np.array([0.0, 0.0, 1.0])
 
         if dense_locations is None or len(dense_locations) == 0: raise ValueError("找不到對應的邊界。")
+        
+        # 👑 將所有參數存入該段落專屬的字典中 (若沒有傳入則使用預設值)
+        params = {
+            'offset_rx': 0.0, 'offset_ry': 0.0, 'offset_rz': 0.0,
+            'lead_in_dist': 2.0, 'lead_in_angle': 45.0,
+            'overcut_dist': 2.0, 'chordal_error': 0.05,
+            'max_step': 5.0, 'loop_mode': 0,
+            'align_mode': self.tcp_align_mode
+        }
+        params.update(kwargs)
 
         seg = {
             'face_idx': hit_face_idx,
             'hit_pos': hit_pos_world,
             'facet_normal': rep_normal,
             'mode': current_mode,
-            'align_mode': current_align,
             'raw_locs': dense_locations,
             'raw_norms': dense_normals,
-            'is_composite': False
+            'is_composite': False,
+            'params': params # 👑 每個特徵擁有自己獨立的靈魂！
         }
         self.segments.append(seg)
-        self._process_segment(seg, offset_rx, offset_ry, offset_rz, lead_in_dist, lead_in_angle, overcut_dist, chordal_error, max_step, loop_mode)
+        self._process_segment(seg)
         return seg['name']
 
-    def rebuild_all_paths(self, offset_rx, offset_ry, offset_rz, lead_in_dist, lead_in_angle, overcut_dist, chordal_error, max_step, loop_mode):
-        for seg in self.segments:
-            self._process_segment(seg, offset_rx, offset_ry, offset_rz, lead_in_dist, lead_in_angle, overcut_dist, chordal_error, max_step, loop_mode)
+    # 👑 新增：專門用來更新單一路徑參數的方法
+    def update_segment_params(self, index, **new_params):
+        if 0 <= index < len(self.segments):
+            self.segments[index]['params'].update(new_params)
+            self._process_segment(self.segments[index])
 
-    def merge_segments(self, indices, offset_rx=0, offset_ry=0, offset_rz=0, lead_in_dist=2.0, lead_in_angle=45.0, overcut_dist=2.0, chordal_error=0.05, max_step=5.0, loop_mode=0):
+    def merge_segments(self, indices, **kwargs):
         indices = sorted(indices)
         if len(indices) < 2: return
         
@@ -150,24 +160,41 @@ class CAMEngine:
                 chain_locs = list(locs[::-1][:-1]) + chain_locs
                 chain_norms = list(norms[::-1][:-1]) + chain_norms
 
+        # 繼承陣列首個元素的參數，並蓋上 UI 傳來的新數值
+        params = self.segments[indices[0]]['params'].copy()
+        params.update(kwargs)
+
         new_seg = {
             'face_idx': self.segments[indices[0]]['face_idx'],
             'hit_pos': self.segments[indices[0]]['hit_pos'],
             'facet_normal': self.segments[indices[0]]['facet_normal'],
             'mode': 'composite',
-            'align_mode': self.segments[indices[0]]['align_mode'],
             'raw_locs': np.array(chain_locs),
             'raw_norms': np.array(chain_norms),
-            'is_composite': True
+            'is_composite': True,
+            'params': params # 👑 繼承獨立參數
         }
         
         for idx in reversed(indices):
             self.segments.pop(idx)
             
         self.segments.append(new_seg)
-        self._process_segment(new_seg, offset_rx, offset_ry, offset_rz, lead_in_dist, lead_in_angle, overcut_dist, chordal_error, max_step, loop_mode)
+        self._process_segment(new_seg)
 
-    def _process_segment(self, seg, offset_rx, offset_ry, offset_rz, lead_in_dist, lead_in_angle, overcut_dist, chordal_error, max_step, loop_mode):
+    def _process_segment(self, seg):
+        # 👑 將運算模組改為「讀取自帶參數」，實現徹底解耦！
+        p = seg['params']
+        offset_rx = p.get('offset_rx', 0.0)
+        offset_ry = p.get('offset_ry', 0.0)
+        offset_rz = p.get('offset_rz', 0.0)
+        lead_in_dist = p.get('lead_in_dist', 2.0)
+        lead_in_angle = p.get('lead_in_angle', 45.0)
+        overcut_dist = p.get('overcut_dist', 2.0)
+        chordal_error = p.get('chordal_error', 0.05)
+        max_step = p.get('max_step', 5.0)
+        loop_mode = p.get('loop_mode', 0)
+        align_mode = p.get('align_mode', "minimum_twist")
+        
         def _rotate_about_axis(v, axis, angle_rad):
             axis = axis / np.linalg.norm(axis)
             return (v * np.cos(angle_rad) + np.cross(axis, v) * np.sin(angle_rad) + axis * np.dot(axis, v) * (1 - np.cos(angle_rad)))
@@ -250,12 +277,11 @@ class CAMEngine:
             smooth_z.append(avg_z / norm_z if norm_z > 1e-6 else raw_z_vecs[i])
         z_vecs = np.array(smooth_z)
 
-        if seg['align_mode'] == "tangent":
+        if align_mode == "tangent":
             x_vecs, y_vecs = [], []
             for i in range(num_points):
                 z_vec = z_vecs[i]
                 
-                # 中央差分切線，徹底消滅首尾銜接的幾何斷層！
                 if is_closed_loop:
                     if i == 0 or i == num_points - 1:
                         fwd_vec = locations[1] - locations[-2]

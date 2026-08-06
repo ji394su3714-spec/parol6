@@ -1,13 +1,12 @@
 # gui.py
 import copy
-import os
 import time
-
 import numpy as np
-from PySide6.QtWidgets import QMainWindow, QMenu, QMessageBox, QWidget, QVBoxLayout, QSplitter, QApplication
+
+from PySide6.QtWidgets import (QMainWindow, QMenu, QMessageBox, QWidget, 
+                               QVBoxLayout, QSplitter, QApplication)
 from PySide6.QtCore import QEasingCurve, QVariantAnimation, Qt, QTimer
 from PySide6.QtGui import QIcon, QShortcut, QKeySequence 
-
 import qtawesome as qta
 
 # ==========================================
@@ -19,21 +18,19 @@ from serial_manager import SerialManager
 import styles
 from path_manager import PathManager
 
-# ==========================================
-# 客製化 UI 模組
-# ==========================================
 from tcp_manager import TCPManager
 from tcp_dialog import TCPManagerDialog
 from base_manager import BaseManager
 from base_dialog import BaseManagerDialog
 from widgets import (app_settings, apply_windows_dark_titlebar, 
                      SplitterDoubleClickListener, GlobalClickFilter, 
-                     CustomTopBar, JogWidget, View3DWidget, LogWidget
-                     )
+                     CustomTopBar, JogWidget, View3DWidget, LogWidget)
 from waypoint_panel import WaypointPanel 
 
-# --- 主視窗排版組裝 ---
 class RobotControllerGUI(QMainWindow):
+    # =========================================================
+    # [1] 初始化與 UI 佈局 (Initialization & Layout)
+    # =========================================================
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Parol Stream")
@@ -41,10 +38,17 @@ class RobotControllerGUI(QMainWindow):
         self.resize(1200, 700)
         self.setStyleSheet(styles.WINDOW_STYLE)
         
+        # --- 核心變數初始化 ---
+        self.current_float_joints = [0.0] * 6
+        self.prev_rpy = None 
+        self.is_simulation_mode = False 
+        self.pending_3d_update = False
+        self._ui_throttle_counter = 0 
+        self._is_paused = False
 
+        # --- UI 佈局組裝 ---
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
@@ -57,14 +61,12 @@ class RobotControllerGUI(QMainWindow):
         content_layout.setContentsMargins(4, 4, 4, 4) 
         content_layout.setSpacing(0)
 
-        # === 左右主分割器 ===
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
         main_splitter.setHandleWidth(4)
 
         self.jog_widget = JogWidget()
         self.waypoint_panel = WaypointPanel()
         
-        # === 上下右分割器 ===
         right_splitter = QSplitter(Qt.Orientation.Vertical)
         right_splitter.setHandleWidth(4)
         
@@ -81,515 +83,232 @@ class RobotControllerGUI(QMainWindow):
 
         right_splitter.addWidget(self.view3d_widget)  
         right_splitter.addWidget(self.log_widget)     
-        
         right_splitter.setCollapsible(0, False)       
         right_splitter.setCollapsible(1, True)        
 
         default_right_sizes = [410, 290]      
         default_main_sizes = [300, 450, 450]  
-        
         right_splitter.setSizes(default_right_sizes)
         main_splitter.setSizes(default_main_sizes)
 
-        # ==========================================
-        # 實例化路徑總管 (Path Manager) 大腦
-        # ==========================================
-        self.path_manager = PathManager(self)
-        self.path_manager.log_signal.connect(self.log_widget.append_log)
-        self.path_manager.list_update_signal.connect(self.update_path_list_ui)
+        content_layout.addWidget(main_splitter)
+        main_layout.addWidget(content_container)
 
-        # 掛載全域點擊雷達
-        self.global_click_filter = GlobalClickFilter()
-        QApplication.instance().installEventFilter(self.global_click_filter)
-
-        # ==========================================
-        # 綁定 3D 畫布與笛卡爾 IK 運算引擎
-        # ==========================================
-        self.current_float_joints = [0.0] * 6
-        self.prev_rpy = None 
+        # --- 實例化各大腦與管理員 ---
+        self.serial_manager = SerialManager()
         self.tcp_manager = TCPManager()
-        self.base_manager = BaseManager() 
-        self.tcp_manager.data_changed.connect(self.update_3d_trajectory_preview)
-        self.base_manager.data_changed.connect(self.update_3d_trajectory_preview)
-
+        self.base_manager = BaseManager()
+        self.path_manager = PathManager(self)
         self.view3d_widget.set_base_manager(self.base_manager)
 
-        self.serial_manager = SerialManager()
-        self.serial_manager.log_signal.connect(self.log_widget.append_log)
-        self.serial_manager.connection_state_signal.connect(self.update_connection_ui)
-        self.serial_manager.estop_state_signal.connect(self.on_estop_state_changed) #綁定 MCU 的狀態廣播 (由下往上)
-        
-        self.path_manager.serial_manager = self.serial_manager
-
-        self.top_bar.btn_tools.clicked.connect(self.open_tcp_manager)
-        self.top_bar.btn_base.clicked.connect(self.open_base_manager)
-        self.pending_3d_update = False
-        self._ui_throttle_counter = 0 
+        # --- 時鐘與過濾器 ---
+        self.global_click_filter = GlobalClickFilter()
+        QApplication.instance().installEventFilter(self.global_click_filter)
         
         self.render_timer = QTimer(self)
         self.render_timer.timeout.connect(self.process_3d_update)
-        self.render_timer.start(16) 
+        self.render_timer.start(10) 
+        
+        self.shortcut_space = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
+        self.shortcut_space.setContext(Qt.ShortcutContext.WindowShortcut)
 
-        # 綁定 JogWidget 的各項神經
+        # --- 綁定所有訊號與 UI 動作 ---
+        self._bind_all_signals(main_splitter, right_splitter, default_main_sizes, default_right_sizes)
+        
+        # --- 啟動預設狀態 ---
+        self.jog_widget.on_joint_slider_changed()
+        self.waypoint_panel.add_new_tab("untitled.json") 
+
+    def _bind_all_signals(self, m_splitter, r_splitter, m_sizes, r_sizes):
+        """將雜亂的訊號綁定集中管理"""
+        # 工具列
+        self.top_bar.btn_tools.clicked.connect(self.open_tcp_manager)
+        self.top_bar.btn_base.clicked.connect(self.open_base_manager)
+        self.top_bar.btn_play.toggled.connect(self.on_play_toggled)
+        self.top_bar.btn_stop.clicked.connect(self.stop_execution)
+        self.top_bar.btn_estop_reset.clicked.connect(self.reset_estop)
+        self.top_bar.btn_soft_home.clicked.connect(self.go_soft_home)
+        self.top_bar.btn_simulation.toggled.connect(self.toggle_simulation_mode)
+        self.top_bar.btn_connect.clicked.connect(self.toggle_connection)
+
+        # 系統大腦 & 通訊
+        self.serial_manager.log_signal.connect(self.log_widget.append_log)
+        self.serial_manager.connection_state_signal.connect(self.update_connection_ui)
+        self.serial_manager.estop_state_signal.connect(self.on_estop_state_changed)
+        self.serial_manager.real_pose_received.connect(self.handle_system_pose_update)
+        self.path_manager.log_signal.connect(self.log_widget.append_log)
+        self.path_manager.list_update_signal.connect(self.update_path_list_ui)
+        self.path_manager.file_loaded_signal.connect(self.waypoint_panel.set_file_name)
+        
+        # 3D 預覽與 Monitor
+        self.tcp_manager.data_changed.connect(self.update_3d_trajectory_preview)
+        self.base_manager.data_changed.connect(self.update_3d_trajectory_preview)
+        self.view3d_widget.monitor_widget.tcp_edit_requested.connect(self.handle_monitor_tcp_edit)
+        self.view3d_widget.monitor_widget.joint_edit_requested.connect(self.handle_monitor_joint_edit)
+        self.view3d_widget.robot_view.drag_callback = self.handle_tcp_drag
+        self.view3d_widget.robot_view.axis_drag_callback = self.handle_cartesian_jog
+        self.view3d_widget.robot_view.cancel_gizmo_callback = self.view3d_widget.reset_gizmo_buttons
+        
+        # Jogging 面板
         self.jog_widget.update_3d_callback = self.preview_joint_jog 
         self.jog_widget.send_jog_callback = self.send_joint_jog     
         self.jog_widget.cartesian_jog_callback = self.handle_cartesian_jog
         self.jog_widget.continuous_jog_callback = self.handle_continuous_joint_jog
         self.jog_widget.cartesian_jog_stop_callback = self.handle_cartesian_jog_stop
-
-        # 夾爪改為綁定 send_gripper_callback
+        self.jog_widget.request_pose_callback = self._safe_request_pose
         self.jog_widget.send_gripper_callback = self.handle_gripper_jog
-        
-        # 夾爪 Toggle 按鈕連動
-        self.jog_widget.gripper_btn.toggled.connect(
-            lambda checked: self.jog_widget.g_slider.setValue(100 if checked else 0)
-        )
-        self.jog_widget.gripper_btn.toggled.connect(
-            lambda checked: self.handle_gripper_jog(100 if checked else 0)
-        )
-        
-        self.jog_widget.on_joint_slider_changed()
-        
-        self.view3d_widget.robot_view.drag_callback = self.handle_tcp_drag
-        self.view3d_widget.robot_view.axis_drag_callback = self.handle_cartesian_jog
-        self.view3d_widget.robot_view.cancel_gizmo_callback = self.view3d_widget.reset_gizmo_buttons
+        self.jog_widget.gripper_btn.toggled.connect(lambda c: self.jog_widget.g_slider.setValue(100 if c else 0))
+        self.jog_widget.gripper_btn.toggled.connect(lambda c: self.handle_gripper_jog(100 if c else 0))
 
-        self.main_splitter_listener = SplitterDoubleClickListener(main_splitter, default_main_sizes)
-        main_splitter.handle(1).installEventFilter(self.main_splitter_listener)
-        main_splitter.handle(2).installEventFilter(self.main_splitter_listener)
-
-        self.right_splitter_listener = SplitterDoubleClickListener(right_splitter, default_right_sizes)
-        right_splitter.handle(1).installEventFilter(self.right_splitter_listener)
-
-        content_layout.addWidget(main_splitter)
-        main_layout.addWidget(content_container)
-
-        # ==========================================
-        # 綁定按鈕動作 (與 Waypoint Panel 對接)
-        # ==========================================
+        # Waypoint 面板
         self.waypoint_panel.copy_requested.connect(self.path_manager.copy_points)
         self.waypoint_panel.paste_requested.connect(self.path_manager.paste_points)
-        
         self.waypoint_panel.batch_base_shift_requested.connect(self.handle_batch_base_shift)
         self.waypoint_panel.block_base_shift_requested.connect(self.handle_block_base_shift)
-
         self.waypoint_panel.record_pt_requested.connect(self.record_waypoint_action)
         self.waypoint_panel.update_tcp_point_requested.connect(self.update_tcp_point_action)
         self.waypoint_panel.insert_special_requested.connect(self.insert_special_point_action)
-
         self.waypoint_panel.btn_save.clicked.connect(self.execute_save_process)
         self.waypoint_panel.btn_load.clicked.connect(self.path_manager.load_from_file)
-
         self.waypoint_panel.clear_all_requested.connect(self.path_manager.delete_all_points)
-        self.waypoint_panel.update_pt_requested.connect(
-            lambda idx: self.path_manager.update_point_at_index(idx, self.current_float_joints)
-        )
+        self.waypoint_panel.update_pt_requested.connect(lambda idx: self.path_manager.update_point_at_index(idx, self.current_float_joints))
         self.waypoint_panel.toggle_requested.connect(self.path_manager.toggle_point_active)
         self.waypoint_panel.delete_requested.connect(self.path_manager.delete_point)
         self.waypoint_panel.path_list.currentRowChanged.connect(self.handle_waypoint_preview)
+        self.waypoint_panel.path_list.itemClicked.connect(lambda item: self.handle_waypoint_preview(self.waypoint_panel.path_list.row(item)))
         self.waypoint_panel.data_changed.connect(self.update_path_list_ui)
-        self.path_manager.file_loaded_signal.connect(self.waypoint_panel.set_file_name)
-        
         self.waypoint_panel.tab_switch_requested.connect(self.handle_tab_switch)
         self.waypoint_panel.tab_closed_signal.connect(self.handle_tab_closed)
-        self.waypoint_panel.add_new_tab("untitled.json") 
 
-        app_settings.setting_changed.connect(
-            lambda key, val: self.update_path_list_ui() if key == "show_comments" else None
-        )
-
-        self.top_bar.btn_play.toggled.connect(self.on_play_toggled)
-        self._is_paused = False
-        self.top_bar.btn_stop.clicked.connect(self.stop_execution)
-        self.top_bar.btn_estop_reset.clicked.connect(self.reset_estop) # 綁定 UI 的按鈕操作 (由上往下)
-        self.top_bar.btn_soft_home.clicked.connect(self.go_soft_home)
-        self.top_bar.btn_connect.clicked.connect(self.toggle_connection)
-
-        self.view3d_widget.monitor_widget.tcp_edit_requested.connect(self.handle_monitor_tcp_edit)
-        self.view3d_widget.monitor_widget.joint_edit_requested.connect(self.handle_monitor_joint_edit)
-
-        #全域唯一的空白鍵分發中心
-        self.shortcut_space = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
-        self.shortcut_space.setContext(Qt.ShortcutContext.WindowShortcut)
+        # 系統事件
+        app_settings.setting_changed.connect(lambda key, val: self.update_path_list_ui() if key == "show_comments" else None)
         self.shortcut_space.activated.connect(self.handle_global_spacebar)
-
-    def handle_global_spacebar(self):
-        """將唯一攔截到的空白鍵，派發給各個面板自行判斷滑鼠座標"""
-        if hasattr(self, 'waypoint_panel'):
-            self.waypoint_panel._handle_spacebar()
-        if hasattr(self, 'view3d_widget'):
-            self.view3d_widget._handle_spacebar()
-
-    # ==========================================
-    # Jogging 硬體通訊核心
-    # ==========================================
-    # 新增物理轉換常數 (與 MCU 硬體設定一致)
-    def deg_to_steps(self, axis_idx, degrees):
-        """將 UI 的角度轉換為 MCU 看得懂的真實馬達步數"""
-        return int(degrees * config.STEPS_PER_DEG[axis_idx])
-
-    def get_jog_speed_factor(self, level):
-        """將 UI 的 1~4 檔位轉換為速度比例"""
-        mapping = {1: 0.25, 2: 0.5, 3: 0.75, 4: 1.0}
-        return mapping.get(level, 1.0)
-
-    def preview_joint_jog(self, angles):
-        """處理關節寸動 (拖動中)：只更新 3D 畫面不發送，避免塞爆 MCU"""
-        self.current_float_joints = list(angles)
-        self.pending_3d_update = True
-
-    def send_joint_jog(self, target_angles_deg, speed_factor):
-        """處理滑桿放開時的絕對點對點移動 (PTP)"""
-        if hasattr(self, 'serial_manager') and self.serial_manager.is_connected:
-            self.serial_manager.send_joints(target_angles_deg, speed_factor=speed_factor, move_mode=0)
-
-    def handle_continuous_joint_jog(self, axis_idx, direction, speed_factor):
-        """發送連續寸動指令給 STM32"""
-        if hasattr(self, 'serial_manager') and self.serial_manager.is_connected:
-            actual_dir = int(direction)
-            
-            # 翻轉按鈕方向
-            if config.STEPS_PER_DEG[axis_idx] < 0:
-                actual_dir *= -1
-                
-            targets = [int(axis_idx), actual_dir, 0, 0, 0, 0]
-            self.serial_manager._send_binary_packet(targets, speed_factor, 2) # Mode 2
-
-    def handle_gripper_jog(self, val):
-        """處理夾爪作動"""
-        if hasattr(self, 'serial_manager') and self.serial_manager.is_connected:
-            self.serial_manager.send_gripper(val)
-
-    def handle_cartesian_jog(self, axis, step_val, frame, is_continuous=True):
-        """處理空間寸動 (統一交給 Mode 1 串流引擎代勞)"""
-        tcp_mat = self.tcp_manager.get_active_matrix()
-        world_mat = np.eye(4)
-        if hasattr(self, 'base_manager'):
-            world_mat = self.base_manager.get_matrix(self.base_manager.current_index) 
-            
-        actual_frame = "Base" if frame == "World" else frame
         
-        # 永遠參考上一個理想點位，保證軌跡絕對平滑相連
-        last_ideal = getattr(self, '_active_jog_ideal_tcp', None) 
+        # 分割器雙擊重置
+        self.main_splitter_listener = SplitterDoubleClickListener(m_splitter, m_sizes)
+        m_splitter.handle(1).installEventFilter(self.main_splitter_listener)
+        m_splitter.handle(2).installEventFilter(self.main_splitter_listener)
+        self.right_splitter_listener = SplitterDoubleClickListener(r_splitter, r_sizes)
+        r_splitter.handle(1).installEventFilter(self.right_splitter_listener)
 
-        new_joints, error_msg, ideal_tcp_mat = kinematics.calculate_jog_joints(
-            list(self.current_float_joints), 
-            axis, 
-            step_val, 
-            actual_frame, 
-            tcp_mat, 
-            world_mat,
-            T_last_ideal_tcp=last_ideal
-        )
-        
-        if new_joints is not None:
-            self._active_jog_ideal_tcp = ideal_tcp_mat
-            
-            if hasattr(self, 'serial_manager') and self.serial_manager.is_connected:
-                spd_factor = self.get_jog_speed_factor(self.jog_widget.c_speed_level)
-                
-                # 發送點位
-                success = self.serial_manager.send_joints(
-                    new_joints, 
-                    speed_factor=spd_factor, 
-                    move_mode=1, 
-                    is_stream=True, 
-                    is_jog=True  
-                )
-                
-                if not success:
-                    return 
-                
-            # 只有在確定發送成功 (或未連線的純虛擬模式下)，才允許更新系統姿態
-            self._active_jog_ideal_tcp = ideal_tcp_mat
-            self.handle_system_pose_update(new_joints)
-            self._last_jog_error = None
-            
-            # 3D 畫面渲染降頻
-            current_time = time.time()
-            last_ui_update = getattr(self, '_last_jog_ui_update', 0.0)
-            
-            # 限制 UI 更新頻率大約為 25FPS
-            if current_time - last_ui_update >= 0.04:
-                self.handle_system_pose_update(new_joints)
-                self._last_jog_ui_update = current_time
-            else:
-                # 雖然不重繪畫面，但要在背景把最新關節值存起來，供下一幀 IK 計算使用
-                self.current_float_joints = new_joints
-                
-            self._last_jog_error = None
+
+    # =========================================================
+    # [2] 硬體通訊與系統狀態 (Hardware & System States)
+    # =========================================================
+    def _can_send_hardware(self):
+        return (self.serial_manager and self.serial_manager.is_connected and not self.is_simulation_mode)
+    
+    def _safe_request_pose(self):
+        if self._can_send_hardware():
+            self.serial_manager.request_real_pose()
+
+    def toggle_connection(self):
+        if self.serial_manager.is_connected:
+            self.serial_manager.disconnect()
         else:
-            self._active_jog_ideal_tcp = None
+            ports = self.serial_manager.list_ports()
+            if not ports:
+                self.log_widget.append_log("[HW] 找不到任何可用的 COM Port 裝置。")
+                return
+            menu = QMenu(self)
+            menu.setStyleSheet(styles.MENU_STYLE)
+            for port in ports:
+                action = menu.addAction(f"Connect to {port}")
+                action.triggered.connect(lambda checked, p=port: self.serial_manager.connect(p))
+            btn = self.top_bar.btn_connect
+            menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+
+    def update_connection_ui(self, is_connected):
+        if is_connected:
+            self.top_bar.btn_connect.setIcon(qta.icon('mdi.connection', color='#c63bbb'))
+            self.top_bar.btn_connect.setToolTip("Disconnect")
             
-            last_err = getattr(self, '_last_jog_error', None)
-            if error_msg != last_err:
-                self.log_widget.append_log(f"[Jog Warning] {error_msg}")
-                self._last_jog_error = error_msg
+            self.top_bar.btn_stop.setEnabled(True)
+            self.top_bar.btn_estop_reset.setEnabled(False)
+            self.log_widget.append_log("[HW] 已連線，請執行原點復歸。若無法移動，請確認是否處於急停鎖存狀態。")
+        else:
+            self.top_bar.btn_connect.setIcon(qta.icon('mdi.connection', color='#e0e0e0'))
+            self.top_bar.btn_connect.setToolTip("Connect to Serial Port")
+            
+            self.top_bar.btn_stop.setEnabled(False)
+            self.top_bar.btn_estop_reset.setEnabled(False)
 
-    def handle_cartesian_jog_stop(self):
-        """主視窗大腦接收到 UI 的停止訊號 (此時速度已經由 Python 平滑降至 0)"""
-        self._active_jog_ideal_tcp = None
+    def toggle_simulation_mode(self, checked):
+        if self.path_manager.is_running():
+            self.log_widget.append_log("[警告] 軌跡執行中，禁止切換模擬模式！")
+            self.top_bar.btn_simulation.blockSignals(True)
+            self.top_bar.btn_simulation.setChecked(not checked)
+            self.top_bar.btn_simulation.blockSignals(False)
+            return
+
+        self.is_simulation_mode = checked
+        self.jog_widget.is_simulation_mode = checked
         
-        # 煞車停止時，強制做最後一次絕對精準的畫面刷新！
-        if hasattr(self, 'current_float_joints'):
-            self.handle_system_pose_update(self.current_float_joints)
+        if checked:
+            self._physical_joints_memory = list(self.current_float_joints)
+            self.top_bar.btn_simulation.setIcon(qta.icon('mdi.safety-goggles', color='#00e6b8'))
+            self.top_bar.btn_simulation.setToolTip("關閉模擬模式")
+            self.log_widget.append_log("[System] 模擬模式已開啟：切斷硬體輸出，僅維持 3D 運算。")
+        else:
+            self.top_bar.btn_simulation.setIcon(qta.icon('mdi.safety-goggles', color='#e0e0e0'))
+            self.top_bar.btn_simulation.setToolTip("開啟純模擬模式 (Simulation Mode)")
+            
+            if hasattr(self, '_physical_joints_memory'):  # 這個是動態生成的變數，必須保留檢查！
+                self.handle_system_pose_update(self._physical_joints_memory)
+            if self._can_send_hardware():
+                self.serial_manager.request_real_pose()
+            if hasattr(self.jog_widget, 'cart_worker'):
+                self.jog_widget.cart_worker.stop_move()
+            self.log_widget.append_log("[System] 模擬模式已關閉：畫面已同步回實體機台姿態，恢復硬體輸出！")
 
-    # ==========================================
-    # 其他核心控制功能
-    # ==========================================
+    def reset_estop(self):
+        if self._can_send_hardware():
+            self.log_widget.append_log(">>> 嘗試解除急停鎖死...")
+            self.serial_manager.send_estop_reset()
+
+    def on_estop_state_changed(self, is_latched):
+        if is_latched:
+            self.top_bar.btn_stop.setEnabled(False)
+            self.top_bar.btn_estop_reset.setEnabled(True)
+            self.top_bar.btn_play.setEnabled(False) 
+            QMessageBox.critical(self, "系統急停 (LATCHED)", "硬體控制器目前處於「急停鎖死狀態」！\n\n請確認實體機台安全後，點擊工具列的「解鎖」按鈕來恢復運作。")
+        else:
+            self.top_bar.btn_stop.setEnabled(True)
+            self.top_bar.btn_estop_reset.setEnabled(False)
+            self.top_bar.btn_play.setEnabled(True) 
+            QMessageBox.information(self, "系統通知", "警報解除，系統恢復正常就緒。")
+            
+            if self._can_send_hardware():
+                QTimer.singleShot(200, self._safe_request_pose)
+            
+        self._reset_play_ui()
+
+
+    # =========================================================
+    # [3] UI 畫面與狀態更新 (UI & Pose Updates)
+    # =========================================================
     def handle_system_pose_update(self, new_joints):
         self.current_float_joints = list(new_joints)
         self.pending_3d_update = True
-        if app_settings.get("sync_sliders"):
-            self.jog_widget.update_joints_from_ik(new_joints)
+        self.jog_widget.update_joints_from_ik(new_joints)
 
-    def handle_monitor_tcp_edit(self, axis_name, new_val):
-        """處理 Monitor 區的笛卡爾座標 (XYZRxRyRz) 手動輸入"""
-        if self.path_manager.is_running():
-            self.log_widget.append_log("[WARNING] Cannot edit position while program is running.")
-            self.handle_system_pose_update(self.current_joints) 
-            return
-
-        # 1. 取得當下「真實的」 TCP 與 Base 矩陣
-        T_tool = self.tcp_manager.get_active_matrix()
-        T_base = self.base_manager.get_matrix(self.base_manager.current_index) if hasattr(self, 'base_manager') else np.eye(4)
-        
-        # 2. 算出相對於當前 Base 的座標
-        T_flange = kinematics.forward_kinematics(self.current_float_joints)
-        T_tcp_world = T_flange @ T_tool
-        T_tcp_base = kinematics.remove_base_frame(T_tcp_world, T_base)
-        
-        # 將矩陣轉回 XYZRxRyRz 以替換數值
-        curr_pos = T_tcp_base[:3, 3] * 1000.0
-        curr_rot = kinematics.extract_continuous_rpy(T_tcp_base)
-        
-        # 3. 將使用者修改的特定軸替換掉
-        target_values = list(curr_pos) + list(curr_rot)
-        axis_map = {"X": 0, "Y": 1, "Z": 2, "Rx": 3, "Ry": 4, "Rz": 5}
-        idx = axis_map.get(axis_name)
-        if idx is not None:
-            target_values[idx] = new_val
-
-        # 4. 重組為目標矩陣，轉回 World 座標系後，呼叫 IK
-        T_tcp_base_target = kinematics.get_tf_matrix(
-            [x / 1000.0 for x in target_values[:3]], 
-            np.deg2rad(target_values[3:])
-        )
-        T_tcp_world_target = kinematics.apply_base_frame(T_tcp_base_target, T_base)
-        T_flange_target = T_tcp_world_target @ np.linalg.inv(T_tool)
-        
-        new_joints, error = kinematics.inverse_kinematics(T_flange_target, self.current_float_joints)
-        
-        # 5. 判定與退回機制
-        if new_joints is not None:
-            self.handle_system_pose_update(list(new_joints))
+    def process_3d_update(self):
+        if self.pending_3d_update:
+            tcp_mat = self.tcp_manager.get_active_matrix()
+            self.view3d_widget.robot_view.update_joints(self.current_float_joints, tcp_mat)
+            self.pending_3d_update = False
+            self._ui_throttle_counter += 1
+            if self._ui_throttle_counter >= 3: 
+                self._update_monitor_ui() 
         else:
-            self.log_widget.append_log(f"[ERROR] Monitor Edit Failed: Target TCP {axis_name}={new_val} is out of reach or singular.")
-            self.handle_system_pose_update(self.current_float_joints)
-
-    def handle_monitor_joint_edit(self, joint_idx, new_val):
-        """處理 Monitor 區的關節角度手動輸入"""
-        if self.path_manager.is_running():
-            self.log_widget.append_log("[WARNING] Cannot edit joints while program is running.")
-            self.handle_system_pose_update(self.current_float_joints)
-            return
-
-        import config
-        min_lim, max_lim = config.JOINT_LIMITS[joint_idx]
-        if new_val < min_lim or new_val > max_lim:
-            self.log_widget.append_log(f"[ERROR] Monitor Edit Failed: J{joint_idx+1} limit is [{min_lim}, {max_lim}].")
-            self.handle_system_pose_update(self.current_float_joints) 
-            return
-
-        new_joints = list(self.current_float_joints)
-        new_joints[joint_idx] = new_val
-        self.handle_system_pose_update(new_joints)
-
-    def update_path_list_ui(self):
-        """只在新增/刪除點位時，才重繪左側 UI 清單 (高耗能)"""
-        if self.path_manager.is_running():
-            return
-            
-        self.waypoint_panel.update_list(self.path_manager.waypoints)
-        self.update_3d_trajectory_preview()
-
-    def update_3d_trajectory_preview(self):
-        """只負責更新 3D 畫面中的綠色軌跡線 (極低耗能，純 GPU/Numpy 運算)"""
-        if self.path_manager.is_running():
-            return
-            
-        try:
-            pts = self.path_manager.get_trajectory_preview(self.tcp_manager.get_active_matrix())
-            if hasattr(self.view3d_widget.robot_view, 'draw_trajectory_preview'):
-                self.view3d_widget.robot_view.draw_trajectory_preview(pts)
-        except Exception:
-            pass
-
-    def handle_tab_switch(self, new_tab):
-        if self.waypoint_panel.active_tab:
-            self.waypoint_panel.active_tab.waypoints_data = [dict(wp) for wp in self.path_manager.waypoints]
-        self.path_manager.waypoints = [dict(wp) for wp in new_tab.waypoints_data]
-        self.waypoint_panel.set_active_tab_visuals(new_tab)
-        self.update_path_list_ui()
-
-    def execute_save_process(self):
-        """統包存檔流程：先執行全域 Base 同步，再正式寫入硬碟"""
-        if hasattr(self, 'base_manager') and hasattr(self, 'path_manager'):
-            self.path_manager.sync_all_base_shifts(self.base_manager)
-            
-        self.path_manager.save_to_file()
-
-    def update_tcp_point_action(self, index, tool_idx):
-        tool_data = self.tcp_manager.tools[tool_idx]
-        tool_name = tool_data.get("name", "Unknown Tool")
-        
-        self.path_manager.update_special_point(index, "SET_TCP", tool_idx, f"Tool: {tool_name}")
-
-    def record_waypoint_action(self, index, pt_type="PTP"):
-        """處理來自清單的點位錄製請求 (PTP, LIN, CIRC)"""
-        current_j = [round(j, 4) for j in self.current_float_joints]
-        T_flange_world = kinematics.forward_kinematics(current_j)
-        recorded_base_mat = np.eye(4)
-        if hasattr(self, 'base_manager'):
-            recorded_base_mat = self.base_manager.get_active_matrix()
-
-        aux_j = None
-        if pt_type == "CIRC":
-            if hasattr(self.path_manager, 'temp_aux_joints') and self.path_manager.temp_aux_joints:
-                aux_j = [round(j, 4) for j in self.path_manager.temp_aux_joints]
-                self.path_manager.temp_aux_joints = None 
-            else:
-                if hasattr(self, 'log_widget'):
-                    self.log_widget.append_log("[ERROR] 無法插入 CIRC：請先移動到中繼點並按下 'Record AUX'！")
-                return
-
-        new_wp = {
-            "type": pt_type, 
-            "name": f"Point", 
-            "joints": copy.deepcopy(current_j), 
-            "aux_joints": aux_j,
-            "cartesian_flange": np.round(T_flange_world, 4).tolist(),       
-            "recorded_base_matrix": np.round(recorded_base_mat, 4).tolist(),
-            "speed": 50.0,
-            "accel": 50.0,
-            "blend": "FINE",
-            "active": True,
-            "note": ""
-        }
-        
-        self.path_manager.insert_waypoint(index, new_wp)
-        
-        if hasattr(self, 'waypoint_panel') and hasattr(self.waypoint_panel, 'path_list'):
-            self.waypoint_panel.path_list.setCurrentRow(index)
-
-    def insert_special_point_action(self, index, pt_type):
-        """處理來自清單的特殊點位插入請求 (SET_TCP, SET_BASE, DELAY, IO)"""
-        if pt_type.startswith("SET_TCP"):
-            if ":" in pt_type:
-                tool_idx = int(pt_type.split(":")[1])
-            else:
-                tool_idx = self.tcp_manager.current_index
-                
-            tool_data = self.tcp_manager.tools[tool_idx]
-            tool_name = tool_data.get("name", "Unknown Tool")
-            
-            new_wp = {
-                "type": "SET_TCP",
-                "value": tool_idx,
-                "name": f"Tool: {tool_name}",
-                "active": True
-            }
-
-        elif pt_type.startswith("SET_BASE"):
-            if ":" in pt_type:
-                base_idx = int(pt_type.split(":")[1])
-            else:
-                base_idx = self.base_manager.current_index
-                
-            base_data = self.base_manager.bases[base_idx]
-            base_name = base_data.get("name", "Unknown Base")
-            
-            new_wp = {
-                "type": "SET_BASE",
-                "value": base_idx,
-                "name": f"Base: {base_name}",
-                "active": True
-            }
-            
-        elif pt_type == "DELAY":
-            new_wp = {
-                "type": "DELAY",
-                "value": 1.0, 
-                "active": True
-            }
-            
-        elif pt_type == "IO":
-            val = 0
-            if hasattr(self, 'jog_widget') and hasattr(self.jog_widget, 'g_slider'):
-                val = self.jog_widget.g_slider.value()
-                
-            new_wp = {
-                "type": "I/O",
-                "action_type": "SERVO",
-                "value": val,
-                "note": f"Grip {val}%",
-                "active": True
-            }
-        else:
-            return
-            
-        self.path_manager.insert_waypoint(index, new_wp)
-        if hasattr(self.waypoint_panel, 'select_row_silently'):
-            self.waypoint_panel.select_row_silently(index)
-        else:
-            self.waypoint_panel.path_list.setCurrentRow(index)
-        self.update_path_list_ui()
-
-    def open_tcp_manager(self):
-        if self.path_manager.is_running():
-            self.log_widget.append_log("[WARNING] Cannot change TCP config while program is running.")
-            return
-            
-        dialog = TCPManagerDialog(self.tcp_manager, self)
-        if dialog.exec():
-            self.update_path_list_ui()
-            self.handle_system_pose_update(self.current_float_joints) 
-            active_tool = self.tcp_manager.get_active_tool_data()
-            tool_name = active_tool.get("name", "Unknown Tool")
-            self.log_widget.append_log(f"[System] UPDATED: Tool '{tool_name}' successfully applied.")
-
-    def open_base_manager(self):
-        if self.path_manager.is_running():
-            self.log_widget.append_log("[WARNING] Cannot change Base config while program is running.")
-            return
-            
-        dialog = BaseManagerDialog(self.base_manager, self)
-        if dialog.exec():
-            active_base = self.base_manager.get_active_base_data()
-            base_name = active_base.get("name", "World")
-            self.log_widget.append_log(f"[System] UPDATED: Base '{base_name}' settings applied.")
-
-    def handle_batch_base_shift(self, indices):
-        """去 BaseManager 拿矩陣，然後交給 PathManager 算數學"""
-        current_idx = self.base_manager.current_index
-        target_mat = self.base_manager.get_matrix(current_idx)
-        target_name = self.base_manager.bases[current_idx]['name']
-        self.path_manager.apply_batch_base_shift(indices, target_mat, target_name)
-        
-    def handle_block_base_shift(self, set_base_idx):
-        """找出該點位對應的 Base，拿矩陣交給 PathManager 算數學"""
-        bid = self.path_manager.waypoints[set_base_idx].get('value', 0)
-        target_mat = self.base_manager.get_matrix(bid)
-        target_name = self.base_manager.bases[bid]['name']
-        self.path_manager.apply_base_shift_block(set_base_idx, target_mat, target_name)
+            if self._ui_throttle_counter > 0:
+                self._update_monitor_ui() 
 
     def _update_monitor_ui(self):
-        """共用函式：更新儀表板顯示的 TCP 數值與關節角"""
         tcp_mat = self.tcp_manager.get_active_matrix()
         T_flange = kinematics.forward_kinematics(self.current_float_joints)
         T_tcp = T_flange @ tcp_mat
-        
-        world_mat = self.base_manager.get_matrix(self.base_manager.current_index) if hasattr(self, 'base_manager') else np.eye(4)
+        world_mat = self.base_manager.get_matrix(self.base_manager.current_index)
         T_tcp_base = kinematics.remove_base_frame(T_tcp, world_mat)
         
         x, y, z = T_tcp_base[:3, 3] * 1000.0
@@ -600,18 +319,138 @@ class RobotControllerGUI(QMainWindow):
         self.view3d_widget.monitor_widget.update_joints(*self.current_float_joints)
         self._ui_throttle_counter = 0
 
-    def process_3d_update(self):
-        if self.pending_3d_update:
-            tcp_mat = self.tcp_manager.get_active_matrix()
-            self.view3d_widget.robot_view.update_joints(self.current_float_joints, tcp_mat)
-            self.pending_3d_update = False
-            
-            self._ui_throttle_counter += 1
-            if self._ui_throttle_counter >= 3: 
-                self._update_monitor_ui() # 呼叫共用函式
+    def update_3d_trajectory_preview(self):
+        if self.path_manager.is_running(): return
+        try:
+            pts = self.path_manager.get_trajectory_preview(self.tcp_manager.get_active_matrix())
+            if hasattr(self.view3d_widget.robot_view, 'draw_trajectory_preview'):
+                self.view3d_widget.robot_view.draw_trajectory_preview(pts)
+        except Exception:
+            pass
+
+    def update_path_list_ui(self):
+        if self.path_manager.is_running(): return
+        self.waypoint_panel.update_list(self.path_manager.waypoints)
+        self.update_3d_trajectory_preview()
+
+    def handle_monitor_tcp_edit(self, axis_name, new_val):
+        if self.path_manager.is_running():
+            self.log_widget.append_log("[WARNING] Cannot edit position while program is running.")
+            self.handle_system_pose_update(self.current_float_joints) 
+            return
+
+        T_tool = self.tcp_manager.get_active_matrix()
+        T_base = self.base_manager.get_matrix(self.base_manager.current_index)
+        T_flange = kinematics.forward_kinematics(self.current_float_joints)
+        T_tcp_world = T_flange @ T_tool
+        T_tcp_base = kinematics.remove_base_frame(T_tcp_world, T_base)
+        
+        curr_pos = T_tcp_base[:3, 3] * 1000.0
+        curr_rot = kinematics.extract_continuous_rpy(T_tcp_base)
+        target_values = list(curr_pos) + list(curr_rot)
+        
+        axis_map = {"X": 0, "Y": 1, "Z": 2, "Rx": 3, "Ry": 4, "Rz": 5}
+        idx = axis_map.get(axis_name)
+        if idx is not None: target_values[idx] = new_val
+
+        T_tcp_base_target = kinematics.get_tf_matrix([x / 1000.0 for x in target_values[:3]], np.deg2rad(target_values[3:]))
+        T_tcp_world_target = kinematics.apply_base_frame(T_tcp_base_target, T_base)
+        T_flange_target = T_tcp_world_target @ np.linalg.inv(T_tool)
+        
+        new_joints, error = kinematics.inverse_kinematics(T_flange_target, self.current_float_joints)
+        if new_joints is not None:
+            self.handle_system_pose_update(list(new_joints))
         else:
-            if self._ui_throttle_counter > 0:
-                self._update_monitor_ui() # 呼叫共用函式
+            self.log_widget.append_log(f"[ERROR] Monitor Edit Failed: Target TCP {axis_name}={new_val} is out of reach or singular.")
+            self.handle_system_pose_update(self.current_float_joints)
+
+    def handle_monitor_joint_edit(self, joint_idx, new_val):
+        if self.path_manager.is_running():
+            self.log_widget.append_log("[WARNING] Cannot edit joints while program is running.")
+            self.handle_system_pose_update(self.current_float_joints)
+            return
+
+        min_lim, max_lim = config.JOINT_LIMITS[joint_idx]
+        if new_val < min_lim or new_val > max_lim:
+            self.log_widget.append_log(f"[ERROR] Monitor Edit Failed: J{joint_idx+1} limit is [{min_lim}, {max_lim}].")
+            self.handle_system_pose_update(self.current_float_joints) 
+            return
+
+        new_joints = list(self.current_float_joints)
+        new_joints[joint_idx] = new_val
+        self.handle_system_pose_update(new_joints)
+
+
+    # =========================================================
+    # [4] 寸動與手動控制 (Jogging & Manual Control)
+    # =========================================================
+    def deg_to_steps(self, axis_idx, degrees):
+        return int(degrees * config.STEPS_PER_DEG[axis_idx])
+
+    def get_jog_speed_factor(self, level):
+        mapping = {1: 0.25, 2: 0.5, 3: 0.75, 4: 1.0}
+        return mapping.get(level, 1.0)
+
+    def preview_joint_jog(self, angles):
+        self.current_float_joints = list(angles)
+        self.pending_3d_update = True
+
+    def send_joint_jog(self, target_angles_deg, speed_factor):
+        if self.path_manager.is_running(): return
+        if self._can_send_hardware():
+            self.serial_manager.send_joints(target_angles_deg, speed_factor=speed_factor, move_mode=0)
+
+    def handle_continuous_joint_jog(self, axis_idx, direction, speed_factor):
+        if self._can_send_hardware():
+            dir_correct = int(config.STEPS_PER_DEG[axis_idx] / abs(config.STEPS_PER_DEG[axis_idx]))
+            real_direction = direction * dir_correct
+            self.serial_manager.send_continuous_jog(axis_idx, real_direction, speed_factor)
+            return True  
+        return False
+
+    def handle_gripper_jog(self, val):
+        if self._can_send_hardware():
+            self.serial_manager.send_gripper(val)
+
+    def handle_cartesian_jog(self, axis, step_val, frame, is_continuous=True):
+        tcp_mat = self.tcp_manager.get_active_matrix()
+        world_mat = np.eye(4)
+        world_mat = self.base_manager.get_matrix(self.base_manager.current_index)
+            
+        actual_frame = "Base" if frame == "World" else frame
+        last_ideal = getattr(self, '_active_jog_ideal_tcp', None) 
+
+        new_joints, error_msg, ideal_tcp_mat = kinematics.calculate_jog_joints(
+            list(self.current_float_joints), axis, step_val, actual_frame, tcp_mat, world_mat, T_last_ideal_tcp=last_ideal
+        )
+        
+        if new_joints is not None:
+            if self._can_send_hardware():
+                spd_factor = self.get_jog_speed_factor(self.jog_widget.c_speed_level)
+                success = self.serial_manager.send_joints(new_joints, speed_factor=spd_factor, move_mode=1, is_stream=True, is_jog=True)
+                if not success: return
+            
+            self._active_jog_ideal_tcp = ideal_tcp_mat
+            current_time = time.time()
+            last_ui_update = getattr(self, '_last_jog_ui_update', 0.0)
+            
+            if current_time - last_ui_update >= 0.04:
+                self.handle_system_pose_update(new_joints)
+                self._last_jog_ui_update = current_time
+            else:
+                self.current_float_joints = new_joints
+                
+            self._last_jog_error = None
+        else:
+            self._active_jog_ideal_tcp = None
+            last_err = getattr(self, '_last_jog_error', None)
+            if error_msg != last_err:
+                self.log_widget.append_log(f"[Jog Warning] {error_msg}")
+                self._last_jog_error = error_msg
+
+    def handle_cartesian_jog_stop(self):
+        self._active_jog_ideal_tcp = None
+        self.handle_system_pose_update(self.current_float_joints)
 
     def handle_tcp_drag(self, target_xyz):
         tcp_mat = self.tcp_manager.get_active_matrix()
@@ -627,64 +466,325 @@ class RobotControllerGUI(QMainWindow):
         except AttributeError:
             pass
 
-    def toggle_connection(self):
-        if self.serial_manager.is_connected:
-            self.serial_manager.disconnect()
-        else:
-            ports = self.serial_manager.list_ports()
-            if not ports:
-                self.log_widget.append_log("[HW] 找不到任何可用的 COM Port 裝置。")
-                return
-            menu = QMenu(self)
-            menu.setStyleSheet(styles.MENU_STYLE) # 假設你有 styles 模組
-            for port in ports:
-                action = menu.addAction(f"Connect to {port}")
-                action.triggered.connect(lambda checked, p=port: self.serial_manager.connect(p))
-            btn = self.top_bar.btn_connect
-            menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
 
-    def update_connection_ui(self, is_connected):
-        if is_connected:
-            self.top_bar.btn_connect.setIcon(qta.icon('mdi.connection', color='#c63bbb'))
-            self.top_bar.btn_connect.setToolTip("Disconnect")
+    # =========================================================
+    # [5] 路徑與設定檔管理 (Waypoint & Profile Management)
+    # =========================================================
+    def execute_save_process(self):
+        self.path_manager.sync_all_base_shifts(self.base_manager)
+        self.path_manager.save_to_file()
+
+    def open_tcp_manager(self):
+        if self.path_manager.is_running():
+            self.log_widget.append_log("[WARNING] Cannot change TCP config while program is running.")
+            return
+        dialog = TCPManagerDialog(self.tcp_manager, self)
+        if dialog.exec():
+            self.update_path_list_ui()
+            self.handle_system_pose_update(self.current_float_joints) 
+            active_tool = self.tcp_manager.get_active_tool_data()
+            self.log_widget.append_log(f"[System] UPDATED: Tool '{active_tool.get('name', 'Unknown Tool')}' successfully applied.")
+
+    def open_base_manager(self):
+        if self.path_manager.is_running():
+            self.log_widget.append_log("[WARNING] Cannot change Base config while program is running.")
+            return
+        dialog = BaseManagerDialog(self.base_manager, self)
+        if dialog.exec():
+            active_base = self.base_manager.get_active_base_data()
+            self.log_widget.append_log(f"[System] UPDATED: Base '{active_base.get('name', 'World')}' settings applied.")
+
+    def handle_batch_base_shift(self, indices):
+        current_idx = self.base_manager.current_index
+        target_mat = self.base_manager.get_matrix(current_idx)
+        target_name = self.base_manager.bases[current_idx]['name']
+        self.path_manager.apply_batch_base_shift(indices, target_mat, target_name)
+        
+    def handle_block_base_shift(self, set_base_idx):
+        bid = self.path_manager.waypoints[set_base_idx].get('value', 0)
+        target_mat = self.base_manager.get_matrix(bid)
+        target_name = self.base_manager.bases[bid]['name']
+        self.path_manager.apply_base_shift_block(set_base_idx, target_mat, target_name)
+
+    def record_waypoint_action(self, index, pt_type="PTP"):
+        current_j = [round(j, 4) for j in self.current_float_joints]
+        T_flange_world = kinematics.forward_kinematics(current_j)
+        recorded_base_mat = self.base_manager.get_active_matrix()
+
+        aux_j = None
+        if pt_type == "CIRC":
+            if hasattr(self.path_manager, 'temp_aux_joints') and self.path_manager.temp_aux_joints:
+                aux_j = [round(j, 4) for j in self.path_manager.temp_aux_joints]
+                self.path_manager.temp_aux_joints = None 
+            else:
+                if hasattr(self, 'log_widget'): self.log_widget.append_log("[ERROR] 無法插入 CIRC：請先移動到中繼點並按下 'Record AUX'！")
+                return
+
+        new_wp = {
+            "type": pt_type, "name": f"Point", "joints": copy.deepcopy(current_j), "aux_joints": aux_j,
+            "cartesian_flange": np.round(T_flange_world, 4).tolist(),       
+            "recorded_base_matrix": np.round(recorded_base_mat, 4).tolist(),
+            "speed": 50.0, "accel": 50.0, "blend": "FINE", "active": True, "note": ""
+        }
+        self.path_manager.insert_waypoint(index, new_wp)
+        self.waypoint_panel.path_list.setCurrentRow(index)
+
+    def insert_special_point_action(self, index, pt_type):
+        if pt_type.startswith("SET_TCP"):
+            tool_idx = int(pt_type.split(":")[1]) if ":" in pt_type else self.tcp_manager.current_index
+            tool_name = self.tcp_manager.tools[tool_idx].get("name", "Unknown Tool")
+            new_wp = {"type": "SET_TCP", "value": tool_idx, "name": f"Tool: {tool_name}", "active": True}
+
+        elif pt_type.startswith("SET_BASE"):
+            base_idx = int(pt_type.split(":")[1]) if ":" in pt_type else self.base_manager.current_index
+            base_name = self.base_manager.bases[base_idx].get("name", "Unknown Base")
+            new_wp = {"type": "SET_BASE", "value": base_idx, "name": f"Base: {base_name}", "active": True}
             
-            # 👑 連線成功時：預設點亮「停止」鍵，維持關閉「解鎖」鍵
-            # (如果硬體其實在鎖死狀態，等一下按下移動時 MCU 會報錯，就會自動觸發狀態切換)
-            if hasattr(self, 'top_bar'):
-                self.top_bar.btn_stop.setEnabled(True)
-                self.top_bar.btn_estop_reset.setEnabled(False)
-                        
-            if hasattr(self, 'log_widget'):
-                self.log_widget.append_log("[HW] 已連線，請執行原點復歸。若無法移動，請確認是否處於急停鎖存狀態。")
+        elif pt_type == "DELAY":
+            new_wp = {"type": "DELAY", "value": 1.0, "active": True}
+            
+        elif pt_type == "IO":
+            val = self.jog_widget.g_slider.value()
+            new_wp = {"type": "I/O", "action_type": "SERVO", "value": val, "note": f"Grip {val}%", "active": True}
+        else: return
+            
+        self.path_manager.insert_waypoint(index, new_wp)
+        if hasattr(self.waypoint_panel, 'select_row_silently'):
+            self.waypoint_panel.select_row_silently(index)
         else:
-            self.top_bar.btn_connect.setIcon(qta.icon('mdi.connection', color='#e0e0e0'))
-            self.top_bar.btn_connect.setToolTip("Connect to Serial Port")
+            self.waypoint_panel.path_list.setCurrentRow(index)
+        self.update_path_list_ui()
+
+    def update_tcp_point_action(self, index, tool_idx):
+        tool_data = self.tcp_manager.tools[tool_idx]
+        tool_name = tool_data.get("name", "Unknown Tool")
+        self.path_manager.update_special_point(index, "SET_TCP", tool_idx, f"Tool: {tool_name}")
+
+    def handle_tab_switch(self, new_tab):
+        if self.waypoint_panel.active_tab:
+            self.waypoint_panel.active_tab.waypoints_data = [dict(wp) for wp in self.path_manager.waypoints]
+        self.path_manager.waypoints = [dict(wp) for wp in new_tab.waypoints_data]
+        self.waypoint_panel.set_active_tab_visuals(new_tab)
+        self.update_path_list_ui()
+
+
+    # =========================================================
+    # [6] 任務執行與動畫 (Execution & Animation)
+    # =========================================================
+    def go_soft_home(self):
+        if self.path_manager.is_running():
+            self.log_widget.append_log("[System] 路徑執行中，忽略 Soft Home 請求。")
+            return
+
+        zero_joints = [0.0] * 6
+        if getattr(self, 'is_simulation_mode', False) or not self._can_send_hardware():
+            self._play_pose_animation(zero_joints, wp_type='PTP')
+            self.log_widget.append_log("[System] 模擬模式/未連線：已觸發 Soft Home 動畫。")
+            return
+
+        if self._can_send_hardware():
+            self.serial_manager.send_pause() 
+            time.sleep(0.05) 
+            self.serial_manager.send_stop()  
+            time.sleep(0.05) 
+            self.serial_manager.send_joints(zero_joints, speed_factor=1.0, move_mode=0)
+
+        self._play_pose_animation(zero_joints, wp_type='PTP')
+
+    def stop_execution(self):
+        self._reset_play_ui()
+        if self.path_manager.is_running():
+            self.path_manager.stop_path()
             
-            # 👑 斷線時：強制將兩個安全按鈕都變為灰色禁用狀態
-            if hasattr(self, 'top_bar'):
-                self.top_bar.btn_stop.setEnabled(False)
-                self.top_bar.btn_estop_reset.setEnabled(False)
+        self._active_jog_ideal_tcp = None
+        if self._can_send_hardware():
+            self.serial_manager.send_stop()
+            QTimer.singleShot(500, self._safe_request_pose)
+
+    def on_play_toggled(self, checked):
+        if checked:
+            self.top_bar.btn_play.setIcon(qta.icon('mdi.pause-circle-outline', color='#e6a800'))
+            self.top_bar.btn_play.setToolTip("暫停執行 (Pause)")
+
+            if self.path_manager.is_running():
+                self.log_widget.append_log(">>> 恢復執行...")
+                self._is_paused = False
+                if self.serial_manager and self.serial_manager.is_connected:
+                    self.serial_manager.send_resume()
+                    
+                worker = getattr(self.path_manager, 'worker', None)
+                if worker:
+                    worker._is_paused = False
+            else:
+                valid_types = ["PTP", "LIN", "CIRC", "DELAY", "GRIPPER", "I/O", "LOOP_START", "LOOP_END", "SET_TCP", "SET_BASE", "CAM_PATH"]
+                active_points = [pt for pt in self.path_manager.waypoints if pt.get('active', True) and pt.get('type') in valid_types]
+                
+                if len(active_points) == 0:
+                    self.log_widget.append_log("[System] 警告: 沒有可執行的點位。")
+                    self._reset_play_ui() 
+                    return
+
+                self.log_widget.append_log(">>> 開始執行路徑串流...")
+                self.view3d_widget.monitor_widget.set_locked(True)
+                self._is_paused = False
+                self.top_bar.btn_stop.setEnabled(True)
+                
+                tcp_mat = self.tcp_manager.get_active_matrix()
+                callbacks = {
+                    'update': self.handle_system_pose_update, 
+                    'error': lambda msg: (self.log_widget.append_log(f"[ERROR] {msg}"), self._reset_play_ui()),
+                    'log': self.log_widget.append_log,
+                    'finished': self._on_execution_finished,
+                    'set_tcp': self.handle_set_tcp_playback,
+                    'set_base': self.handle_set_base_playback 
+                }
+                
+                serial_ref = self.serial_manager if self._can_send_hardware() else None
+                self.path_manager.execute_streaming_path(
+                    active_points=active_points, start_joints=self.current_float_joints,
+                    tcp_offset_mat=tcp_mat, loop=False, global_speed=50.0, global_accel=50.0,
+                    serial_ref=serial_ref, callbacks=callbacks,
+                )
+        else:
+            self.top_bar.btn_play.setIcon(qta.icon('mdi.motion-play-outline', color='#00e6b8'))
+            self.top_bar.btn_play.setToolTip("繼續執行 (Resume)")
+            
+            if self.path_manager.is_running():
+                self.log_widget.append_log(">>> 執行暫停 (Feed Hold)")
+                self._is_paused = True
+                if self.serial_manager and self.serial_manager.is_connected:
+                    self.serial_manager.send_pause()
+                    
+                worker = getattr(self.path_manager, 'worker', None)
+                if worker:
+                    worker._is_paused = True
+
+    def _reset_play_ui(self):
+        self._is_paused = False 
+        
+        self.top_bar.btn_play.blockSignals(True)
+        self.top_bar.btn_play.setChecked(False)
+        self.top_bar.btn_play.setIcon(qta.icon('mdi.motion-play-outline', color='#00e6b8'))
+        self.top_bar.btn_play.setToolTip("開始 / 繼續 (Play/Resume)")
+        self.top_bar.btn_play.blockSignals(False)
+        
+        self.view3d_widget.monitor_widget.set_locked(False)
+
+    def _on_execution_finished(self, total_time):
+        self.log_widget.append_log(f">>> 執行完成！總耗時 {total_time:.2f} 秒")
+        self._reset_play_ui() 
+
+    def handle_set_tcp_playback(self, tool_idx):
+        self.tcp_manager.set_current_index(tool_idx)
+        self.handle_system_pose_update(self.current_float_joints)
+
+    def handle_set_base_playback(self, base_idx):
+        self.base_manager.set_current_index(base_idx)
+
+    def handle_waypoint_preview(self, index):
+        current_time = time.time()
+        last_time = getattr(self, '_last_preview_time', 0.0)
+        last_idx = getattr(self, '_last_preview_index', -1)
+        
+        if index == last_idx and (current_time - last_time) < 0.5: return  
+            
+        self._last_preview_time = current_time
+        self._last_preview_index = index
+
+        if self.path_manager.is_running(): return
+        if index < 0 or index >= len(self.path_manager.waypoints): return
+
+        target_wp = self.path_manager.waypoints[index]
+        wp_type = target_wp.get('type', '')
+
+        reference_wp = None
+        if wp_type in ["PTP", "LIN", "CIRC"]:
+            reference_wp = target_wp
+        else:
+            search_forward = (wp_type == "SET_BASE") 
+            step = 1 if search_forward else -1
+            for i in range(index + step, len(self.path_manager.waypoints) if search_forward else -1, step):
+                if self.path_manager.waypoints[i].get('joints') is not None:
+                    reference_wp = self.path_manager.waypoints[i]
+                    break
+                    
+            if reference_wp is None:
+                step = -1 if search_forward else 1
+                for i in range(index + step, len(self.path_manager.waypoints) if not search_forward else -1, step):
+                    if self.path_manager.waypoints[i].get('joints') is not None:
+                        reference_wp = self.path_manager.waypoints[i]
+                        break
+
+        if reference_wp is None or reference_wp.get('joints') is None: return
+
+        target_tool_idx = 0  
+        for i in range(index, -1, -1):
+            if self.path_manager.waypoints[i].get('type') == 'SET_TCP':
+                target_tool_idx = int(self.path_manager.waypoints[i].get('value', 0))
+                break
+        
+        target_base_idx = 0  
+        for i in range(index, -1, -1):
+            if self.path_manager.waypoints[i].get('type') == 'SET_BASE':
+                target_base_idx = int(self.path_manager.waypoints[i].get('value', 0))
+                break
+        
+        if self.tcp_manager.current_index != target_tool_idx:
+            self.tcp_manager.blockSignals(True)
+            self.tcp_manager.set_current_index(target_tool_idx)
+            self.tcp_manager.blockSignals(False)
+            
+        if self.base_manager.current_index != target_base_idx:
+            self.base_manager.blockSignals(True)
+            self.base_manager.set_current_index(target_base_idx)
+            self.base_manager.blockSignals(False)
+
+        if getattr(self, 'is_simulation_mode', False):
+            target_joints = reference_wp.get("joints")
+            if target_joints:
+                self._play_pose_animation(target_joints, wp_type=reference_wp.get("type", "PTP"))
+            return
+
+        preview_wp = {
+            "type": reference_wp.get("type", "PTP"),
+            "joints": reference_wp.get("joints"),
+            "aux_joints": reference_wp.get("aux_joints"),
+            "speed": reference_wp.get("speed", 50.0),   
+            "accel": reference_wp.get("accel", 50.0),   
+            "cartesian_flange": reference_wp.get("cartesian_flange"),
+            "recorded_base_matrix": reference_wp.get("recorded_base_matrix"),
+            "blend": "FINE" 
+        }
+
+        callbacks = {
+            'update': self.handle_system_pose_update, 
+            'error': lambda msg: self.log_widget.append_log(f"[Preview Error] {msg}"),
+            'log': lambda msg: None, 
+            'finished': lambda t: None, 
+        }
+        
+        serial_ref = self.serial_manager if self._can_send_hardware() else None
+        self.path_manager.execute_streaming_path(
+            active_points=[preview_wp], start_joints=self.current_float_joints,
+            tcp_offset_mat=self.tcp_manager.get_active_matrix(), loop=False, 
+            global_speed=50.0, global_accel=50.0, serial_ref=serial_ref, callbacks=callbacks,
+        )
 
     def _play_pose_animation(self, target_joints, wp_type='PTP'):
-        """處理 3D 畫面的平滑過渡動畫"""
         target_j_array = np.array(target_joints)
         start_j_array = np.array(self.current_float_joints)
         
-        # 1. 如果已經在目標點附近，直接更新並結束，節省資源
         if np.allclose(start_j_array, target_j_array, atol=1e-2):
             self.handle_system_pose_update(target_joints)
             return
 
-        # 2. 中斷可能正在播放的上一段動畫
-        if hasattr(self, 'preview_animation') and self.preview_animation.state() == QVariantAnimation.State.Running:
-            self.preview_animation.stop()
+        anim = getattr(self, 'preview_animation', None)
+        if anim and anim.state() == QVariantAnimation.State.Running:
+            anim.stop()
 
-        # 3. LIN 直線模式專屬：預先烘焙 20 個空間關鍵影格
         preview_path = []
         if wp_type == 'LIN':
-            import kinematics
             from scipy.spatial.transform import Slerp, Rotation as R
-            
             T_start = kinematics.forward_kinematics(start_j_array)
             T_end = kinematics.forward_kinematics(target_j_array)
             pos_s, pos_e = T_start[:3, 3], T_end[:3, 3]
@@ -710,14 +810,12 @@ class RobotControllerGUI(QMainWindow):
             except Exception:
                 preview_path = []
 
-        # 4. 建立與設定動畫實體 (統一 450 毫秒)
         self.preview_animation = QVariantAnimation(self)
-        self.preview_animation.setDuration(450)
+        self.preview_animation.setDuration(600)
         self.preview_animation.setStartValue(0.0)
         self.preview_animation.setEndValue(1.0)
         self.preview_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
 
-        # 5. 定義影格更新回呼函式
         def on_preview_step(progress):
             if wp_type == 'LIN' and len(preview_path) > 0:
                 float_idx = progress * (len(preview_path) - 1)
@@ -733,385 +831,19 @@ class RobotControllerGUI(QMainWindow):
         self.preview_animation.valueChanged.connect(on_preview_step)
         self.preview_animation.start()
 
-    def go_soft_home(self):
-        """觸發 Soft Home，發送實體指令並以平滑動畫更新 3D 畫面"""
-        
-        # 【防護】：如果路徑正在執行，禁止歸零干擾
-        if hasattr(self, 'path_manager') and self.path_manager.is_running():
-            return
 
-        zero_joints = [0.0] * 6
-        
-        # 1. 發送給實體硬體
-        if hasattr(self, 'serial_manager') and self.serial_manager.is_connected:
-            self.serial_manager.send_joints(zero_joints)
-
-        # 2. 呼叫共用動畫引擎 (Home 使用預設的 PTP 模式即可)
-        self._play_pose_animation(zero_joints, wp_type='PTP')
-
-    def handle_set_tcp_playback(self, tool_idx):
-        """處理腳本播放時的動態換刀請求"""
-        self.tcp_manager.set_current_index(tool_idx)
-        self.handle_system_pose_update(self.current_float_joints)
-
-    def handle_set_base_playback(self, base_idx):
-        """處理腳本播放時的動態基座切換請求"""
-        if hasattr(self, 'base_manager'):
-            self.base_manager.set_current_index(base_idx)
-
-    def handle_waypoint_preview(self, index):
-        """當使用者點擊清單行數時，啟動共用動畫引擎平滑過渡至 3D 姿態預覽"""
-        
-        # 【防護 1】路徑執行中，禁止預覽干擾
-        if self.path_manager.is_running():
-            return
-
-        # 【防護 2】確保索引有效
-        if index < 0 or index >= len(self.path_manager.waypoints):
-            return
-
-        target_wp = self.path_manager.waypoints[index]
-        wp_type = target_wp.get('type', '')
-
-        # 1. 系統性雙向尋找邏輯 (尋找實體關節角度)
-        reference_wp = None
-        if wp_type in ["PTP", "LIN", "CIRC"]:
-            reference_wp = target_wp
-        else:
-            search_forward = (wp_type == "SET_BASE") 
-            step = 1 if search_forward else -1
-            for i in range(index + step, len(self.path_manager.waypoints) if search_forward else -1, step):
-                if self.path_manager.waypoints[i].get('joints') is not None:
-                    reference_wp = self.path_manager.waypoints[i]
-                    break
-                    
-            if reference_wp is None:
-                step = -1 if search_forward else 1
-                for i in range(index + step, len(self.path_manager.waypoints) if not search_forward else -1, step):
-                    if self.path_manager.waypoints[i].get('joints') is not None:
-                        reference_wp = self.path_manager.waypoints[i]
-                        break
-
-        if reference_wp is None or reference_wp.get('joints') is None:
-            return
-            
-        preview_joints = list(reference_wp['joints'])
-
-        # 2. 往前追溯當下應該生效的 TCP 與 Base
-        target_tool_idx = 0  
-        for i in range(index, -1, -1):
-            if self.path_manager.waypoints[i].get('type') == 'SET_TCP':
-                target_tool_idx = int(self.path_manager.waypoints[i].get('value', 0))
-                break
-        
-        target_base_idx = 0  
-        for i in range(index, -1, -1):
-            if self.path_manager.waypoints[i].get('type') == 'SET_BASE':
-                target_base_idx = int(self.path_manager.waypoints[i].get('value', 0))
-                break
-        
-        # 3. 自動切換大腦狀態以符合歷史軌跡
-        if self.tcp_manager.current_index != target_tool_idx:
-            # 加上阻斷器：靜默切換，避免觸發全域 data_changed 導致軌跡重算
-            self.tcp_manager.blockSignals(True)
-            self.tcp_manager.set_current_index(target_tool_idx)
-            self.tcp_manager.blockSignals(False)
-            
-        if hasattr(self, 'base_manager') and self.base_manager.current_index != target_base_idx:
-            # 加上阻斷器：靜默切換
-            self.base_manager.blockSignals(True)
-            self.base_manager.set_current_index(target_base_idx)
-            self.base_manager.blockSignals(False)
-
-        # 4. 動態預覽基座偏移
-        if hasattr(self, 'base_manager'):
-            current_base_mat = self.base_manager.get_matrix(target_base_idx)
-            recorded_base_mat = np.array(reference_wp.get('recorded_base_matrix', np.eye(4)))
-            
-            if not np.allclose(current_base_mat, recorded_base_mat, atol=1e-4):
-                import kinematics
-                T_flange_world_old = np.array(reference_wp.get('cartesian_flange', kinematics.forward_kinematics(preview_joints)))
-                new_joints, _ = kinematics.calculate_base_shift_ik(
-                    T_flange_world_old, recorded_base_mat, current_base_mat, preview_joints
-                )
-                if new_joints is not None:
-                    preview_joints = list(new_joints)
-
-        # 5.呼叫動畫引擎！
-        self._play_pose_animation(preview_joints, wp_type=wp_type)
-
-    def on_play_toggled(self, checked):
-        """處理 btn_play 被按下時的所有邏輯 (啟動/暫停/繼續)"""        
-        if checked:
-            # ==========================================
-            # 狀態 A：按下 (Checked = True) -> 顯示為「暫停」圖示
-            # ==========================================
-            self.top_bar.btn_play.setIcon(qta.icon('mdi.pause-circle-outline', color='#e6a800'))
-            self.top_bar.btn_play.setToolTip("暫停執行 (Pause)")
-
-            # 判斷是「繼續」還是「全新啟動」
-            if hasattr(self, 'path_manager') and self.path_manager.is_running():
-                # ---------------------------------
-                # 動作 1：繼續 (Resume) - 軌跡跑到一半
-                # ---------------------------------
-                self.log_widget.append_log(">>> 恢復執行...")
-                self._is_paused = False
-                
-                # 通知硬體取消時間膨脹 (Mode 8)
-                if self.serial_manager and self.serial_manager.is_connected:
-                    self.serial_manager.send_resume()
-                    
-                # 通知 Python 背景工人恢復餵食
-                if hasattr(self.path_manager, 'worker'):
-                    self.path_manager.worker._is_paused = False
-                    
-            else:
-                # ---------------------------------
-                # 動作 2：全新啟動 (Start) - 尚未開始
-                # ---------------------------------
-                valid_types = ["PTP", "LIN", "CIRC", "DELAY", "GRIPPER", "I/O", "LOOP_START", "LOOP_END", "SET_TCP", "SET_BASE", "CAM_PATH"]
-                
-                # 抓取目前列表上有效的點位
-                active_points = [
-                    pt for pt in self.path_manager.waypoints 
-                    if pt.get('active', True) and pt.get('type') in valid_types
-                ]
-                
-                # 防呆：如果根本沒有點位
-                if len(active_points) == 0:
-                    self.log_widget.append_log("[System] 警告: 沒有可執行的點位。")
-                    self._reset_play_ui() 
-                    return
-
-                self.log_widget.append_log(">>> 開始執行路徑串流...")
-                
-                # 鎖定 Monitor：執行期間全面禁止編輯！
-                self.view3d_widget.monitor_widget.set_locked(True)
-                self._is_paused = False
-                
-                tcp_mat = self.tcp_manager.get_active_matrix()
-                callbacks = {
-                    'update': self.handle_system_pose_update, 
-                    'error': lambda msg: (self.log_widget.append_log(f"[ERROR] {msg}"), self._reset_play_ui()),
-                    'log': self.log_widget.append_log,
-                    'finished': self._on_execution_finished, # 確保跑完會呼叫歸位 UI
-                    'set_tcp': self.handle_set_tcp_playback,
-                    'set_base': self.handle_set_base_playback 
-                }
-                
-                # 連線狀態判定 (沒連線也能跑模擬)
-                serial_ref = self.serial_manager if (self.serial_manager and self.serial_manager.is_connected) else None
-                
-                # 正式啟動背景串流執行緒！
-                self.path_manager.execute_streaming_path(
-                    active_points=active_points,
-                    start_joints=self.current_float_joints,
-                    tcp_offset_mat=tcp_mat,
-                    loop=False, 
-                    global_speed=50.0,
-                    global_accel=50.0,
-                    serial_ref=serial_ref, 
-                    callbacks=callbacks,
-                )
-
-        else:
-            # ==========================================
-            # 狀態 B：彈起 (Checked = False) -> 顯示為「播放」圖示
-            # ==========================================
-            self.top_bar.btn_play.setIcon(qta.icon('mdi.motion-play-outline', color='#00e6b8'))
-            self.top_bar.btn_play.setToolTip("繼續執行 (Resume)")
-            
-            if hasattr(self, 'path_manager') and self.path_manager.is_running():
-                # ---------------------------------
-                # 動作 3：暫停 (Pause / Feed Hold)
-                # ---------------------------------
-                self.log_widget.append_log(">>> 執行暫停 (Feed Hold)")
-                self._is_paused = True
-                
-                # 1. 通知硬體啟動時間膨脹煞車 (Mode 7)
-                if self.serial_manager and self.serial_manager.is_connected:
-                    self.serial_manager.send_pause()
-                    
-                # 2. 通知 Python 背景工人停止餵食
-                if hasattr(self.path_manager, 'worker'):
-                    self.path_manager.worker._is_paused = True
-                
-    def toggle_execution(self, checked):
-        if checked:
-            # ==========================================
-            # 狀態 A：按下 (Checked = True) -> 顯示為「暫停」圖示
-            # ==========================================
-            self.top_bar.btn_play.setIcon(qta.icon('mdi.pause-circle-outline', color='#e6a800'))
-            self.top_bar.btn_play.setToolTip("暫停執行 (Pause)")
-
-            if self.path_manager.is_running():
-                # ---------------------------------
-                # 動作 1：繼續 (Resume) - 軌跡跑到一半
-                # ---------------------------------
-                self.log_widget.append_log(">>> 恢復執行...")
-                self._is_paused = False
-                
-                # 1. 通知硬體取消時間膨脹 (Mode 8)
-                if self.serial_manager and self.serial_manager.is_connected:
-                    self.serial_manager.send_resume()
-                    
-                # 2. 通知 Python 背景工人恢復餵食
-                if hasattr(self.path_manager, 'worker'):
-                    self.path_manager.worker._is_paused = False
-                    
-            else:
-                # ---------------------------------
-                # 動作 2：全新啟動 (Start) - 尚未開始
-                # ---------------------------------
-                valid_types = ["PTP", "LIN", "CIRC", "DELAY", "GRIPPER", "I/O", "LOOP_START", "LOOP_END", "SET_TCP", "SET_BASE", "CAM_PATH"]
-                
-                active_points = [
-                    pt for pt in self.path_manager.waypoints 
-                    if pt.get('active', True) and pt.get('type') in valid_types
-                ]
-                
-                if len(active_points) == 0:
-                    self.log_widget.append_log("[System] 警告: 沒有可執行的點位。")
-                    self._reset_play_ui() 
-                    return
-
-                self.log_widget.append_log(">>> 開始執行路徑串流...")
-                
-                # 鎖定 Monitor：執行期間全面禁止編輯！
-                self.view3d_widget.monitor_widget.set_locked(True)
-                self._is_paused = False
-                
-                tcp_mat = self.tcp_manager.get_active_matrix()
-                callbacks = {
-                    'update': self.handle_system_pose_update, 
-                    'error': lambda msg: (self.log_widget.append_log(f"[ERROR] {msg}"), self._reset_play_ui()), # 發生錯誤時也要歸位按鈕與解鎖
-                    'log': self.log_widget.append_log,
-                    'finished': self._on_execution_finished,
-                    'set_tcp': self.handle_set_tcp_playback,
-                    'set_base': self.handle_set_base_playback 
-                }
-                
-                serial_ref = self.serial_manager if (self.serial_manager and self.serial_manager.is_connected) else None
-                
-                self.path_manager.execute_streaming_path(
-                    active_points=active_points,
-                    start_joints=self.current_float_joints,
-                    tcp_offset_mat=tcp_mat,
-                    loop=False, 
-                    global_speed=50.0,
-                    global_accel=50.0,
-                    serial_ref=serial_ref, 
-                    callbacks=callbacks,
-                )
-
-        else:
-            # ==========================================
-            # 狀態 B：彈起 (Checked = False) -> 顯示為「播放」圖示
-            # ==========================================
-            self.top_bar.btn_play.setIcon(qta.icon('mdi.motion-play-outline', color='#00e6b8'))
-            self.top_bar.btn_play.setToolTip("繼續執行 (Resume)")
-            
-            if self.path_manager.is_running():
-                # ---------------------------------
-                # 動作 3：暫停 (Pause Feed Hold)
-                # ---------------------------------
-                self.log_widget.append_log(">>> 執行暫停 (Feed Hold)")
-                self._is_paused = True
-                
-                # 1. 通知硬體啟動時間膨脹煞車 (Mode 7)
-                if self.serial_manager and self.serial_manager.is_connected:
-                    self.serial_manager.send_pause()
-                    
-                # 2. 通知 Python 背景工人停止餵食
-                if hasattr(self.path_manager, 'worker'):
-                    self.path_manager.worker._is_paused = True
-                
-                # 注意這裡：暫停時「不可以」解鎖 UI，也不可以 stop_path！
-                # 機器只是卡住了，一切都還在記憶體內待命。
-
-    def _reset_play_ui(self):
-        """共用函式：重置播放按鈕狀態並解鎖 UI """
-        if hasattr(self, 'top_bar'):
-            self.top_bar.btn_play.blockSignals(True)
-            self.top_bar.btn_play.setChecked(False)
-            self.top_bar.btn_play.setIcon(qta.icon('mdi.motion-play-outline', color='#00e6b8'))
-            self.top_bar.btn_play.setToolTip("開始 / 繼續 (Play/Resume)")
-            self.top_bar.btn_play.blockSignals(False)
-            
-        # 解鎖編輯區
-        if hasattr(self, 'view3d_widget') and hasattr(self.view3d_widget, 'monitor_widget'):
-            self.view3d_widget.monitor_widget.set_locked(False)
-
-    # ==========================================
-    # 動作 1：發送停止指令 (UI -> MCU)
-    # ==========================================
-    def stop_execution(self):
-        """使用者按下『停止』：全面斬斷所有運動 (軌跡與寸動)，並發送硬體急停"""
-        self.log_widget.append_log(">>> 發送全系統急停指令！")
-        self._reset_play_ui()
-
-        # 1. 斬斷背景軌跡執行 (PathManager 收到後會停止執行緒)
-        if hasattr(self, 'path_manager') and self.path_manager.is_running():
-            self.path_manager.stop_path()
-            
-        # 2. 斬斷寸動的軟體記憶 (清理你原本的殘留狀態)
-        self._active_jog_ideal_tcp = None
-
-        # 3. 直通底層，確保向 MCU 送出 Mode 4 煞車指令
-        if self.serial_manager and self.serial_manager.is_connected:
-            self.serial_manager.send_stop()
-
-
-    # ==========================================
-    # 動作 2：發送解鎖指令 (UI -> MCU)
-    # ==========================================
-    def reset_estop(self):
-        """使用者按下『解除鎖定』：發送 Mode 9 解鎖訊號"""
-        if self.serial_manager and self.serial_manager.is_connected:
-            self.log_widget.append_log(">>> 嘗試解除急停鎖死...")
-            self.serial_manager.send_estop_reset()
-
-
-    # ==========================================
-    # 動作 3：純粹處理畫面切換 (MCU -> UI)
-    # ==========================================
-    def on_estop_state_changed(self, is_latched):
-        """當收到 MCU 處於或解除急停鎖死狀態時觸發，只負責更新 UI"""
-        if is_latched:
-            # 狀態：鎖死。關閉停止鍵，點亮解鎖鍵
-            if hasattr(self, 'top_bar'):
-                self.top_bar.btn_stop.setEnabled(False)
-                self.top_bar.btn_estop_reset.setEnabled(True)
-                
-            QMessageBox.critical(
-                self, 
-                "系統急停 (LATCHED)", 
-                "硬體控制器目前處於「急停鎖死狀態」！\n\n"
-                "請確認實體機台安全後，點擊工具列的「解鎖」按鈕來恢復運作。"
-            )
-        else:
-            # 狀態：正常。點亮停止鍵，關閉解鎖鍵
-            if hasattr(self, 'top_bar'):
-                self.top_bar.btn_stop.setEnabled(True)
-                self.top_bar.btn_estop_reset.setEnabled(False)
-                
-            QMessageBox.information(
-                self, 
-                "警報解除，系統恢復正常就緒。"
-            )
-            
-        self._reset_play_ui() # 呼叫共用函式
-
-    def _on_execution_finished(self, total_time):
-        self.log_widget.append_log(f">>> 執行完成！總耗時 {total_time:.2f} 秒")
-        self._reset_play_ui() # 呼叫共用函式
+    # =========================================================
+    # [7] 系統事件與彈窗 (System Events & Dialogs)
+    # =========================================================
+    def handle_global_spacebar(self):
+        self.waypoint_panel._handle_spacebar()
+        self.view3d_widget._handle_spacebar()
 
     def showEvent(self, event):
         super().showEvent(event)
         apply_windows_dark_titlebar(self)
 
     def _prompt_unsaved_changes(self, text_message):
-        """共用函式：防呆警告彈窗，回傳使用者的選擇與按鈕物件"""
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("未儲存提示")
         msg_box.setText(text_message)
@@ -1126,17 +858,12 @@ class RobotControllerGUI(QMainWindow):
         return msg_box.clickedButton(), btn_save, btn_discard, btn_cancel
 
     def handle_tab_closed(self, closed_tab):
-        """處理分頁關閉邏輯，決定是否放行刪除 UI"""
         if closed_tab == self.waypoint_panel.active_tab:
-            
-            # 1. 攔截：詢問 PathManager 是否有未儲存的變更
-            if hasattr(self.path_manager, 'is_modified') and self.path_manager.is_modified:
+            if self.path_manager.is_modified:
                 choice, btn_save, btn_discard, btn_cancel = self._prompt_unsaved_changes("目前有未儲存的點位變更，請問要儲存檔案嗎？")
-
                 if choice == btn_save:
                     self.execute_save_process()
-                    if self.path_manager.is_modified:
-                        return           
+                    if self.path_manager.is_modified: return           
                 elif choice == btn_discard:
                     pass   
                 elif choice == btn_cancel:
@@ -1149,21 +876,15 @@ class RobotControllerGUI(QMainWindow):
         self.waypoint_panel.force_close_tab(closed_tab)
 
     def closeEvent(self, event):
-        """攔截主視窗關閉事件"""
-        if hasattr(self, 'path_manager') and getattr(self.path_manager, 'is_modified', False):
+        if self.path_manager.is_modified:
             choice, btn_save, btn_discard, btn_cancel = self._prompt_unsaved_changes("退出前，是否要儲存目前的點位變更？")
-
             if choice == btn_save:
-                # 儲存 > 儲存後關閉主視窗
                 self.execute_save_process() 
-                if self.path_manager.is_modified:
-                    event.ignore() # 存檔被取消，不關閉視窗
-                else:
-                    event.accept() # 存檔成功，放行關閉 
+                if self.path_manager.is_modified: event.ignore() 
+                else: event.accept() 
             elif choice == btn_discard:
                 event.accept() 
             elif choice == btn_cancel:
                 event.ignore() 
-                
         else:
             event.accept()
