@@ -12,3 +12,4 @@ config/*
 parol cam/*
 
 analyzer.py
+pursuit_control.py
