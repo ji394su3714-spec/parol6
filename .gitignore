@@ -7,3 +7,5 @@ config/*
 !config/.gitkeep
 .json/*
 parol cam/*
+
+analyzer.py
