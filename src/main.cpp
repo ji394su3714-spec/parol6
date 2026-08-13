@@ -23,24 +23,24 @@ const bool LIMIT_ACTIVE_STATE[6] = {
     LOW, HIGH, HIGH, LOW, HIGH, LOW
 };
 
-// 3. 歸零參數 (Homing Speed, Homing Pos, Bounce, Ramp)
+// 3. 歸零參數 (Homing Speed, Homing Pos, Bounce)
 const HomingConfig HOMING_CFG[6] = {
-    { 1400, -13426, 1000, 1200}, // J1 (-118 度)
-    {-2400,  17778, 2000, 1400}, // J2 (  50 度)
-    { 2800, -23161, 2400, 1400}, // J3 ( -72 度)
-    { 3800, -10240, 1600, 1200}, // J4 (-144 度)
-    { 2800,  -8782, 1200, 1200}, // J5 (-123.5 度)
-    { 5000,    356, 1600, 1400}  // J6 (   2 度)
+    { 1400, -13426, 1000}, // J1 (-118 度)
+    {-2400,  17778, 2000}, // J2 (  50 度)
+    { 2800, -23161, 2400}, // J3 ( -72 度)
+    { 3800, -10240, 1600}, // J4 (-144 度)
+    { 2800,  -8782, 1200}, // J5 (-123.5 度)
+    { 5000,    356, 1600}  // J6 (   2 度)
 };
 
-// 4. 馬達速度 (controlSpeed, maxSpeed)
+// 4. 馬達速度 (controlSpeed, maxSpeed, rampSteps)
 const SpeedConfig SPEED_CFG[6] = {
-    {4800.0f, 20000.0f}, // J1
-    {6800.0f, 20000.0f}, // J2
-    {6800.0f, 20000.0f}, // J3
-    {6000.0f, 20000.0f}, // J4
-    {6000.0f, 20000.0f}, // J5
-    {8000.0f, 20000.0f}  // J6
+    {4800.0f, 20000.0f, 600}, // J1
+    {6800.0f, 20000.0f, 850}, // J2
+    {6800.0f, 20000.0f, 850}, // J3
+    {6000.0f, 20000.0f, 750}, // J4
+    {6000.0f, 20000.0f, 750}, // J5
+    {8000.0f, 20000.0f, 1000}  // J6
 };
 
 // 5. 馬達電流 (run_mA, hold_ratio)
@@ -58,7 +58,7 @@ const int32_t AXIS_MIN_LIMIT[6] = {-8533, -17778, -22518, -6756, -7822, -37333};
 void setup() {
     Serial.begin(250000); 
     delay(1000);
-    //Serial.println("\n--- S6 Controller Booting ---");
+    Serial.println("\n--- Parol Stream V0.0.1 Booting ---");
 
     initEndEffector();
 

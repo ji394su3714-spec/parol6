@@ -129,8 +129,10 @@ void stopAxisInstant(int axis) {
     
     bool any_moving = false;
     for (int i = 0; i < 6; i++) {
-        if (axes[i].current_vel > 0.0f) any_moving = true;
+        // 【修復點】：必須同時檢查 target_vel！只要有軸「想動」，引擎總開關就不准關！
+        if (axes[i].current_vel > 0.0f || axes[i].target_vel > 0.0f) any_moving = true;
     }
+    
     if (!any_moving) {
         is_engine_running = false;
         segment_ticks_current = 0; 
@@ -158,6 +160,16 @@ void emergencyStopEngine() {
 int32_t getAxisPosition(int axis) {
     if (axis < 0 || axis >= 6) return 0;
     return axes[axis].current_pos;
+}
+
+float getAxisAccel(int axis, float rampRatio) { 
+    if (axis < 0 || axis >= 6) return 50000.0f;
+    
+    float ref_v = SPEED_CFG[axis].controlSpeed; 
+    float ramp = (float)SPEED_CFG[axis].rampSteps * rampRatio; 
+    
+    if (ramp <= 0.0f) return 50000.0f;                  
+    return (ref_v * ref_v) / (2.0f * ramp);
 }
 
 void setAxisPosition(int axis, int32_t pos) {
@@ -251,7 +263,8 @@ void jogAxis(int axis, int dir, float speedStepsPerSec, float accelStepsPerSec2,
         
         bool any_moving = false;
         for (int i = 0; i < 6; i++) {
-            if (axes[i].current_vel > 0.0f) any_moving = true;
+            // 【修復點】：同上，防範誤殺剛起步的軸
+            if (axes[i].current_vel > 0.0f || axes[i].target_vel > 0.0f) any_moving = true;
         }
         if (!any_moving) {
             is_engine_running = false;
@@ -313,7 +326,6 @@ void ISR_StepGenerator() {
         
         // ==========================================
         // 優化 2：時間切片降頻 (Decimation)
-        // 讓沉重的浮點加減速運算，從 100,000Hz 降頻到 1,000Hz 執行
         // ==========================================
         math_tick++;
         if (math_tick >= MATH_PRESCALER) {
@@ -339,12 +351,18 @@ void ISR_StepGenerator() {
 
                     if (axes[i].auto_decel) {
                         int32_t dist = abs(axes[i].target_pos - axes[i].current_pos);
-                        if (dist == 0) {
-                            axes[i].target_vel = 0.0f; axes[i].current_vel = 0.0f; axes[i].auto_decel = false;
+                        
+                        // 判斷目前應該前進的方向
+                        int32_t dir_to_target = (axes[i].target_pos >= axes[i].current_pos) ? 1 : -1;
+                        
+                        // 【修復點】：除了精準等於 0，如果發現「行進方向與目標方向反了」，代表已經過衝 (Overshoot)！
+                        if (dist == 0 || (axes[i].dir_state != dir_to_target && dist > 0)) {
+                            axes[i].current_pos = axes[i].target_pos; // 強制拉回精確座標，不再錯位
+                            axes[i].target_vel = 0.0f; 
+                            axes[i].current_vel = 0.0f; 
+                            axes[i].auto_decel = false;
                         } else {
                             if (axes[i].current_vel > 0.0f && axes[i].accel_tick > 0.0f) {
-                                // 這裡是最耗 CPU 的浮點乘法與除法！
-                                // 現在它一秒鐘只會被執行 1000 次，徹底解放 TIM7！
                                 float decel_dist = (axes[i].current_vel * axes[i].current_vel) / (2.0f * axes[i].accel_tick);
                                 if ((float)dist <= decel_dist) axes[i].target_vel = 0.0f; 
                             }
@@ -520,5 +538,4 @@ void Init_MotionEngine(const uint8_t step_pins[6], const uint8_t dir_pins[6]) {
     NVIC_SetPriority(TIM6_DAC_IRQn, 2); 
     timer_planner->resume();
     timer_step->resume();
-    //Serial.println("[System] Motion Engine Initialized.");
 }

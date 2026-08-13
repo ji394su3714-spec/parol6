@@ -70,29 +70,8 @@ void executeBinaryCommand() {
     // Mode 3：歸零 (Homing)
     // ------------------------------------------
     if (moveMode == 3) {
-        bool group1_req = (targets[0] == 999999 || targets[1] == 999999 || targets[2] == 999999);
-        bool j4_req = (targets[3] == 999999);
-        bool j6_req = (targets[5] == 999999);
-        bool homingTriggered = false;
-
-        for (int i = 0; i < 6; i++) {
-            bool targetIsHome = (targets[i] == 999999);
-            if (targetIsHome && JOINT_PINS[i].limitPin != 0 && HOMING_CFG[i].homingSpeed != 0) {
-                if (homingState[i] == 0) {
-                    if (i >= 3 && group1_req) { homingState[i] = 20; homingTriggered = true; } 
-                    else if (i == 4 && j6_req) { homingState[i] = 10; homingTriggered = true; } 
-                    else if (i == 5 && j4_req) { homingState[i] = 10; homingTriggered = true; } 
-                    else {
-                        homingState[i] = 1; 
-                        long homingSpdSec = abs(HOMING_CFG[i].homingSpeed);
-                        jogAxis(i, (HOMING_CFG[i].homingSpeed > 0) ? 1 : -1, (float)homingSpdSec, getAxisAccel(i, 0.5f), true); 
-                        homingTriggered = true;
-                    }
-                } 
-            }
-        }
-        
-        if (homingTriggered) {
+        // 將 999999 的陣列直接丟給專屬模組去解譯與啟動
+        if (startHomingSequence(targets)) {
             Serial.println("OK");
         }
         return; 
@@ -176,8 +155,6 @@ void executeBinaryCommand() {
         // 將 UI 傳來的 0~100 數值 (targets[0]) 送給夾爪 API
         setGripperTarget(targets[0]);
         
-        // 絕對要刪除這裡的 Serial.println("<EE_DONE>");
-        // 讓 updateEndEffector() 去決定什麼時候印出完成暗號
         return;
     }
     
@@ -235,6 +212,10 @@ void executeBinaryCommand() {
         // Mode 0：獨立絕對座標追蹤 (UI 滑桿專用)
         // ------------------------------------------
         else if (moveMode == 0) {
+            // 🎯 核心修復：切換至獨立運動前，強制清空 (沖洗) Mode 1 的殘留串流軌跡！
+            // 徹底消滅後續切回 Mode 1 時的暴衝丟步地雷！
+            pendingHead = 0; pendingTail = 0; pendingCount = 0;
+            
             float speedFactor = (param7 <= 0.0) ? 1.0 : param7;
             
             // 直接交給底層獨立更新，不干涉未變動的軸
@@ -244,8 +225,13 @@ void executeBinaryCommand() {
             Serial.println("OK"); 
         }
         
+        // ------------------------------------------
         // Mode 2: 連續寸動 (Joint Jogging)
+        // ------------------------------------------
         else if (moveMode == 2) {
+            // 🎯 核心修復：切換至連續寸動前，強制清空串流緩衝區！
+            pendingHead = 0; pendingTail = 0; pendingCount = 0;
+            
             int axis = targets[0]; 
             int dir = targets[1];  
             float speedFactor = param7;  

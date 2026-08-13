@@ -8,10 +8,9 @@ from PySide6.QtCore import QObject, Signal
 class SerialManager(QObject):
     log_signal = Signal(str)
     connection_state_signal = Signal(bool)
-    # 新增：接收到真實座標時觸發的訊號
     real_pose_received = Signal(list)
 
-    # 專門用來廣播「急停鎖存狀態」給 UI 的訊號 (True=鎖定中, False=已解除)
+    # 廣播「急停鎖存狀態」給 UI (True=鎖定中, False=已解除)
     estop_state_signal = Signal(bool)
 
     def __init__(self):
@@ -30,7 +29,7 @@ class SerialManager(QObject):
         self.ee_done_event = threading.Event() 
         self._latched_reported = False
         
-        # === 新增：用於強制同步的旗標與變數 ===
+        # === 用於強制同步的旗標與變數 ===
         self.pose_received_event = threading.Event()
         self.last_real_pose = None
 
@@ -200,10 +199,13 @@ class SerialManager(QObject):
             return None
             
         self.pose_received_event.clear()
-        # 發送 Mode 6 查詢指令
+
+        if self.ser and self.ser.is_open:
+            try: self.ser.reset_input_buffer()
+            except: pass
+
         self._send_binary_packet([0, 0, 0, 0, 0, 0], speed_factor=1.0, move_mode=6)
         
-        # 阻塞等待 MCU 回傳 [POS]，最多等 150 毫秒
         if self.pose_received_event.wait(timeout):
             return self.last_real_pose
         return None
@@ -239,9 +241,8 @@ class SerialManager(QObject):
         return self._send_binary_packet([0] * 6, 1.0, 9)
 
     def send_gripper(self, ee_value):
-        """ 觸發夾爪動作 (對應 C++ 的 Mode 5) """
+        """ 觸發夾爪動作 (Mode 5) """
         self.ee_done_event.clear()
-        # 夾爪值放在 targets[0]，Mode 5
         return self._send_binary_packet([int(ee_value), 0, 0, 0, 0, 0], 1.0, 5)
 
     # ==========================================

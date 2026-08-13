@@ -247,6 +247,11 @@ class JogWidget(BaseBlock):
         self._setup_cartesian_ui()
         self._setup_gripper_ui()
 
+    def _is_estop_blocked(self, silent=False):
+        """ 呼叫主視窗的急停屏障 """
+        cb = getattr(self, 'check_estop_callback', None)
+        return cb(silent) if cb else False
+
     def _init_timers(self):
         # 1. 關節時鐘
         self.joint_query_timer = QTimer(self)
@@ -543,12 +548,32 @@ class JogWidget(BaseBlock):
     def ee_speed_level(self): return self.ee_speed_ctrl.level
 
     def update_joints_from_ik(self, float_angles):
+        # 1. 毫不保留地更新 UI，拔除所有阻礙！
+        # 讓 setValue 自然觸發 valueChanged，同步帶動 3D 畫面與文字框！
         for i, slider in enumerate(self.joint_sliders):
-            slider.blockSignals(True)
             slider.setValue(int(round(float_angles[i] * 100)))
-            slider.blockSignals(False)
-            if i < len(self.joint_labels):
-                self.joint_labels[i].setText(f"{float_angles[i]:.1f}")
+
+        # 2. 全軸閉環監控邏輯 (上帝視角)
+        if getattr(self, '_is_braking_monitor_active', False):
+            last_angles = getattr(self, '_last_checked_angles', None)
+
+            if last_angles is not None:
+                # 檢查 6 個軸的角度變化最大值 (只要有任何一軸還在動，max_diff 就會很大)
+                max_diff = max([abs(float_angles[i] - last_angles[i]) for i in range(6)])
+                
+                if max_diff < 0.02:
+                    self._stable_count += 1
+                else:
+                    self._stable_count = 0
+            else:
+                self._stable_count = 0
+
+            self._last_checked_angles = list(float_angles)
+
+            # 如果連續 3 次 (約 60ms) 整台 6 軸機器都不再變化，徹底煞停並關閉時鐘！
+            if self._stable_count >= 3:
+                self.joint_query_timer.stop()            
+                self._is_braking_monitor_active = False
 
     def toggle_cartesian_frame(self, checked):
         prefix = "T" if checked else "W"
@@ -566,20 +591,32 @@ class JogWidget(BaseBlock):
 
     # --- Joint 運動控制 ---
     def on_joint_slider_changed(self):
+        # 拖曳時靜默攔截
+        if self._is_estop_blocked(silent=True): 
+            return 
+            
         angles = [float(s.value()) / 100.0 for s in self.joint_sliders]
         cb = getattr(self, 'update_3d_callback', None)
         if cb: cb(angles)
             
     def on_joint_slider_released(self):
+        # 鬆開滑鼠的瞬間：噴出一次警告，並呼叫主視窗把滑桿「瞬間彈回」！
+        if self._is_estop_blocked(silent=False): 
+            cb = getattr(self, 'restore_ui_callback', None)
+            if cb: cb()
+            return
+            
         angles = [float(s.value()) / 100.0 for s in self.joint_sliders]
         speed_factor = self.j_speed_ctrl.level * 0.25 
         cb = getattr(self, 'send_jog_callback', None)
         if cb: cb(angles, speed_factor)
 
     def _start_joint_jog(self, axis_idx, direction):
+        if self._is_estop_blocked(): return
+        self._is_braking_monitor_active = False # 打斷全軸監控
         self._joint_press_axis = axis_idx
         self._joint_press_dir = direction
-        self.joint_hold_timer.start(250) 
+        self.joint_hold_timer.start(250)
 
     def _on_joint_hold_timeout(self):
         axis_idx = self._joint_press_axis
@@ -605,22 +642,34 @@ class JogWidget(BaseBlock):
         if cb: cb()
 
     def _stop_joint_jog(self, axis_idx):
+        if self._is_estop_blocked(): return
         if self.joint_hold_timer.isActive():
             self.joint_hold_timer.stop()
             self._execute_joint_step(axis_idx, self._joint_press_dir)
             if not getattr(self, 'is_simulation_mode', False):
-                QTimer.singleShot(500, self._poll_real_pose)
+                QTimer.singleShot(100, self._finalize_jog_stop)
         else:
             is_hardware_stopped = False
             cb = getattr(self, 'continuous_jog_callback', None)
             if cb:
                 is_hardware_stopped = cb(axis_idx, 0, 0.0)
 
-            if is_hardware_stopped: QTimer.singleShot(500, self.joint_query_timer.stop)
-            else: self.joint_sim_timer.stop()
+            if is_hardware_stopped: 
+                # 啟動「全軸」閉環煞車監控
+                self._is_braking_monitor_active = True
+                self._stable_count = 0
+                self._last_checked_angles = None
+            else: 
+                self.joint_sim_timer.stop()
             
             if self.active_joint_axis == axis_idx:
                 self.active_joint_axis = -1
+
+    def _finalize_jog_stop(self):
+        """ 短按微調專用收尾 """
+        if self.active_joint_axis == -1 and not getattr(self, '_is_braking_monitor_active', False):
+            self.joint_query_timer.stop()
+            self._poll_real_pose()
 
     def _update_joint_simulation(self):
         now = time.perf_counter()
@@ -657,6 +706,7 @@ class JogWidget(BaseBlock):
 
     # --- Cartesian 運動控制 ---
     def _start_cartesian_jog(self, base_label):
+        if self._is_estop_blocked(): return 
         self._cart_press_axis = base_label
         if self.is_cartesian_continuous: self.cart_hold_timer.start(250)
 
@@ -665,6 +715,7 @@ class JogWidget(BaseBlock):
         self._start_worker_move(is_continuous=True) 
 
     def _stop_cartesian_jog(self):
+        if self._is_estop_blocked(): return 
         if self.is_cartesian_continuous:
             if self.cart_hold_timer.isActive():
                 self.cart_hold_timer.stop()
@@ -675,9 +726,25 @@ class JogWidget(BaseBlock):
             self._execute_cartesian_step(self._cart_press_axis, fixed_step=self.spin_step.value())
 
     def _execute_cartesian_step(self, base_label, fixed_step):
+        if self._is_estop_blocked(): return 
         if not base_label: return
         if self.cart_worker._is_active or getattr(self, 'active_cart_axis', None) is not None: return
             
+        # ==========================================
+        # 🎯 執行定距前的「全路徑預判」
+        # ==========================================
+        cb = getattr(self, 'precheck_cartesian_step_callback', None)
+        if cb:
+            axis_str = base_label[:-1] 
+            sign = 1 if base_label[-1] == '+' else -1
+            is_rot = len(axis_str) > 1
+            axis_arg = axis_str if is_rot else axis_str.lower()
+            frame = "Tool" if self.btn_frame_toggle.isChecked() else "World"
+            
+            # 如果主視窗回報路徑不安全，直接取消出發！
+            if not cb(axis_arg, fixed_step * sign, frame):
+                return 
+                
         self.active_cart_axis = base_label
         self._start_worker_move(is_continuous=False, fixed_step=fixed_step)
 
@@ -717,8 +784,8 @@ class JogWidget(BaseBlock):
             if getattr(self, 'cartesian_jog_stop_callback', None): 
                 self.cartesian_jog_stop_callback()
             if not getattr(self, 'is_simulation_mode', False): 
-                QTimer.singleShot(500, self._poll_real_pose)
-            return 
+                QTimer.singleShot(250, self._poll_real_pose)
+            return
 
         # 正常運算中，發送點位給 IK 引擎
         if getattr(self, 'cartesian_jog_callback', None):
@@ -726,13 +793,14 @@ class JogWidget(BaseBlock):
 
     # --- Gripper 運動控制 ---
     def on_gripper_slider_released(self):
+        if self._is_estop_blocked(): return
         cb = getattr(self, 'send_gripper_callback', None)
         if cb: cb(self.g_slider.value())
 
     def _start_gripper_jog(self, sign):
+        if self._is_estop_blocked(): return
         self.active_gripper_sign = sign
         self._is_gripper_holding = False
-        # 按下時「絕對不偷跑」，只啟動 250ms 判定計時器
         self.gripper_hold_timer.start(250) 
 
     def _on_gripper_hold_timeout(self):
@@ -743,6 +811,7 @@ class JogWidget(BaseBlock):
             self.gripper_jog_timer.start(30)         # 接著每 30ms 連續滑動
 
     def _stop_gripper_jog(self):
+        if self._is_estop_blocked(): return
         self.gripper_hold_timer.stop()
         self.gripper_jog_timer.stop()
         

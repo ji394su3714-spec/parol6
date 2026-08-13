@@ -151,8 +151,11 @@ class RobotControllerGUI(QMainWindow):
         self.view3d_widget.robot_view.cancel_gizmo_callback = self.view3d_widget.reset_gizmo_buttons
         
         # Jogging 面板
+        self.jog_widget.check_estop_callback = self._check_estop_barrier
+        self.jog_widget.restore_ui_callback = lambda: self.handle_system_pose_update(self.current_float_joints)
         self.jog_widget.update_3d_callback = self.preview_joint_jog 
         self.jog_widget.send_jog_callback = self.send_joint_jog     
+        self.jog_widget.precheck_cartesian_step_callback = self.precheck_cartesian_step
         self.jog_widget.cartesian_jog_callback = self.handle_cartesian_jog
         self.jog_widget.continuous_jog_callback = self.handle_continuous_joint_jog
         self.jog_widget.cartesian_jog_stop_callback = self.handle_cartesian_jog_stop
@@ -226,7 +229,7 @@ class RobotControllerGUI(QMainWindow):
             
             self.top_bar.btn_stop.setEnabled(True)
             self.top_bar.btn_estop_reset.setEnabled(False)
-            self.log_widget.append_log("[HW] 已連線，請執行原點復歸。若無法移動，請確認是否處於急停鎖存狀態。")
+            self.log_widget.append_log("[HW] 已連線，請執行原點復歸。")
         else:
             self.top_bar.btn_connect.setIcon(qta.icon('mdi.connection', color='#e0e0e0'))
             self.top_bar.btn_connect.setToolTip("Connect to Serial Port")
@@ -268,6 +271,7 @@ class RobotControllerGUI(QMainWindow):
             self.serial_manager.send_estop_reset()
 
     def on_estop_state_changed(self, is_latched):
+        self._is_estopped_latched = is_latched  # 儲存急停狀態供全域查詢
         if is_latched:
             self.top_bar.btn_stop.setEnabled(False)
             self.top_bar.btn_estop_reset.setEnabled(True)
@@ -283,6 +287,13 @@ class RobotControllerGUI(QMainWindow):
                 QTimer.singleShot(200, self._safe_request_pose)
             
         self._reset_play_ui()
+
+    def _check_estop_barrier(self, silent=False):
+        if getattr(self, '_is_estopped_latched', False):
+            if not silent:
+                self.log_widget.append_log("[警告] 機器處於「急停鎖存狀態」！請按「解除急停」恢復運作。")
+            return True
+        return False
 
 
     # =========================================================
@@ -364,18 +375,48 @@ class RobotControllerGUI(QMainWindow):
         
         axis_map = {"X": 0, "Y": 1, "Z": 2, "Rx": 3, "Ry": 4, "Rz": 5}
         idx = axis_map.get(axis_name)
-        if idx is not None: target_values[idx] = new_val
-
-        T_tcp_base_target = kinematics.get_tf_matrix([x / 1000.0 for x in target_values[:3]], np.deg2rad(target_values[3:]))
-        T_tcp_world_target = kinematics.apply_base_frame(T_tcp_base_target, T_base)
-        T_flange_target = T_tcp_world_target @ np.linalg.inv(T_tool)
+        if idx is None: return
         
-        new_joints, error = kinematics.inverse_kinematics(T_flange_target, self.current_float_joints)
-        if new_joints is not None:
-            self.handle_system_pose_update(list(new_joints))
-        else:
-            self.log_widget.append_log(f"[ERROR] Monitor Edit Failed: Target TCP {axis_name}={new_val} is out of reach or singular.")
+        curr_val = target_values[idx]
+        delta = new_val - curr_val
+        
+        if abs(delta) < 1e-4:
             self.handle_system_pose_update(self.current_float_joints)
+            return
+
+        # ==========================================
+        # 終極升級：將 TCP 編輯轉交給 CartesianMathEngine！
+        # ==========================================
+        if getattr(self.jog_widget, 'cart_worker', None) and self.jog_widget.cart_worker._is_active:
+            self.log_widget.append_log("[WARNING] Cartesian engine is busy. Please wait.")
+            self.handle_system_pose_update(self.current_float_joints)
+            return
+            
+        sign = 1 if delta >= 0 else -1
+        fixed_step = abs(delta)
+        is_rot = len(axis_name) > 1
+        
+        # 1. 欺騙 JogWidget，將這次編輯偽裝成按下「虛擬按鈕」
+        # (Monitor 的數值是相對於 Base 的，所以 frame 強制設定為 "World")
+        self.jog_widget._current_frame = "World" 
+        self.jog_widget._current_axis_arg = axis_name if is_rot else axis_name.lower()
+        self.jog_widget.active_cart_axis = f"{axis_name}{'+' if sign > 0 else '-'}"
+        
+        # 2. 自動抓取 Cartesian Jog 面板當前的速度膠囊設定 (Level 1~4)
+        cfg_max_speed = config.MAX_ROT_SPEED if is_rot else config.MAX_LIN_SPEED
+        cfg_max_accel = config.MAX_ROT_ACCEL if is_rot else config.MAX_LIN_ACCEL
+        max_speed = (cfg_max_speed * 0.5) * (self.jog_widget.c_speed_level / 4.0)
+        accel = cfg_max_accel * 1.0 
+        
+        # 3. 啟動背景微積分引擎！
+        # 它會以 100Hz 的高頻率，帶著梯形加減速把直線軌跡送進 MCU
+        self.jog_widget.cart_worker.start_move(
+            is_continuous=False, 
+            fixed_step=fixed_step, 
+            max_speed=max_speed, 
+            accel=accel, 
+            sign=sign
+        )
 
     def handle_monitor_joint_edit(self, joint_idx, new_val):
         if self.path_manager.is_running():
@@ -392,6 +433,10 @@ class RobotControllerGUI(QMainWindow):
         new_joints = list(self.current_float_joints)
         new_joints[joint_idx] = new_val
         self.handle_system_pose_update(new_joints)
+        
+        if self._can_send_hardware():
+            spd = self.jog_widget.j_speed_level * 0.25
+            self.serial_manager.send_joints(new_joints, speed_factor=spd, move_mode=0)
 
 
     # =========================================================
@@ -422,6 +467,8 @@ class RobotControllerGUI(QMainWindow):
         return False
 
     def handle_gripper_jog(self, val):
+        if self._check_estop_barrier():
+            return
         if self._can_send_hardware():
             self.serial_manager.send_gripper(val)
 
@@ -432,21 +479,16 @@ class RobotControllerGUI(QMainWindow):
         actual_frame = "Base" if frame == "World" else frame
         last_ideal = getattr(self, '_active_jog_ideal_tcp', None) 
 
-        # === [核心防線 1] 強制同步真實物理座標 (解決軟硬體離散化誤差) ===
-        if last_ideal is None and self._can_send_hardware():
-            # 只有在第一幀時，強制向 MCU 請求並等待最新物理座標 (阻塞最多 0.15 秒)
-            real_pose = self.serial_manager.sync_get_real_pose(timeout=0.15)
-            if real_pose is not None:
-                # 無視 UI 當前的顯示值，強行將起點對齊機台的物理齒輪位置
-                self.current_float_joints = list(real_pose)
-
+        # ==========================================
+        # 核心修復 1：徹底拔除 sync_get_real_pose！
+        # 無條件信任 UI 的 current_float_joints，完全消滅「執行緒殘影」導致的丟步暴衝！
+        # ==========================================
         new_joints, error_msg, ideal_tcp_mat = kinematics.calculate_jog_joints(
             list(self.current_float_joints), axis, step_val, actual_frame, tcp_mat, world_mat, T_last_ideal_tcp=last_ideal
         )
         
-        # === [核心防線 2] 消除啟動瞬間的 IK 浮點誤差突波 ===
+        # 消除啟動瞬間的 IK 浮點誤差突波
         if last_ideal is None and abs(step_val) < 1e-6:
-            # 第一幀我們放棄 IK 反算結果，強制鎖定為真實關節角度
             new_joints = list(self.current_float_joints)
         
         if new_joints is not None:
@@ -467,11 +509,40 @@ class RobotControllerGUI(QMainWindow):
                 
             self._last_jog_error = None
         else:
-            self._active_jog_ideal_tcp = None
+            # ==========================================
+            # 核心修復 2：笛卡爾虛擬防撞牆
+            # 絕對不可將 last_ideal 設為 None，並通知引擎踩煞車！
+            # ==========================================
+            if getattr(self.jog_widget, 'cart_worker', None):
+                self.jog_widget.cart_worker.stop_move()
+                
             last_err = getattr(self, '_last_jog_error', None)
             if error_msg != last_err:
-                self.log_widget.append_log(f"[Jog Warning] {error_msg}")
+                self.log_widget.append_log(f"[安全屏障] 空間座標到達物理極限，已啟動防護煞車！({error_msg})")
                 self._last_jog_error = error_msg
+
+    def precheck_cartesian_step(self, axis, total_step_val, frame):
+        """ 定距 Jog 預判：分段掃描整條路徑，防撞未卜先知 """
+        tcp_mat = self.tcp_manager.get_active_matrix()
+        world_mat = self.base_manager.get_matrix(self.base_manager.current_index)
+        actual_frame = "Base" if frame == "World" else frame
+        
+        # 將定距切成 5 段進行模擬掃描，確保沿途絕對安全
+        steps = 5 
+        step_inc = total_step_val / steps
+        test_joints = list(self.current_float_joints)
+        test_ideal = getattr(self, '_active_jog_ideal_tcp', None)
+        
+        for _ in range(steps):
+            res_joints, err, test_ideal = kinematics.calculate_jog_joints(
+                test_joints, axis, step_inc, actual_frame, tcp_mat, world_mat, T_last_ideal_tcp=test_ideal
+            )
+            if res_joints is None:
+                self.log_widget.append_log(f"[安全屏障] 定距預判失敗：路徑中途超出極限 ({err})，已攔截本次操作。")
+                return False
+            test_joints = res_joints
+            
+        return True
 
     def handle_cartesian_jog_stop(self):
         self._active_jog_ideal_tcp = None
@@ -597,6 +668,8 @@ class RobotControllerGUI(QMainWindow):
     # [6] 任務執行與動畫 (Execution & Animation)
     # =========================================================
     def go_soft_home(self):
+        if self._check_estop_barrier():
+            return
         if self.path_manager.is_running():
             self.log_widget.append_log("[System] 路徑執行中，忽略 Soft Home 請求。")
             return
@@ -654,6 +727,15 @@ class RobotControllerGUI(QMainWindow):
                 self._is_paused = False
                 self.top_bar.btn_stop.setEnabled(True)
                 
+                # === 起步強制對齊物理座標 ===
+                if self._can_send_hardware():
+                    # 阻塞最多 0.15 秒，向 MCU 索要最真實的物理齒輪步數
+                    real_pose = self.serial_manager.sync_get_real_pose(timeout=0.15)
+                    if real_pose is not None:
+                        # 無視 UI 當前的顯示值，強行將軌跡起點鎖定為實體機台位置
+                        self.current_float_joints = list(real_pose)
+                        self.handle_system_pose_update(real_pose)
+
                 tcp_mat = self.tcp_manager.get_active_matrix()
                 callbacks = {
                     'update': self.handle_system_pose_update, 

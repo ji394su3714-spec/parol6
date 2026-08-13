@@ -121,6 +121,14 @@ class MonitorLineEdit(QLineEdit):
         self.setReadOnly(True)
         super().focusOutEvent(event)
 
+    # ==========================================
+    # 🎯 補上第一條神經：讓全域點擊過濾器能成功觸發收尾
+    # ==========================================
+    def commit_value(self):
+        if not self.isReadOnly():
+            self.editingFinished.emit() # 確保發送修改完成的訊號
+            self.clearFocus()           # 清除焦點，這會自動觸發 focusOutEvent 轉回唯讀模式
+
 class FloatingNavBar(QFrame):
     def __init__(self, config, parent=None):
         super().__init__(parent)
@@ -285,7 +293,11 @@ class CustomTopBar(QFrame):
             dialog.exec()
         except ImportError: pass
 
-    def show_homing_warning(self):        
+    def show_homing_warning(self):  
+        main_win = self.window()
+        if getattr(main_win, '_is_estopped_latched', False):
+            main_win.log_widget.append_log("[警告] 機器處於「急停鎖存狀態」！請按「解除急停」恢復運作。")
+            return      
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("Homing Warning")
         msg_box.setIcon(QMessageBox.Icon.Warning)
