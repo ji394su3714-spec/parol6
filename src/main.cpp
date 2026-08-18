@@ -25,7 +25,7 @@ const bool LIMIT_ACTIVE_STATE[6] = {
 
 // 3. 歸零參數 (Homing Speed, Homing Pos, Bounce)
 const HomingConfig HOMING_CFG[6] = {
-    { 1400, -13426, 1000}, // J1 (-118 度)
+    { 1500, -13426, 1000}, // J1 (-118 度)
     {-2400,  17778, 2000}, // J2 (  50 度)
     { 2800, -23161, 2400}, // J3 ( -72 度)
     { 3800, -10240, 1600}, // J4 (-144 度)

@@ -173,7 +173,6 @@ class SerialManager(QObject):
         self.log_signal.emit("[System] 發送全軸歸零指令...")
         self.motion_done_event.clear()
         self.reset_semaphore()
-        # 6 個軸皆為 999999，速度 1.0，Mode 3
         return self._send_binary_packet([999999] * 6, 1.0, 3)
 
     def send_stop(self):
@@ -193,34 +192,17 @@ class SerialManager(QObject):
         if self.is_connected:
             self._send_binary_packet([0, 0, 0, 0, 0, 0], speed_factor=1.0, move_mode=6)
 
-    def sync_get_real_pose(self, timeout=0.15):
-        """同步阻塞獲取真實座標 (專給首幀對齊使用)"""
-        if not self.is_connected:
-            return None
-            
-        self.pose_received_event.clear()
-
-        if self.ser and self.ser.is_open:
-            try: self.ser.reset_input_buffer()
-            except: pass
-
-        self._send_binary_packet([0, 0, 0, 0, 0, 0], speed_factor=1.0, move_mode=6)
-        
-        if self.pose_received_event.wait(timeout):
-            return self.last_real_pose
-        return None
-
     def send_pause(self):
         """發送暫停指令 (Mode 7)"""
         if self.is_connected:
-            self.log_signal.emit(">>> [SYS] 機台減速中...")
+            self.log_signal.emit(">>> [System] 機台減速中...")
             # 步數陣列全填 0 即可，因為 Mode 5 只看 Mode 標籤
             self._send_binary_packet([0, 0, 0, 0, 0, 0], speed_factor=1.0, move_mode=7)
 
     def send_resume(self):
         """發送繼續指令 (Mode 8)"""
         if self.is_connected:
-            self.log_signal.emit(">>> [SYS] 機台恢復運作...")
+            self.log_signal.emit(">>> [System] 機台恢復運作...")
             self._send_binary_packet([0, 0, 0, 0, 0, 0], speed_factor=1.0, move_mode=8)
     
     def send_estop_reset(self):

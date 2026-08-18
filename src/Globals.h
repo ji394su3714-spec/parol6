@@ -26,7 +26,7 @@ enum HomingPhase : byte {
     // 聯動與群組等待狀態
     HOME_WAIT_J123 = 10,
     HOME_WAIT_J4 = 11,
-    HOME_WAIT_J6_PREP = 12, // [新增] J5 等待 J6 到達預備位置
+    HOME_WAIT_J6_PREP = 12, //J5 等待 J6 到達預備位置
     
     // J5/J6 專屬防撞交響曲
     HOME_J6_WAIT_PREP_DONE = 20, 
@@ -74,7 +74,6 @@ extern long receivedSteps [6];
 extern bool newData ;
 
 extern volatile bool is_paused ;
-extern volatile float pause_multiplier ;
 
 // ==========================================
 // 5. 共用輔助函式宣告 (Function Prototypes)

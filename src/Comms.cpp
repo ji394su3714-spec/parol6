@@ -86,6 +86,11 @@ void executeBinaryCommand() {
             pendingHead = 0;
             pendingTail = 0;
             pendingCount = 0;
+            
+            // 🎯 核心修復：軟取消也必須「洗平底鍋」！
+            // 呼叫這行會清空 motion_buf，但不會觸發 LATCHED 鎖死 (因為鎖死旗標是底下控制的)
+            emergencyStopEngine(); 
+            
             is_paused = false;      
             normalMoveActive = false;
             
@@ -105,7 +110,7 @@ void executeBinaryCommand() {
         }
         return;
     }
-
+    
     // Mode 7: 暫停 (Pause) 
     if (moveMode == 7) {
         is_paused = true;
@@ -212,7 +217,7 @@ void executeBinaryCommand() {
         // Mode 0：獨立絕對座標追蹤 (UI 滑桿專用)
         // ------------------------------------------
         else if (moveMode == 0) {
-            // 🎯 核心修復：切換至獨立運動前，強制清空 (沖洗) Mode 1 的殘留串流軌跡！
+            // 核心修復：切換至獨立運動前，強制清空 (沖洗) Mode 1 的殘留串流軌跡！
             // 徹底消滅後續切回 Mode 1 時的暴衝丟步地雷！
             pendingHead = 0; pendingTail = 0; pendingCount = 0;
             
@@ -229,7 +234,7 @@ void executeBinaryCommand() {
         // Mode 2: 連續寸動 (Joint Jogging)
         // ------------------------------------------
         else if (moveMode == 2) {
-            // 🎯 核心修復：切換至連續寸動前，強制清空串流緩衝區！
+            // 核心修復：切換至連續寸動前，強制清空串流緩衝區！
             pendingHead = 0; pendingTail = 0; pendingCount = 0;
             
             int axis = targets[0]; 
@@ -255,34 +260,20 @@ void executeBinaryCommand() {
 // 二進制接收狀態機 (搭載逾時防死鎖與 CRC8)
 // ==========================================
 void receiveBinaryLoop() {
-    // 1. 推送排隊中的 Mode 1 點位
+    // 1. 推送排隊中的 Mode 1 點位 (無情推播，把時間問題交給底層的大腦去煩惱)
     while (pendingCount > 0) {
-        if (is_paused) {
-            if (pause_multiplier < 5.0f) {
-                pause_multiplier += 0.5f; 
-            } else {
-                break; 
-            }
-        } else {
-            if (pause_multiplier > 1.0f) {
-                pause_multiplier -= 0.5f;
-            } else {
-                pause_multiplier = 1.0f;
-            }
-        }
-
-        uint32_t current_interval = (uint32_t)(pendingBuf[pendingTail].interval * pause_multiplier);
-
+        // 直接將點位推入底層運動引擎
         if (pushMotionPoint(pendingBuf[pendingTail].t[0], pendingBuf[pendingTail].t[1], 
                             pendingBuf[pendingTail].t[2], pendingBuf[pendingTail].t[3], 
                             pendingBuf[pendingTail].t[4], pendingBuf[pendingTail].t[5], 
-                            current_interval)) {
+                            pendingBuf[pendingTail].interval)) {
             
             pendingTail = (pendingTail + 1) % PENDING_BUF_SIZE;
             pendingCount--;
             normalMoveActive = true;
             Serial.println("OK"); 
         } else {
+            // 如果底層緩衝區滿了，就中斷推播，等下一個迴圈
             break; 
         }
     }

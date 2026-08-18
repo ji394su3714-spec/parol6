@@ -62,8 +62,8 @@ bool startHomingSequence(long targets[6]) {
                     float fastSpeed = abs(HOMING_CFG[i].homingSpeed);
                     int searchDir = SGN(HOMING_CFG[i].homingSpeed);
                     
-                    // 🎯 替換：0.5f -> 0.8f
-                    jogAxis(i, searchDir, fastSpeed, getAxisAccel(i, 0.8f), true); 
+                    // 替換：0.5f -> 0.8f
+                    jogAxis(i, searchDir, fastSpeed, getAxisAccel(i, 1.0f), true); 
                     homingTriggered = true;
                 }
             } 
@@ -90,7 +90,7 @@ void updateHomingLogic() {
                 if (homingState[0] == HOME_IDLE && homingState[1] == HOME_IDLE && homingState[2] == HOME_IDLE) {
                     if (i == 3) { 
                         homingState[i] = HOME_FAST_SEARCH; 
-                        // 🎯 替換：預設 1.0f -> 1.5f
+                        // 替換：預設 1.0f -> 1.5f
                         jogAxis(i, searchDir, fastSpeed, getAxisAccel(i, 1.5f), true);
                     } else { 
                         homingState[i] = HOME_WAIT_J4; 
@@ -105,7 +105,7 @@ void updateHomingLogic() {
                     if (millis() - j4DoneTime >= 100) {
                         if (i == 5) {
                             homingState[i] = HOME_FAST_SEARCH;
-                            // 🎯 替換：預設 1.0f -> 1.5f
+                            // 替換：預設 1.0f -> 1.5f
                             jogAxis(i, searchDir, fastSpeed, getAxisAccel(i, 1.5f), true);
                         }
                         else if (i == 4) {
@@ -113,7 +113,7 @@ void updateHomingLogic() {
                                 homingState[i] = HOME_WAIT_J6_PREP; 
                             } else {
                                 homingState[i] = HOME_FAST_SEARCH;  
-                                // 🎯 替換：預設 1.0f -> 1.5f
+                                // 替換：預設 1.0f -> 1.5f
                                 jogAxis(i, searchDir, fastSpeed, getAxisAccel(i, 1.5f), true);
                             }
                         }
@@ -145,7 +145,7 @@ void updateHomingLogic() {
                     if (i <= 2 && !isGroup1Ready(HOME_BOUNCE)) break; 
 
                     long bounceDist = HOMING_CFG[i].bounceSteps * -searchDir; 
-                    // 🎯 替換：0.2f -> 0.3f
+                    // 替換：0.2f -> 0.3f
                     moveToRelative(i, bounceDist, fastSpeed * 1.3f, 0.3f);
                     homingState[i] = HOME_WAIT_BOUNCE;
                 }
@@ -155,8 +155,8 @@ void updateHomingLogic() {
                 if (!isAxisMoving(i)) {
                     if (i <= 2 && !isGroup1Ready(HOME_WAIT_BOUNCE)) break; 
                     
-                    // 🎯 替換：0.5f -> 0.8f
-                    jogAxis(i, searchDir, slowSpeed, getAxisAccel(i, 0.8f), true);
+                    // 替換：0.5f -> 0.8f
+                    jogAxis(i, searchDir, slowSpeed, getAxisAccel(i, 1.0f), true);
                     homingState[i] = HOME_SLOW_SEARCH;
                 }
                 break;
@@ -166,7 +166,7 @@ void updateHomingLogic() {
                     if (i <= 2 && !isGroup1Ready(HOME_START_OFFSET)) break; 
 
                     if (i == 5) {
-                        // 🎯 替換：預設 1.0f -> 1.5f
+                        // 替換：預設 1.0f -> 1.5f
                         moveToRelative(5, J6_PREP_STEPS, SPEED_CFG[5].maxSpeed, 1.5f); 
                         homingState[5] = HOME_J6_WAIT_PREP_DONE; 
                     }
@@ -175,7 +175,7 @@ void updateHomingLogic() {
                     }
                     else {
                         float offsetSpeed = (i == 3) ? fastSpeed * 1.5f : fastSpeed * 2.0f;
-                        // 🎯 替換：1.5f -> 2.5f
+                        // 替換：1.5f -> 2.5f
                         moveToRelative(i, HOMING_CFG[i].homingPos, offsetSpeed, 2.5f); 
                         homingState[i] = HOME_DONE;
                     }
@@ -188,7 +188,7 @@ void updateHomingLogic() {
                     
                     if (homingState[4] == HOME_WAIT_J6_PREP) {
                         homingState[4] = HOME_FAST_SEARCH;
-                        // 🎯 替換：預設 1.0f -> 1.5f
+                        // 替換：預設 1.0f -> 1.5f
                         jogAxis(4, SGN(HOMING_CFG[4].homingSpeed), abs(HOMING_CFG[4].homingSpeed), getAxisAccel(4, 1.5f), true); 
                     }
                 }
@@ -197,7 +197,7 @@ void updateHomingLogic() {
             case HOME_J5_WAIT_J6:
                 if (!isAxisMoving(i)) {
                     if (homingState[5] == HOME_J6_WAIT_J5 || homingState[5] == HOME_IDLE) {
-                        // 🎯 替換：1.0f -> 1.5f
+                        // 替換：1.0f -> 1.5f
                         moveToRelative(4, HOMING_CFG[4].homingPos, fastSpeed * 1.5f, 1.5f); 
                         homingState[4] = HOME_DONE;
                         
@@ -212,7 +212,7 @@ void updateHomingLogic() {
             case HOME_J6_FINAL_OFFSET:
                 if (millis() - j6DelayStartTime >= 200) {
                     long offsetJ6 = HOMING_CFG[5].homingPos - J6_PREP_STEPS; 
-                    // 🎯 替換：1.0f -> 1.5f
+                    // 替換：1.0f -> 1.5f
                     moveToRelative(5, offsetJ6, fastSpeed * 1.5f, 1.5f);
                     homingState[5] = HOME_DONE;
                 }

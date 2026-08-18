@@ -80,12 +80,7 @@ class StreamingPathExecutor(QThread):
         last_ik_joints = None
 
         is_connected = self.serial_ref and self.serial_ref.is_connected
-        
-        # ==========================================
-        # 完美同步優化：將延遲幀數從 40 改為 15！
-        # 100% 咬合 MCU 韌體 buf_count >= 15 的啟動門檻，徹底消滅 0.2 秒延遲。
-        # (15 個點 = 150ms 的緩衝，這對 Windows 系統防卡頓來說依然綽綽有餘)
-        # ==========================================
+
         ui_delay_frames = 15 if is_connected else 1
         ui_queue = collections.deque()
 
@@ -102,23 +97,18 @@ class StreamingPathExecutor(QThread):
 
             try:
                 item = self.point_queue.get(timeout=0.1)
-                
-                # 【核心 1】：所有東西 (包含點位與指令) 統統推進延遲佇列！
                 ui_queue.append(item)
                 
-                # 【核心 2】：如果這是一個實體點位，它必須提早 15 幀送進硬體水管
                 if isinstance(item, list):
                     last_ik_joints = item
                     if is_connected:
                         self.serial_ref.send_joints(list(item), speed_factor=1.0, move_mode=1, is_stream=True)
                         self.serial_ref.wait_for_ok(timeout=3.0)
                         
-                # 【核心 3】：如果排隊長度到達，把最舊的項目擠出來執行 (此時剛好對齊實體機台)
                 if len(ui_queue) > ui_delay_frames:
                     sync_item = ui_queue.popleft()
                     
                     if isinstance(sync_item, dict):
-                        # 這是從延遲佇列擠出來的指令，它現在與實體機台 100% 零時差！
                         cmd_type = sync_item.get("type")
                         if cmd_type == "LOG":
                             self.log_signal.emit(sync_item.get("msg", ""))
@@ -135,15 +125,12 @@ class StreamingPathExecutor(QThread):
                                     self.serial_ref.send_gripper(sync_item.get("value", 0))
                                 if hasattr(self.serial_ref, 'wait_for_ee_done'):
                                     self.serial_ref.wait_for_ee_done(timeout=10.0)
-                                # 夾爪物理作動會消耗真實時間，完畢後必須重置時鐘，防止下一幀暴衝
                                 absolute_target_time = time.perf_counter() 
                     else:
-                        # 這是從延遲佇列擠出來的點位，更新給 3D 畫面
                         if counter % gui_skip_frames == 0:
                             self.update_signal.emit(list(sync_item))
                         counter += 1
                         
-                        # 時鐘推進 (只有實體點位才算時間)
                         if counter < ui_delay_frames:
                             absolute_target_time = time.perf_counter()
                         else:
@@ -153,7 +140,6 @@ class StreamingPathExecutor(QThread):
 
             except queue.Empty:
                 if self.producer_finished: 
-                    # 軌跡結束，把留在延遲佇列裡的最後 15 個項目「瞬間」沖洗完畢
                     while ui_queue:
                         sync_item = ui_queue.popleft()
                         if isinstance(sync_item, dict):
@@ -165,10 +151,6 @@ class StreamingPathExecutor(QThread):
                                     self.serial_ref.send_gripper(sync_item.get("value", 0))
                                 if hasattr(self.serial_ref, 'wait_for_ee_done'):
                                     self.serial_ref.wait_for_ee_done(timeout=10.0)
-                        # ==========================================
-                        # 核心優化 1：直接拋棄剩下的空點位！
-                        # 不再做 time.sleep(0.010)，消滅 0.4 秒的 UI 凍結
-                        # ==========================================
                         else:
                             pass 
                             
@@ -180,7 +162,6 @@ class StreamingPathExecutor(QThread):
                         self.log_signal.emit("[Warning] CPU computing too slowly, buffer underflow! Arm paused and waiting...")
                         absolute_target_time = time.perf_counter()
 
-        # Shutdown sequence...
         if self._is_estopped:
             self.error_signal.emit("執行已強制中斷：偵測到硬體急停鎖死 (E-STOP)！")
             return  
@@ -189,13 +170,6 @@ class StreamingPathExecutor(QThread):
             self.error_signal.emit("執行已由使用者手動中斷。")
             return  
 
-        # ==========================================
-        # 核心優化 2：刪除祖傳睡眠
-        # 既然硬體跟軟體已經完美同步，這個 0.5s 的安全延遲就可以正式退休了！
-        # if is_connected and not self.producer_error:
-        #     time.sleep(0.5) 
-        # ==========================================
-                
         real_total_time = time.time() - real_start_time
         self.finished_signal.emit(real_total_time)
 
@@ -270,8 +244,8 @@ class StreamingPathExecutor(QThread):
                 "msg": f">> 執行工具動作: {ee_type} -> {ee_val}"
             }, block=True)
             
-            # 替換 DELAY_CMD：塞入 20 個實體點位 (讓馬達實體停留 0.2 秒)
-            for _ in range(20):
+            # 替換 DELAY_CMD：塞入 10 個實體點位 (讓馬達實體停留 0.1 秒)
+            for _ in range(10):
                 self.point_queue.put(list(self._prod_seed), block=True)
             
         elif move_type == "SET_TCP":

@@ -18,4 +18,3 @@ bool newData = false;
 // 3. 通訊與暫停控制實體
 // ==========================================
 volatile bool is_paused = false;
-volatile float pause_multiplier = 1.0f;

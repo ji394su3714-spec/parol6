@@ -39,13 +39,25 @@ class RobotControllerGUI(QMainWindow):
         self.resize(1200, 700)
         self.setStyleSheet(styles.WINDOW_STYLE)
         
-        # --- 核心變數初始化 ---
+        # --- 核心變數與狀態旗標初始化 ---
         self.current_float_joints = [0.0] * 6
         self.prev_rpy = None 
         self.is_simulation_mode = False 
         self.pending_3d_update = False
         self._ui_throttle_counter = 0 
         self._is_paused = False
+        
+        self._is_estopped_latched = False
+        self._last_jog_warning_time = 0.0
+        self._is_system_updating = False
+        self._active_jog_ideal_tcp = None
+        self._last_jog_ui_update = 0.0
+        self._last_jog_error = None
+        self._last_preview_time = 0.0
+        self._last_preview_index = -1
+        self.preview_animation = None
+        self._physical_joints_memory = None
+        self._last_monitor_locked = False 
 
         # --- UI 佈局組裝 ---
         central_widget = QWidget()
@@ -113,16 +125,24 @@ class RobotControllerGUI(QMainWindow):
         self.shortcut_space = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
         self.shortcut_space.setContext(Qt.ShortcutContext.WindowShortcut)
 
-        # --- 綁定所有訊號與 UI 動作 ---
         self._bind_all_signals(main_splitter, right_splitter, default_main_sizes, default_right_sizes)
         
-        # --- 啟動預設狀態 ---
         self.jog_widget.on_joint_slider_changed()
         self.waypoint_panel.add_new_tab("untitled.json") 
 
+    # =========================================================
+    # 雙層互鎖大腦 (System Core Interlocks)
+    # =========================================================
+    @property
+    def is_system_busy(self):
+        is_animating = self.preview_animation is not None and self.preview_animation.state() == QVariantAnimation.State.Running
+        return self.path_manager.is_running() or self.jog_widget.is_jogging or is_animating
+
+    @property
+    def is_math_engine_running(self):
+        return self.path_manager.is_running() or self.jog_widget.cart_worker._is_active
+
     def _bind_all_signals(self, m_splitter, r_splitter, m_sizes, r_sizes):
-        """將訊號綁定集中管理"""
-        # 工具列
         self.top_bar.btn_tools.clicked.connect(self.open_tcp_manager)
         self.top_bar.btn_base.clicked.connect(self.open_base_manager)
         self.top_bar.btn_play.toggled.connect(self.on_play_toggled)
@@ -132,39 +152,39 @@ class RobotControllerGUI(QMainWindow):
         self.top_bar.btn_simulation.toggled.connect(self.toggle_simulation_mode)
         self.top_bar.btn_connect.clicked.connect(self.toggle_connection)
 
-        # 系統大腦 & 通訊
         self.serial_manager.log_signal.connect(self.log_widget.append_log)
         self.serial_manager.connection_state_signal.connect(self.update_connection_ui)
         self.serial_manager.estop_state_signal.connect(self.on_estop_state_changed)
         self.serial_manager.real_pose_received.connect(self.handle_hardware_pose_update)
+        
         self.path_manager.log_signal.connect(self.log_widget.append_log)
         self.path_manager.list_update_signal.connect(self.update_path_list_ui)
         self.path_manager.file_loaded_signal.connect(self.waypoint_panel.set_file_name)
         
-        # 3D 預覽與 Monitor
         self.tcp_manager.data_changed.connect(self.update_3d_trajectory_preview)
         self.base_manager.data_changed.connect(self.update_3d_trajectory_preview)
+        
         self.view3d_widget.monitor_widget.tcp_edit_requested.connect(self.handle_monitor_tcp_edit)
         self.view3d_widget.monitor_widget.joint_edit_requested.connect(self.handle_monitor_joint_edit)
+        
+        self.jog_widget.cartesian_jog_callback = lambda a, s, f, c: self.handle_cartesian_jog(a, s, f, is_continuous=c, _from_worker=True)
+        self.view3d_widget.robot_view.axis_drag_callback = lambda a, s, f: self.handle_cartesian_jog(a, s, f, is_continuous=True, _from_worker=False)
         self.view3d_widget.robot_view.drag_callback = self.handle_tcp_drag
-        self.view3d_widget.robot_view.axis_drag_callback = self.handle_cartesian_jog
         self.view3d_widget.robot_view.cancel_gizmo_callback = self.view3d_widget.reset_gizmo_buttons
         
-        # Jogging 面板
         self.jog_widget.check_estop_callback = self._check_estop_barrier
         self.jog_widget.restore_ui_callback = lambda: self.handle_system_pose_update(self.current_float_joints)
         self.jog_widget.update_3d_callback = self.preview_joint_jog 
         self.jog_widget.send_jog_callback = self.send_joint_jog     
         self.jog_widget.precheck_cartesian_step_callback = self.precheck_cartesian_step
-        self.jog_widget.cartesian_jog_callback = self.handle_cartesian_jog
         self.jog_widget.continuous_jog_callback = self.handle_continuous_joint_jog
         self.jog_widget.cartesian_jog_stop_callback = self.handle_cartesian_jog_stop
         self.jog_widget.request_pose_callback = self._safe_request_pose
         self.jog_widget.send_gripper_callback = self.handle_gripper_jog
         self.jog_widget.gripper_btn.toggled.connect(lambda c: self.jog_widget.g_slider.setValue(100 if c else 0))
         self.jog_widget.gripper_btn.toggled.connect(lambda c: self.handle_gripper_jog(100 if c else 0))
+        self.jog_widget.warning_log_callback = self._log_jog_barrier_warning 
 
-        # Waypoint 面板
         self.waypoint_panel.copy_requested.connect(self.path_manager.copy_points)
         self.waypoint_panel.paste_requested.connect(self.path_manager.paste_points)
         self.waypoint_panel.batch_base_shift_requested.connect(self.handle_batch_base_shift)
@@ -184,27 +204,33 @@ class RobotControllerGUI(QMainWindow):
         self.waypoint_panel.tab_switch_requested.connect(self.handle_tab_switch)
         self.waypoint_panel.tab_closed_signal.connect(self.handle_tab_closed)
 
-        # 系統事件
         app_settings.setting_changed.connect(lambda key, val: self.update_path_list_ui() if key == "show_comments" else None)
         self.shortcut_space.activated.connect(self.handle_global_spacebar)
         
-        # 分割器雙擊重置
         self.main_splitter_listener = SplitterDoubleClickListener(m_splitter, m_sizes)
         m_splitter.handle(1).installEventFilter(self.main_splitter_listener)
         m_splitter.handle(2).installEventFilter(self.main_splitter_listener)
         self.right_splitter_listener = SplitterDoubleClickListener(r_splitter, r_sizes)
         r_splitter.handle(1).installEventFilter(self.right_splitter_listener)
 
+    def _set_system_ui_locked(self, locked):
+        self.jog_widget.set_locked(locked)
+        self.waypoint_panel.set_locked(locked)
+        self.top_bar.btn_home.setEnabled(not locked)
+        self.top_bar.btn_soft_home.setEnabled(not locked)
+
 
     # =========================================================
     # [2] 硬體通訊與系統狀態 (Hardware & System States)
     # =========================================================
     def _can_send_hardware(self):
-        return (self.serial_manager and self.serial_manager.is_connected and not self.is_simulation_mode)
+        return self.serial_manager.is_connected and not self.is_simulation_mode
     
     def _safe_request_pose(self):
         if self._can_send_hardware():
             self.serial_manager.request_real_pose()
+            return True
+        return False
 
     def toggle_connection(self):
         if self.serial_manager.is_connected:
@@ -226,20 +252,18 @@ class RobotControllerGUI(QMainWindow):
         if is_connected:
             self.top_bar.btn_connect.setIcon(qta.icon('mdi.connection', color='#c63bbb'))
             self.top_bar.btn_connect.setToolTip("Disconnect")
-            
             self.top_bar.btn_stop.setEnabled(True)
             self.top_bar.btn_estop_reset.setEnabled(False)
             self.log_widget.append_log("[HW] 已連線，請執行原點復歸。")
         else:
             self.top_bar.btn_connect.setIcon(qta.icon('mdi.connection', color='#e0e0e0'))
             self.top_bar.btn_connect.setToolTip("Connect to Serial Port")
-            
             self.top_bar.btn_stop.setEnabled(False)
             self.top_bar.btn_estop_reset.setEnabled(False)
 
     def toggle_simulation_mode(self, checked):
         if self.path_manager.is_running():
-            self.log_widget.append_log("[警告] 軌跡執行中，禁止切換模擬模式！")
+            self.log_widget.append_log("[WARNING] Cannot switch simulation mode while path is running.")
             self.top_bar.btn_simulation.blockSignals(True)
             self.top_bar.btn_simulation.setChecked(not checked)
             self.top_bar.btn_simulation.blockSignals(False)
@@ -257,12 +281,12 @@ class RobotControllerGUI(QMainWindow):
             self.top_bar.btn_simulation.setIcon(qta.icon('mdi.safety-goggles', color='#e0e0e0'))
             self.top_bar.btn_simulation.setToolTip("開啟純模擬模式 (Simulation Mode)")
             
-            if hasattr(self, '_physical_joints_memory'):  # 這個是動態生成的變數，必須保留檢查！
+            if self._physical_joints_memory is not None: 
                 self.handle_system_pose_update(self._physical_joints_memory)
             if self._can_send_hardware():
                 self.serial_manager.request_real_pose()
-            if hasattr(self.jog_widget, 'cart_worker'):
-                self.jog_widget.cart_worker.stop_move()
+                
+            self.jog_widget.cart_worker.stop_move()
             self.log_widget.append_log("[System] 模擬模式已關閉：畫面已同步回實體機台姿態，恢復硬體輸出！")
 
     def reset_estop(self):
@@ -271,7 +295,7 @@ class RobotControllerGUI(QMainWindow):
             self.serial_manager.send_estop_reset()
 
     def on_estop_state_changed(self, is_latched):
-        self._is_estopped_latched = is_latched  # 儲存急停狀態供全域查詢
+        self._is_estopped_latched = is_latched 
         if is_latched:
             self.top_bar.btn_stop.setEnabled(False)
             self.top_bar.btn_estop_reset.setEnabled(True)
@@ -289,34 +313,45 @@ class RobotControllerGUI(QMainWindow):
         self._reset_play_ui()
 
     def _check_estop_barrier(self, silent=False):
-        if getattr(self, '_is_estopped_latched', False):
+        if self._is_estopped_latched:
             if not silent:
-                self.log_widget.append_log("[警告] 機器處於「急停鎖存狀態」！請按「解除急停」恢復運作。")
+                self.log_widget.append_log("[WARNING] Machine is in [Latched] state. Press [Estop Reset] to resume.")
             return True
         return False
+
+    def _log_jog_barrier_warning(self, msg):
+        curr_time = time.time()
+        if curr_time - self._last_jog_warning_time > 1.5:  
+            self.log_widget.append_log(msg)
+            self._last_jog_warning_time = curr_time
 
 
     # =========================================================
     # [3] UI 畫面與狀態更新 (UI & Pose Updates)
     # =========================================================
     def handle_hardware_pose_update(self, new_joints):
-        """過濾硬體回傳的 [POS]：如果在軌跡串流或笛卡爾運算中，拒絕覆寫以維持數學純淨"""
-        # 1. 如果 Cartesian Jog 背景引擎正在活躍，拒絕覆寫
-        if getattr(self.jog_widget, 'cart_worker', None) and self.jog_widget.cart_worker._is_active:
-            return 
-        # 2. 如果路徑正在執行中，拒絕覆寫
-        if self.path_manager.is_running():
-            return 
+        if self.is_math_engine_running: return 
+        
+        if self.jog_widget.active_jog_mode == 'WAIT_BRAKE':
+            self.jog_widget.update_joints_from_ik(new_joints)
+            return
             
-        # 只有在系統真正閒置時，才允許硬體座標同步給 UI
         self.handle_system_pose_update(new_joints)
         
     def handle_system_pose_update(self, new_joints):
         self.current_float_joints = list(new_joints)
         self.pending_3d_update = True
+        self._is_system_updating = True
         self.jog_widget.update_joints_from_ik(new_joints)
+        self._is_system_updating = False
 
     def process_3d_update(self):
+        # 絕對即時鎖定：獨立於 3D 渲染，100Hz 高頻監控系統忙碌狀態
+        current_busy = self.is_system_busy
+        if self._last_monitor_locked != current_busy:
+            self.view3d_widget.monitor_widget.set_locked(current_busy)
+            self._last_monitor_locked = current_busy
+
         if self.pending_3d_update:
             tcp_mat = self.tcp_manager.get_active_matrix()
             self.view3d_widget.robot_view.update_joints(self.current_float_joints, tcp_mat)
@@ -329,6 +364,7 @@ class RobotControllerGUI(QMainWindow):
                 self._update_monitor_ui() 
 
     def _update_monitor_ui(self):
+        # 此處專注於座標計算與文字更新
         tcp_mat = self.tcp_manager.get_active_matrix()
         T_flange = kinematics.forward_kinematics(self.current_float_joints)
         T_tcp = T_flange @ tcp_mat
@@ -358,9 +394,9 @@ class RobotControllerGUI(QMainWindow):
         self.update_3d_trajectory_preview()
 
     def handle_monitor_tcp_edit(self, axis_name, new_val):
-        if self.path_manager.is_running():
-            self.log_widget.append_log("[WARNING] Cannot edit position while program is running.")
-            self.handle_system_pose_update(self.current_float_joints) 
+        if self.is_system_busy:
+            self.log_widget.append_log("[WARNING] Cannot edit TCP while system is busy.")
+            self._update_monitor_ui() 
             return
 
         T_tool = self.tcp_manager.get_active_matrix()
@@ -383,33 +419,21 @@ class RobotControllerGUI(QMainWindow):
         if abs(delta) < 1e-4:
             self.handle_system_pose_update(self.current_float_joints)
             return
-
-        # ==========================================
-        # 終極升級：將 TCP 編輯轉交給 CartesianMathEngine！
-        # ==========================================
-        if getattr(self.jog_widget, 'cart_worker', None) and self.jog_widget.cart_worker._is_active:
-            self.log_widget.append_log("[WARNING] Cartesian engine is busy. Please wait.")
-            self.handle_system_pose_update(self.current_float_joints)
-            return
             
         sign = 1 if delta >= 0 else -1
         fixed_step = abs(delta)
         is_rot = len(axis_name) > 1
         
-        # 1. 欺騙 JogWidget，將這次編輯偽裝成按下「虛擬按鈕」
-        # (Monitor 的數值是相對於 Base 的，所以 frame 強制設定為 "World")
         self.jog_widget._current_frame = "World" 
         self.jog_widget._current_axis_arg = axis_name if is_rot else axis_name.lower()
         self.jog_widget.active_cart_axis = f"{axis_name}{'+' if sign > 0 else '-'}"
         
-        # 2. 自動抓取 Cartesian Jog 面板當前的速度膠囊設定 (Level 1~4)
         cfg_max_speed = config.MAX_ROT_SPEED if is_rot else config.MAX_LIN_SPEED
         cfg_max_accel = config.MAX_ROT_ACCEL if is_rot else config.MAX_LIN_ACCEL
         max_speed = (cfg_max_speed * 0.5) * (self.jog_widget.c_speed_level / 4.0)
         accel = cfg_max_accel * 1.0 
         
-        # 3. 啟動背景微積分引擎！
-        # 它會以 100Hz 的高頻率，帶著梯形加減速把直線軌跡送進 MCU
+        self.jog_widget.active_jog_mode = 'WAIT_BRAKE'
         self.jog_widget.cart_worker.start_move(
             is_continuous=False, 
             fixed_step=fixed_step, 
@@ -419,9 +443,9 @@ class RobotControllerGUI(QMainWindow):
         )
 
     def handle_monitor_joint_edit(self, joint_idx, new_val):
-        if self.path_manager.is_running():
-            self.log_widget.append_log("[WARNING] Cannot edit joints while program is running.")
-            self.handle_system_pose_update(self.current_float_joints)
+        if self.is_system_busy:
+            self.log_widget.append_log("[WARNING] Cannot edit joints while system is busy.")
+            self._update_monitor_ui()
             return
 
         min_lim, max_lim = config.JOINT_LIMITS[joint_idx]
@@ -450,15 +474,24 @@ class RobotControllerGUI(QMainWindow):
         return mapping.get(level, 1.0)
 
     def preview_joint_jog(self, angles):
+        if self._is_system_updating: return 
+        if self.path_manager.is_running(): return
+            
         self.current_float_joints = list(angles)
         self.pending_3d_update = True
 
     def send_joint_jog(self, target_angles_deg, speed_factor):
-        if self.path_manager.is_running(): return
+        if self.is_math_engine_running: return False 
+        
         if self._can_send_hardware():
             self.serial_manager.send_joints(target_angles_deg, speed_factor=speed_factor, move_mode=0)
+            return True 
+            
+        return False 
 
     def handle_continuous_joint_jog(self, axis_idx, direction, speed_factor):
+        if self.is_math_engine_running: return False 
+        
         if self._can_send_hardware():
             dir_correct = int(config.STEPS_PER_DEG[axis_idx] / abs(config.STEPS_PER_DEG[axis_idx]))
             real_direction = direction * dir_correct
@@ -467,27 +500,28 @@ class RobotControllerGUI(QMainWindow):
         return False
 
     def handle_gripper_jog(self, val):
-        if self._check_estop_barrier():
-            return
+        if self.is_math_engine_running: return
+            
+        if self._check_estop_barrier(): return
         if self._can_send_hardware():
             self.serial_manager.send_gripper(val)
 
-    def handle_cartesian_jog(self, axis, step_val, frame, is_continuous=True):
+    def handle_cartesian_jog(self, axis, step_val, frame, is_continuous=True, _from_worker=False):
+        if self.path_manager.is_running(): return
+            
+        if not _from_worker and self.is_system_busy:
+            self._log_jog_barrier_warning("[WARNING] Cannot drag 3D arrow while system is busy.")
+            return
+        
         tcp_mat = self.tcp_manager.get_active_matrix()
         world_mat = self.base_manager.get_matrix(self.base_manager.current_index)
             
         actual_frame = "Base" if frame == "World" else frame
-        last_ideal = getattr(self, '_active_jog_ideal_tcp', None) 
-
-        # ==========================================
-        # 核心修復 1：徹底拔除 sync_get_real_pose！
-        # 無條件信任 UI 的 current_float_joints，完全消滅「執行緒殘影」導致的丟步暴衝！
-        # ==========================================
+        last_ideal = self._active_jog_ideal_tcp 
         new_joints, error_msg, ideal_tcp_mat = kinematics.calculate_jog_joints(
             list(self.current_float_joints), axis, step_val, actual_frame, tcp_mat, world_mat, T_last_ideal_tcp=last_ideal
         )
         
-        # 消除啟動瞬間的 IK 浮點誤差突波
         if last_ideal is None and abs(step_val) < 1e-6:
             new_joints = list(self.current_float_joints)
         
@@ -499,9 +533,8 @@ class RobotControllerGUI(QMainWindow):
             
             self._active_jog_ideal_tcp = ideal_tcp_mat
             current_time = time.time()
-            last_ui_update = getattr(self, '_last_jog_ui_update', 0.0)
             
-            if current_time - last_ui_update >= 0.04:
+            if current_time - self._last_jog_ui_update >= 0.04:
                 self.handle_system_pose_update(new_joints)
                 self._last_jog_ui_update = current_time
             else:
@@ -509,36 +542,31 @@ class RobotControllerGUI(QMainWindow):
                 
             self._last_jog_error = None
         else:
-            # ==========================================
-            # 核心修復 2：笛卡爾虛擬防撞牆
-            # 絕對不可將 last_ideal 設為 None，並通知引擎踩煞車！
-            # ==========================================
             if getattr(self.jog_widget, 'cart_worker', None):
                 self.jog_widget.cart_worker.stop_move()
                 
-            last_err = getattr(self, '_last_jog_error', None)
-            if error_msg != last_err:
-                self.log_widget.append_log(f"[安全屏障] 空間座標到達物理極限，已啟動防護煞車！({error_msg})")
+            if error_msg != self._last_jog_error:
+                self._log_jog_barrier_warning(f"[WARNING] Cartesian limit reached; protective brake engaged. ({error_msg})")
                 self._last_jog_error = error_msg
 
     def precheck_cartesian_step(self, axis, total_step_val, frame):
-        """ 定距 Jog 預判：分段掃描整條路徑，防撞未卜先知 """
+        if self.path_manager.is_running(): return False
+
         tcp_mat = self.tcp_manager.get_active_matrix()
         world_mat = self.base_manager.get_matrix(self.base_manager.current_index)
         actual_frame = "Base" if frame == "World" else frame
         
-        # 將定距切成 5 段進行模擬掃描，確保沿途絕對安全
         steps = 5 
         step_inc = total_step_val / steps
         test_joints = list(self.current_float_joints)
-        test_ideal = getattr(self, '_active_jog_ideal_tcp', None)
+        test_ideal = self._active_jog_ideal_tcp
         
         for _ in range(steps):
             res_joints, err, test_ideal = kinematics.calculate_jog_joints(
                 test_joints, axis, step_inc, actual_frame, tcp_mat, world_mat, T_last_ideal_tcp=test_ideal
             )
             if res_joints is None:
-                self.log_widget.append_log(f"[安全屏障] 定距預判失敗：路徑中途超出極限 ({err})，已攔截本次操作。")
+                self.log_widget.append_log(f"[WARNING] Step lookahead failed: path exceeds limit ({err}), operation blocked.")
                 return False
             test_joints = res_joints
             
@@ -549,6 +577,8 @@ class RobotControllerGUI(QMainWindow):
         self.handle_system_pose_update(self.current_float_joints)
 
     def handle_tcp_drag(self, target_xyz):
+        if self.is_system_busy: return
+        
         tcp_mat = self.tcp_manager.get_active_matrix()
         T_flange_current = kinematics.forward_kinematics(self.current_float_joints)
         T_tcp_current = T_flange_current @ tcp_mat
@@ -571,8 +601,8 @@ class RobotControllerGUI(QMainWindow):
         self.path_manager.save_to_file()
 
     def open_tcp_manager(self):
-        if self.path_manager.is_running():
-            self.log_widget.append_log("[WARNING] Cannot change TCP config while program is running.")
+        if self.is_system_busy:
+            self.log_widget.append_log("[WARNING] Cannot change TCP config while system is busy.")
             return
         dialog = TCPManagerDialog(self.tcp_manager, self)
         if dialog.exec():
@@ -582,8 +612,8 @@ class RobotControllerGUI(QMainWindow):
             self.log_widget.append_log(f"[System] UPDATED: Tool '{active_tool.get('name', 'Unknown Tool')}' successfully applied.")
 
     def open_base_manager(self):
-        if self.path_manager.is_running():
-            self.log_widget.append_log("[WARNING] Cannot change Base config while program is running.")
+        if self.is_system_busy:
+            self.log_widget.append_log("[WARNING] Cannot change Base config while system is busy.")
             return
         dialog = BaseManagerDialog(self.base_manager, self)
         if dialog.exec():
@@ -613,7 +643,7 @@ class RobotControllerGUI(QMainWindow):
                 aux_j = [round(j, 4) for j in self.path_manager.temp_aux_joints]
                 self.path_manager.temp_aux_joints = None 
             else:
-                if hasattr(self, 'log_widget'): self.log_widget.append_log("[ERROR] 無法插入 CIRC：請先移動到中繼點並按下 'Record AUX'！")
+                self.log_widget.append_log("[ERROR] 無法插入 CIRC：請先移動到中繼點並按下 'Record AUX'！")
                 return
 
         new_wp = {
@@ -668,16 +698,17 @@ class RobotControllerGUI(QMainWindow):
     # [6] 任務執行與動畫 (Execution & Animation)
     # =========================================================
     def go_soft_home(self):
-        if self._check_estop_barrier():
-            return
-        if self.path_manager.is_running():
-            self.log_widget.append_log("[System] 路徑執行中，忽略 Soft Home 請求。")
+        if self._check_estop_barrier(): return
+        if self.is_system_busy:
+            self.log_widget.append_log("[System] Soft Home request ignored while system is busy.")
             return
 
         zero_joints = [0.0] * 6
-        if getattr(self, 'is_simulation_mode', False) or not self._can_send_hardware():
+        self._set_system_ui_locked(True) 
+        
+        if self.is_simulation_mode or not self._can_send_hardware():
+            self.log_widget.append_log("[System] Simulation / Disconnected: Soft Home animation triggered.")
             self._play_pose_animation(zero_joints, wp_type='PTP')
-            self.log_widget.append_log("[System] 模擬模式/未連線：已觸發 Soft Home 動畫。")
             return
 
         if self._can_send_hardware():
@@ -691,6 +722,16 @@ class RobotControllerGUI(QMainWindow):
 
     def stop_execution(self):
         self._reset_play_ui()
+        self._is_paused = False
+        
+        if self.preview_animation and self.preview_animation.state() == QVariantAnimation.State.Running:
+            self.preview_animation.stop()
+            self._set_system_ui_locked(False)
+            
+        worker = getattr(self.path_manager, 'worker', None)
+        if worker:
+            worker._is_paused = False
+            
         if self.path_manager.is_running():
             self.path_manager.stop_path()
             
@@ -714,27 +755,24 @@ class RobotControllerGUI(QMainWindow):
                 if worker:
                     worker._is_paused = False
             else:
+                if self.jog_widget.is_jogging:
+                    self.log_widget.append_log("[WARNING] Cannot start path while Jogging.")
+                    self._reset_play_ui() 
+                    return
+                
                 valid_types = ["PTP", "LIN", "CIRC", "DELAY", "GRIPPER", "I/O", "LOOP_START", "LOOP_END", "SET_TCP", "SET_BASE", "CAM_PATH"]
                 active_points = [pt for pt in self.path_manager.waypoints if pt.get('active', True) and pt.get('type') in valid_types]
                 
                 if len(active_points) == 0:
-                    self.log_widget.append_log("[System] 警告: 沒有可執行的點位。")
+                    self.log_widget.append_log("[System] No executable waypoints.")
                     self._reset_play_ui() 
                     return
 
                 self.log_widget.append_log(">>> 開始執行路徑串流...")
-                self.view3d_widget.monitor_widget.set_locked(True)
+                self._set_system_ui_locked(True)
+                
                 self._is_paused = False
                 self.top_bar.btn_stop.setEnabled(True)
-                
-                # === 起步強制對齊物理座標 ===
-                if self._can_send_hardware():
-                    # 阻塞最多 0.15 秒，向 MCU 索要最真實的物理齒輪步數
-                    real_pose = self.serial_manager.sync_get_real_pose(timeout=0.15)
-                    if real_pose is not None:
-                        # 無視 UI 當前的顯示值，強行將軌跡起點鎖定為實體機台位置
-                        self.current_float_joints = list(real_pose)
-                        self.handle_system_pose_update(real_pose)
 
                 tcp_mat = self.tcp_manager.get_active_matrix()
                 callbacks = {
@@ -775,7 +813,7 @@ class RobotControllerGUI(QMainWindow):
         self.top_bar.btn_play.setToolTip("開始 / 繼續 (Play/Resume)")
         self.top_bar.btn_play.blockSignals(False)
         
-        self.view3d_widget.monitor_widget.set_locked(False)
+        self._set_system_ui_locked(False)
 
     def _on_execution_finished(self, total_time):
         self.log_widget.append_log(f">>> 執行完成！總耗時 {total_time:.2f} 秒")
@@ -790,15 +828,16 @@ class RobotControllerGUI(QMainWindow):
 
     def handle_waypoint_preview(self, index):
         current_time = time.time()
-        last_time = getattr(self, '_last_preview_time', 0.0)
-        last_idx = getattr(self, '_last_preview_index', -1)
         
-        if index == last_idx and (current_time - last_time) < 0.5: return  
+        if index == self._last_preview_index and (current_time - self._last_preview_time) < 0.5: return  
             
         self._last_preview_time = current_time
         self._last_preview_index = index
 
-        if self.path_manager.is_running(): return
+        if self.is_system_busy: 
+            self.log_widget.append_log("[WARNING] Cannot preview waypoint while system is busy.")
+            return
+
         if index < 0 or index >= len(self.path_manager.waypoints): return
 
         target_wp = self.path_manager.waypoints[index]
@@ -846,10 +885,14 @@ class RobotControllerGUI(QMainWindow):
             self.base_manager.set_current_index(target_base_idx)
             self.base_manager.blockSignals(False)
 
-        if getattr(self, 'is_simulation_mode', False):
+        self._set_system_ui_locked(True) 
+
+        if self.is_simulation_mode:
             target_joints = reference_wp.get("joints")
             if target_joints:
                 self._play_pose_animation(target_joints, wp_type=reference_wp.get("type", "PTP"))
+            else:
+                self._set_system_ui_locked(False)
             return
 
         preview_wp = {
@@ -865,9 +908,9 @@ class RobotControllerGUI(QMainWindow):
 
         callbacks = {
             'update': self.handle_system_pose_update, 
-            'error': lambda msg: self.log_widget.append_log(f"[Preview Error] {msg}"),
+            'error': lambda msg: (self.log_widget.append_log(f"[Preview Error] {msg}"), self._set_system_ui_locked(False)),
             'log': lambda msg: None, 
-            'finished': lambda t: None, 
+            'finished': lambda t: self._set_system_ui_locked(False), 
         }
         
         serial_ref = self.serial_manager if self._can_send_hardware() else None
@@ -877,17 +920,18 @@ class RobotControllerGUI(QMainWindow):
             global_speed=50.0, global_accel=50.0, serial_ref=serial_ref, callbacks=callbacks,
         )
 
+    # 播放 3D 畫面的平滑過渡動畫
     def _play_pose_animation(self, target_joints, wp_type='PTP'):
         target_j_array = np.array(target_joints)
         start_j_array = np.array(self.current_float_joints)
         
         if np.allclose(start_j_array, target_j_array, atol=1e-2):
             self.handle_system_pose_update(target_joints)
+            self._set_system_ui_locked(False) 
             return
 
-        anim = getattr(self, 'preview_animation', None)
-        if anim and anim.state() == QVariantAnimation.State.Running:
-            anim.stop()
+        if self.preview_animation and self.preview_animation.state() == QVariantAnimation.State.Running:
+            self.preview_animation.stop()
 
         preview_path = []
         if wp_type == 'LIN':
@@ -936,6 +980,7 @@ class RobotControllerGUI(QMainWindow):
             self.handle_system_pose_update(current_j.tolist())
 
         self.preview_animation.valueChanged.connect(on_preview_step)
+        self.preview_animation.finished.connect(lambda: self._set_system_ui_locked(False))
         self.preview_animation.start()
 
 
@@ -967,7 +1012,7 @@ class RobotControllerGUI(QMainWindow):
     def handle_tab_closed(self, closed_tab):
         if closed_tab == self.waypoint_panel.active_tab:
             if self.path_manager.is_modified:
-                choice, btn_save, btn_discard, btn_cancel = self._prompt_unsaved_changes("目前有未儲存的點位變更，請問要儲存檔案嗎？")
+                choice, btn_save, btn_discard, btn_cancel = self._prompt_unsaved_changes("Unsaved waypoint changes. Save file?")
                 if choice == btn_save:
                     self.execute_save_process()
                     if self.path_manager.is_modified: return           
@@ -983,8 +1028,20 @@ class RobotControllerGUI(QMainWindow):
         self.waypoint_panel.force_close_tab(closed_tab)
 
     def closeEvent(self, event):
+        if self.path_manager.is_running() or self.jog_widget.is_jogging:
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("警告：系統執行中")
+            msg_box.setText("目前仍有自動或手動路徑正在執行！\n請先中止機台動作，再關閉軟體。")
+            msg_box.setIcon(QMessageBox.Icon.Critical)
+            msg_box.setStyleSheet(styles.DARK_MESSAGE_BOX_STYLE)
+            
+            msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg_box.exec()
+            event.ignore()
+            return
+
         if self.path_manager.is_modified:
-            choice, btn_save, btn_discard, btn_cancel = self._prompt_unsaved_changes("退出前，是否要儲存目前的點位變更？")
+            choice, btn_save, btn_discard, btn_cancel = self._prompt_unsaved_changes("Save waypoint changes before exiting?")
             if choice == btn_save:
                 self.execute_save_process() 
                 if self.path_manager.is_modified: event.ignore() 

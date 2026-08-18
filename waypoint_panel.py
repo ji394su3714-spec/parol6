@@ -1,7 +1,4 @@
 # waypoint_panel.py
-import copy 
-import numpy as np 
-
 from PySide6.QtWidgets import (QInputDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, 
                                QWidget, QLabel, QPushButton, QSizePolicy, QMenu, QFrame, QMessageBox)
 from PySide6.QtCore import QItemSelectionModel, Qt, Signal, QSize
@@ -52,6 +49,8 @@ class EditorTab(QFrame):
             self.setStyleSheet(styles.EDITOR_TAB_INACTIVE_STYLE)
             
     def mousePressEvent(self, event):
+        if getattr(self, 'is_locked', False): return
+
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked_sig.emit(self)
         super().mousePressEvent(event)
@@ -65,6 +64,8 @@ class DoubleClickLabel(QLabel):
         self.on_change = on_change_callback
 
     def mouseDoubleClickEvent(self, event):
+        if getattr(self, 'is_locked', False): return
+        
         if event.button() == Qt.MouseButton.LeftButton:
             menu = QMenu()
             menu.setStyleSheet(styles.MENU_STYLE)
@@ -91,6 +92,8 @@ class WaypointRowWidget(QWidget):
         self.index = index
         self.wp_data = wp_data
         
+        self._lockable_widgets = []
+        
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(10)
@@ -102,7 +105,7 @@ class WaypointRowWidget(QWidget):
         text_color = "#cccccc" if active else "#666666"
         if active:
             if m_type in ["LOOP_START", "LOOP_END"]: text_color = "#d7ba7d"
-            elif m_type in ["COMMENT", "RAW_CODE"]: text_color = "#6a9955"
+            elif m_type in ["COMMENT"]: text_color = "#6a9955"
             elif m_type == "SET_TCP": text_color = "#e6a800"
             elif m_type == "SET_BASE": text_color = "#00a8e6" 
             elif m_type == "CAM_PATH": text_color = "#8A2BE2"
@@ -120,6 +123,7 @@ class WaypointRowWidget(QWidget):
         if m_type in ["PTP", "LIN", "CIRC"]:
             self.lbl_type = DoubleClickLabel(m_type, ["PTP", "LIN", "CIRC"], self._change_type)
             self.lbl_type.setStyleSheet(self.clickable_style)
+            self._lockable_widgets.append(self.lbl_type) 
         else:
             display_type = "CAM" if m_type == "CAM_PATH" else m_type
             self.lbl_type = QLabel(display_type)
@@ -154,7 +158,7 @@ class WaypointRowWidget(QWidget):
             lbl_info.setText(f"[{wp_data.get('value')}] {wp_data.get('name')}")
         elif m_type == "SET_BASE": 
             lbl_info.setText(f"[{wp_data.get('value')}] {wp_data.get('name')}")
-        elif m_type in ["COMMENT", "RAW_CODE", "LOOP_START", "LOOP_END"]:
+        elif m_type in ["COMMENT", "LOOP_START", "LOOP_END"]:
             lbl_info.setText(f"// {wp_data.get('value', '')}")
         elif m_type == "CAM_PATH":
             pt_count = wp_data.get("point_count", 0)
@@ -176,10 +180,11 @@ class WaypointRowWidget(QWidget):
             self.lbl_acc = DoubleClickLabel(f"a:{int(acc_val)}%", ["10%", "25%", "50%", "75%", "100%"], self._change_accel)
             self.lbl_acc.setStyleSheet(self.clickable_style)
             self.lbl_acc.setFixedWidth(50)
+            
+            self._lockable_widgets.extend([self.lbl_blend, self.lbl_spd, self.lbl_acc])
 
-        # 隱藏非運動指令的參數框
-        NO_PARAM_TYPES = ["DELAY", "GRIPPER", "I/O", "SET_TCP", "SET_BASE", 
-                          "COMMENT", "RAW_CODE", "LOOP_START", "LOOP_END", "CAM_PATH"] 
+        NO_PARAM_TYPES = ["DELAY", "I/O", "SET_TCP", "SET_BASE", 
+                          "COMMENT", "LOOP_START", "LOOP_END", "CAM_PATH"] 
         if m_type in NO_PARAM_TYPES:
             self.lbl_blend.setVisible(False)
             self.lbl_spd.setVisible(False)
@@ -208,8 +213,17 @@ class WaypointRowWidget(QWidget):
         self.btn_menu.setStyleSheet(styles.WAYPOINT_ROW_BTN_STYLE) 
         self.btn_menu.clicked.connect(lambda: self.menu_requested_sig.emit(self.index))
         layout.addWidget(self.btn_menu)
+        
+        self._lockable_widgets.extend([self.btn_eye, self.btn_menu])
+        
+    def set_locked(self, locked):
+        """ 切斷神經版：按鈕維持視覺互動，但攔截所有功能訊號 """
+        for widget in self._lockable_widgets:
+            if isinstance(widget, DoubleClickLabel):
+                widget.is_locked = locked
+            else:
+                widget.blockSignals(locked)
 
-    # --- 內部事件處理 ---
     def _change_type(self, new_val):
         self.wp_data['type'] = new_val
         self.lbl_type.setText(new_val)
@@ -271,7 +285,6 @@ class WaypointPanel(BaseBlock):
         main_layout.setContentsMargins(0, 0, 0, 45) 
         main_layout.setSpacing(0)
 
-        # --- 分頁列建立 ---
         self.tab_bar = QFrame()
         self.tab_bar.setFixedHeight(26)
         self.tab_bar_layout = QHBoxLayout(self.tab_bar)
@@ -361,9 +374,30 @@ class WaypointPanel(BaseBlock):
                 base_actions[act] = b_idx
         return base_actions
 
-    # =========================================================
-    # 事件處理與內部邏輯
-    # =========================================================
+    def set_locked(self, locked):
+        """ 切斷所有元件的神經信號，保留完美的視覺互動性 """
+        self.is_locked = locked
+        
+        # 1. 鎖定所有單行列表的按鈕與標籤
+        for i in range(self.path_list.count()):
+            item = self.path_list.item(i)
+            widget = self.path_list.itemWidget(item)
+            if hasattr(widget, 'set_locked'):
+                widget.set_locked(locked)
+                
+        # 2. 鎖定下方導覽列按鈕 (Save, Load, Clear) -> 切斷 clicked
+        for btn in getattr(self.nav_bar, 'nav_buttons', []):
+            btn.blockSignals(locked)
+            
+        # 3. 鎖定分頁標籤按鈕 -> 切斷 clicked / mousePress
+        self.btn_new_tab.blockSignals(locked)
+        for tab in self.tabs:
+            tab.is_locked = locked
+            tab.btn_close.blockSignals(locked)
+            
+        # 4. 鎖定快捷鍵 (Delete 鍵無效化)
+        self.shortcut_delete.setEnabled(not locked)
+
     def _handle_delete_key(self):
         selected_items = self.path_list.selectedItems()
         if not selected_items: return
@@ -383,8 +417,7 @@ class WaypointPanel(BaseBlock):
         main_win.path_manager.list_update_signal.emit()
 
     def confirm_clear_all(self):
-        if not self.active_tab:
-            return
+        if not self.active_tab: return
             
         msg_box = QMessageBox(self.window()) 
         apply_windows_dark_titlebar(msg_box)
@@ -447,6 +480,7 @@ class WaypointPanel(BaseBlock):
         self.request_tab_switch(tab)
 
     def request_tab_switch(self, new_tab):
+        import copy
         if new_tab != self.active_tab:
             main_win = self.window()
             
@@ -522,10 +556,12 @@ class WaypointPanel(BaseBlock):
         
         for i, wp in enumerate(waypoints):
             item = QListWidgetItem()
-            # 直接實例化乾淨的 View 元件
             row_widget = WaypointRowWidget(i, wp)
             
-            # 外部綁定神經信號 (Signals)
+            # 🛡️ 確保路徑中途若被刷新 (雖然機率極低)，依然保持上鎖狀態
+            if getattr(self, 'is_locked', False):
+                row_widget.set_locked(True)
+                
             row_widget.toggle_sig.connect(self.toggle_requested.emit)
             row_widget.data_changed_sig.connect(self.data_changed.emit)
             row_widget.menu_requested_sig.connect(self.show_row_context_menu)
@@ -570,13 +606,6 @@ class WaypointPanel(BaseBlock):
         action_paste = menu.addAction(qta.icon('mdi.content-paste', color='#00e6b8'), paste_text)
         if paste_count == 0: action_paste.setEnabled(False)
             
-        action_base_shift = None
-        if m_type not in ["SET_BASE", "CAM_PATH"]:
-            action_base_shift = menu.addAction(
-                qta.icon('mdi.axis-arrow', color='#e6a800'), 
-                f"Apply Current Base Shift ({sel_count})" if sel_count > 1 else "Apply Current Base Shift"
-            )
-            
         menu.addSeparator()
         
         action_shift_block = None
@@ -607,7 +636,7 @@ class WaypointPanel(BaseBlock):
         tcp_actions = self._build_tcp_submenu(menu, menu_tcp_title, menu_tcp_icon)
             
         menu_base_title = "Update Base Frame" if m_type == "SET_BASE" else "Insert SET_BASE"
-        menu_base_icon = '#00e6b8' if m_type == "SET_BASE" else '#d4d4d4'
+        menu_base_icon = '#00a8e6' if m_type == "SET_BASE" else '#d4d4d4'
         base_actions = self._build_base_submenu(menu, menu_base_title, menu_base_icon)
             
         action_insert_delay = None
@@ -638,9 +667,6 @@ class WaypointPanel(BaseBlock):
             self.copy_requested.emit(indexes) 
         elif selected == action_paste:
             self.paste_requested.emit(index) 
-        elif action_base_shift and selected == action_base_shift:
-            indexes = [self.path_list.row(item) for item in self.path_list.selectedItems()]
-            self.batch_base_shift_requested.emit(indexes) 
         elif action_shift_block and selected == action_shift_block:
             self.block_base_shift_requested.emit(index)
             
@@ -674,7 +700,8 @@ class WaypointPanel(BaseBlock):
             self._handle_delete_key()
 
     def show_list_context_menu(self, pos=None):
-        """路徑清單空白處的右鍵選單"""
+        if getattr(self, 'is_locked', False): return
+        
         if pos is not None:
             item = self.path_list.itemAt(pos)
             if item is not None and self.path_list.itemWidget(item) is not None:

@@ -121,9 +121,6 @@ class MonitorLineEdit(QLineEdit):
         self.setReadOnly(True)
         super().focusOutEvent(event)
 
-    # ==========================================
-    # 🎯 補上第一條神經：讓全域點擊過濾器能成功觸發收尾
-    # ==========================================
     def commit_value(self):
         if not self.isReadOnly():
             self.editingFinished.emit() # 確保發送修改完成的訊號
@@ -431,14 +428,22 @@ class MonitorWidget(QFrame):
     def update_tcp(self, x, y, z, rx, ry, rz):
         for name, val in zip(["X", "Y", "Z", "Rx", "Ry", "Rz"], [x, y, z, rx, ry, rz]):
             if not self.inputs[name].hasFocus():
-                self.inputs[name].setText(f"{val:.2f}")
-        self.current_tcp_str = f"X:{x:.2f} Y:{y:.2f} Z:{z:.2f} Rx:{rx:.2f} Ry:{ry:.2f} Rz:{rz:.2f}"
+                disp_str = f"{val:.2f}"
+                if disp_str == "-0.00": disp_str = "0.00"
+                self.inputs[name].setText(disp_str)
+                
+        raw_str = f"X:{x:.2f} Y:{y:.2f} Z:{z:.2f} Rx:{rx:.2f} Ry:{ry:.2f} Rz:{rz:.2f}"
+        self.current_tcp_str = raw_str.replace("-0.00", "0.00")
 
     def update_joints(self, *joints):
         for name, val in zip(["θ1", "θ2", "θ3", "θ4", "θ5", "θ6"], joints):
             if not self.inputs[name].hasFocus():
-                self.inputs[name].setText(f"{val:.2f}")
-        self.current_joints_str = " ".join([f"J{i+1}:{j:.2f}" for i, j in enumerate(joints)])
+                disp_str = f"{val:.2f}"
+                if disp_str == "-0.00": disp_str = "0.00"
+                self.inputs[name].setText(disp_str)
+                
+        raw_str = " ".join([f"J{i+1}:{j:.2f}" for i, j in enumerate(joints)])
+        self.current_joints_str = raw_str.replace("-0.00", "0.00")
 
     def copy_tcp_to_clipboard(self):
         if hasattr(self, 'current_tcp_str'): QApplication.clipboard().setText(self.current_tcp_str)
@@ -476,7 +481,7 @@ class LogWidget(BaseBlock):
         elif "[WARNING]" in msg_upper or "警告" in msg_upper or "TIMEOUT" in msg_upper: color = "#e6a800" 
         elif "[SYSTEM]" in msg_upper or "系統" in msg_upper: color = "#00a8e6" 
         elif "[HW]" in msg_upper or "CONNECTED" in msg_upper or "DISCONNECTED" in msg_upper: color = "#c63bbb" 
-        elif "RECORDED" in msg_upper or "UPDATED" in msg_upper or "DELETED" in msg_upper or "[CODE]" in msg_upper: color = "#00e6b8" 
+        elif "RECORDED" in msg_upper or "UPDATED" in msg_upper or "DELETED" in msg_upper: color = "#00e6b8" 
         elif "&GT;&GT;" in safe_msg: color = "#d7ba7d" 
 
         html_msg = f'<span style="color: {color};">{safe_msg}</span>'

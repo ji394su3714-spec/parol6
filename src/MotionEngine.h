@@ -16,7 +16,7 @@ static inline void UnlockMotionEngine() {
     NVIC_EnableIRQ(TIM7_IRQn);
 }
 
-// 將蓄水池縮為 0.5 秒緩衝，讓暫停反應靈敏 (配合 100Hz 串流，50 個點剛好是 0.5 秒)
+// 蓄水池為 0.5 秒緩衝
 #define MOTION_BUF_SIZE 50
 
 // ==========================================
@@ -62,6 +62,11 @@ extern volatile int       buf_count;
 
 extern volatile bool      is_engine_running;
 extern volatile bool      is_pvt_mode;
+extern volatile float     pvt_time_current; 
+extern volatile uint32_t  pvt_ticks_total;
+
+// 全域時間流速控制器 (Time Dilation)
+extern volatile float     current_time_scale; 
 
 extern volatile bool      is_estop_latched;
 
