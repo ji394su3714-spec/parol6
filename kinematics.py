@@ -642,7 +642,7 @@ class TrajectoryMathEngine:
         if used_method == 'euler':
             msg = "[System] SLERP singularity bypassed using Euler interpolation."
         elif scale_down > 1.0:
-            msg = f"[LIN] Safe Auto-Scale: Speed reduced to {(1.0/scale_down):.2f}X to protect joints."
+            msg = f"[LIN] Safe Auto-Scale: Speed reduced to {(1.0/scale_down):.2f}X."
             
         return lin_generator(), final_profile.T_total, msg, N
 
@@ -842,7 +842,7 @@ class TrajectoryMathEngine:
             
         msg = "SUCCESS"
         if scale_down > 1.0:
-            msg = f"[CIRC] Safe Auto-Scale: Speed reduced to {(1.0/scale_down):.2f}X to protect joints."
+            msg = f"[CIRC] Safe Auto-Scale: Speed reduced to {(1.0/scale_down):.2f}X."
             
         return circ_generator(), final_profile.T_total, msg, N
     

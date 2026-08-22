@@ -26,7 +26,7 @@ class SerialManager(QObject):
         self.motion_done_event = threading.Event()
         
         self.ok_semaphore = threading.Semaphore(40) 
-        self.ee_done_event = threading.Event() 
+        self.io_done_event = threading.Event()
         self._latched_reported = False
         
         # === 用於強制同步的旗標與變數 ===
@@ -54,7 +54,7 @@ class SerialManager(QObject):
             self.running = True
             
             self.motion_done_event.clear()  
-            self.ee_done_event.clear() 
+            self.io_done_event.clear() 
             
             self.read_thread = threading.Thread(target=self._read_loop, daemon=True)
             self.read_thread.start()
@@ -64,7 +64,7 @@ class SerialManager(QObject):
             return True
         except Exception as e:
             self.log_signal.emit(f"Connection Failed: {e}")
-            if hasattr(self, 'ser') and self.ser and self.ser.is_open:
+            if self.ser and self.ser.is_open: 
                 self.ser.close()
             return False
 
@@ -110,13 +110,8 @@ class SerialManager(QObject):
             spd = float(speed_factor)
             mode = int(move_mode)
             
-            # 打包：2Bytes + 6*4Bytes + 4Bytes + 1Byte = 31 Bytes
             payload_bytes = struct.pack('<H6ifB', header, *target_steps, spd, mode)
-            
-            # 計算 CRC8
             crc_value = self._calculate_crc8(payload_bytes)
-            
-            # 附加 CRC8 成為完美的 32 Bytes
             packet = payload_bytes + struct.pack('<B', crc_value)
             
             with self._tx_lock:
@@ -132,22 +127,15 @@ class SerialManager(QObject):
     # 提供給 UI 大腦呼叫的專屬 API (Public Methods)
     # ==========================================
     def send_joints(self, joints, speed_factor=1.0, move_mode=0, is_stream=False, is_jog=False):
-        """ 
-        is_stream: 是否為連續串流 (若為 False，則視為單點移動，會重置系統狀態)
-        is_jog: 標示這是否來自於高頻點動 (UI 手動操作)
-        """
         if not is_stream:
             self.motion_done_event.clear()  
-            self.ee_done_event.clear() 
+            self.io_done_event.clear() 
             self.reset_semaphore()     
         else:
             if is_jog:
-                # 路線 A：點動模式 (Jog) - 極速非阻塞檢查
                 if not self.ok_semaphore.acquire(blocking=False):
                     return False
-
             else:
-                # 路線 B：CAM 路徑串流 (StreamingPathExecutor) - 絕不丟點
                 pass
         
         steps = []
@@ -163,8 +151,7 @@ class SerialManager(QObject):
     def send_continuous_jog(self, axis_idx, direction, speed_factor):
         """ 發送連續寸動 (Mode 2) """
         if not self.is_connected: return False
-        self.reset_semaphore() # 執行前強制重置號碼牌，消滅通膨隱患！
-        
+        self.reset_semaphore()
         targets = [int(axis_idx), int(direction), 0, 0, 0, 0]
         return self._send_binary_packet(targets, speed_factor, move_mode=2)
 
@@ -178,17 +165,15 @@ class SerialManager(QObject):
     def send_stop(self):
         """ 觸發硬體急停 (Mode 4) """
         self.log_signal.emit("[System] 發送急停指令！")
-        
         if self.ser and self.ser.is_open:
             try:
                 self.ser.reset_output_buffer()
             except Exception:
                 pass
-                
         return self._send_binary_packet([0] * 6, 1.0, 4)
 
     def request_real_pose(self):
-        """透過標準二進制通訊，發送 Mode 6 查詢硬體絕對步數"""
+        """ 觸發 MCU 回傳真實物理座標 (Mode 6) """
         if self.is_connected:
             self._send_binary_packet([0, 0, 0, 0, 0, 0], speed_factor=1.0, move_mode=6)
 
@@ -196,7 +181,6 @@ class SerialManager(QObject):
         """發送暫停指令 (Mode 7)"""
         if self.is_connected:
             self.log_signal.emit(">>> [System] 機台減速中...")
-            # 步數陣列全填 0 即可，因為 Mode 5 只看 Mode 標籤
             self._send_binary_packet([0, 0, 0, 0, 0, 0], speed_factor=1.0, move_mode=7)
 
     def send_resume(self):
@@ -208,7 +192,6 @@ class SerialManager(QObject):
     def send_estop_reset(self):
         """ 發送人工解鎖指令 (Mode 9) """
         self.log_signal.emit("[System] 發送解除急停復歸訊號...")
-        
         if self.ser and self.ser.is_open:
             try:
                 self.ser.reset_output_buffer()
@@ -218,14 +201,13 @@ class SerialManager(QObject):
                 
         self.reset_semaphore() 
         self.motion_done_event.clear()
-        self.ee_done_event.clear()
-        
+        self.io_done_event.clear()
         return self._send_binary_packet([0] * 6, 1.0, 9)
 
-    def send_gripper(self, ee_value):
-        """ 觸發夾爪動作 (Mode 5) """
-        self.ee_done_event.clear()
-        return self._send_binary_packet([int(ee_value), 0, 0, 0, 0, 0], 1.0, 5)
+    def send_io(self, io_value):
+        """ 觸發 I/O 動作 (Mode 5) """
+        self.io_done_event.clear()
+        return self._send_binary_packet([int(io_value), 0, 0, 0, 0, 0], 1.0, 5)
 
     # ==========================================
     # 接收與等待區塊
@@ -238,13 +220,8 @@ class SerialManager(QObject):
                     continue
 
                 line = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                
-                if not line:
-                    continue 
+                if not line: continue 
 
-                # ==========================================
-                # 遙測攔截：攔截 MCU 回傳的真實物理步數，並轉為角度
-                # ==========================================
                 if line.startswith("[POS]"):
                     try:
                         import config
@@ -253,20 +230,13 @@ class SerialManager(QObject):
                         
                         if len(steps) == 6:
                             angles = [steps[i] / config.STEPS_PER_DEG[i] for i in range(6)]
-                            
-                            # === 新增：儲存給同步獲取使用，並觸發旗標 ===
                             self.last_real_pose = angles  
                             self.pose_received_event.set() 
-                            
                             self.real_pose_received.emit(angles)
                     except Exception as e:
                         self.log_signal.emit(f"座標解析錯誤: {e}")
-                    
                     continue
 
-                # ==========================================
-                # 主邏輯：平坦化的條件攔截 (Early Return / Continue)
-                # ==========================================
                 if line == "Done":
                     self.motion_done_event.set() 
                     continue 
@@ -280,11 +250,11 @@ class SerialManager(QObject):
                     self.ok_semaphore.release()
                     continue
                     
-                if line == "<EE_DONE>":
-                    self.ee_done_event.set()
+                # 同時相容新舊 MCU 回傳字串，確保不會漏接
+                if line == "<EE_DONE>" or line == "<IO_DONE>":
+                    self.io_done_event.set()
                     continue
 
-                # 攔截急停鎖存的錯誤與觸發訊息
                 if "LATCHED" in line:
                     if not self._latched_reported:
                         self.estop_state_signal.emit(True) 
@@ -295,7 +265,6 @@ class SerialManager(QObject):
                         self.ok_semaphore.release()
                     continue
                     
-                # 攔截急停解除訊息
                 if "RESET SUCCESS" in line:
                     if self._latched_reported:
                         self.estop_state_signal.emit(False) 
@@ -303,7 +272,6 @@ class SerialManager(QObject):
                         self._latched_reported = False
                     continue
 
-                # 其他未攔截的訊息，當作一般 Log 印出
                 self.log_signal.emit(f"[HW] {line}")
                 
             except Exception as e:
@@ -327,10 +295,10 @@ class SerialManager(QObject):
         if not self.is_connected: return False
         return self.ok_semaphore.acquire(timeout=timeout)
         
-    def wait_for_ee_done(self, timeout=10.0):
+    def wait_for_io_done(self, timeout=10.0):
         if not self.is_connected: return False
-        self.ee_done_event.clear() 
-        success = self.ee_done_event.wait(timeout)
+
+        success = self.io_done_event.wait(timeout)
         if not success:
-            self.log_signal.emit("[Warning] Wait EE_DONE Timeout!")
+            self.log_signal.emit("[Warning] Wait IO_DONE Timeout!")
         return success

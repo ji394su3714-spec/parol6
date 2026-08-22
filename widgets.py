@@ -18,7 +18,7 @@ from config import Robot3DView
 # [1] 系統全域工具 (Global Utilities & Settings)
 # =========================================================
 def apply_windows_dark_titlebar(window):
-    """將傳入的視窗 (window) 標題列強制轉換為沉浸式深色"""
+    """將 Windows 視窗標題列強制轉換為沉浸式深色 (優雅降級：若不支援則略過)"""
     try:
         hwnd = wintypes.HWND(int(window.winId()))
         set_window_attribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
@@ -34,8 +34,21 @@ def apply_windows_dark_titlebar(window):
         print(f"Windows 標題列修改失敗: {e}")
 
 class SettingsManager(QObject):
+    """全域設定管理員 (嚴格單例模式)：確保全系統共用唯一一份設定檔狀態"""
+    _instance = None
     setting_changed = Signal(str, object)
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(SettingsManager, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
     def __init__(self):
+        # 避免重複初始化
+        if getattr(self, '_initialized', False): 
+            return
+            
         super().__init__()
         self._settings = {
             "sync_sliders": True,       
@@ -44,12 +57,18 @@ class SettingsManager(QObject):
             "default_list_mode": False,  
             "theme_style": "dark"
         }
-    def get(self, key): return self._settings.get(key)
+        self._initialized = True
+        
+    def get(self, key): 
+        """獲取指定設定值"""
+        return self._settings.get(key)
+        
     def set(self, key, value):
+        """更新設定值，若有變更則發送訊號"""
         if self._settings.get(key) != value:
             self._settings[key] = value
             self.setting_changed.emit(key, value)
-
+# 全域單例實例
 app_settings = SettingsManager()
 
 
@@ -57,6 +76,7 @@ app_settings = SettingsManager()
 # [2] 全域事件過濾器 (Event Filters)
 # =========================================================
 class SplitterDoubleClickListener(QObject):
+    """監聽分隔線的雙擊事件，用來將面板恢復為預設比例"""
     def __init__(self, splitter, default_sizes):
         super().__init__(splitter)
         self.splitter = splitter
@@ -69,6 +89,7 @@ class SplitterDoubleClickListener(QObject):
         return False
 
 class GlobalClickFilter(QObject):
+    """全域點擊過濾器：當點擊空白處時，強制讓輸入框失去焦點並提交數值"""
     def eventFilter(self, obj, event):
         if event.type() == QEvent.Type.MouseButtonPress:
             fw = QApplication.focusWidget()
@@ -80,6 +101,7 @@ class GlobalClickFilter(QObject):
         return False
     
 class SplitButtonHoverFilter(QObject):
+    """讓分裂式按鈕 (左圖示/右箭頭) 在 Hover 時能產生連動的高光效果"""
     def __init__(self, left_btn, right_btn):
         super().__init__(left_btn)
         self.left_btn = left_btn
@@ -98,10 +120,12 @@ class SplitButtonHoverFilter(QObject):
             target.style().polish(target)
         return False
 
+
 # =========================================================
 # [3] 原子級 UI 元件 (Atomic UI Components)
 # =========================================================
 class MonitorLineEdit(QLineEdit):
+    """自訂輸入框：支援唯讀與編輯模式切換，並可被外部強制鎖定"""
     def __init__(self, contents="0.00", parent=None):
         super().__init__(contents, parent)
         self.setReadOnly(True)
@@ -109,6 +133,7 @@ class MonitorLineEdit(QLineEdit):
         self.is_locked = False 
 
     def mousePressEvent(self, event):
+        """處理點擊事件：鎖定時無視，閒置時切換為編輯模式"""
         if self.is_locked:
             event.ignore()
             return
@@ -118,15 +143,18 @@ class MonitorLineEdit(QLineEdit):
             QTimer.singleShot(0, self.selectAll)
 
     def focusOutEvent(self, event):
+        """失去焦點時自動轉回唯讀模式"""
         self.setReadOnly(True)
         super().focusOutEvent(event)
 
     def commit_value(self):
+        """手動提交數值並清除焦點"""
         if not self.isReadOnly():
-            self.editingFinished.emit() # 確保發送修改完成的訊號
-            self.clearFocus()           # 清除焦點，這會自動觸發 focusOutEvent 轉回唯讀模式
+            self.editingFinished.emit() 
+            self.clearFocus()           
 
 class FloatingNavBar(QFrame):
+    """懸浮導覽列：可根據 Config 動態生成一排半透明按鈕"""
     def __init__(self, config, parent=None):
         super().__init__(parent)
         self.setObjectName("FloatingNavBar")
@@ -188,6 +216,7 @@ class FloatingNavBar(QFrame):
                 self.nav_buttons.append(btn)
 
 class BaseBlock(QFrame):
+    """基礎區塊容器：內建懸浮導覽列，並自動處理 Resize 定位"""
     def __init__(self, parent=None, nav_config=None):
         super().__init__(parent)
         self.setObjectName("BlockFrame")
@@ -197,16 +226,19 @@ class BaseBlock(QFrame):
         self.nav_bar = FloatingNavBar(nav_config, self)
         
     def resizeEvent(self, event: QResizeEvent):
+        """視窗縮放時，自動將導覽列置中置底"""
         super().resizeEvent(event)
         nav_w = self.nav_bar.sizeHint().width()
         nav_h = self.nav_bar.height()
         self.nav_bar.setGeometry((self.width() - nav_w) // 2, self.height() - nav_h - 10, nav_w, nav_h)
         self.nav_bar.raise_()
 
+
 # =========================================================
 # [4] 獨立系統面板 (Standalone Panels)
 # =========================================================
 class CustomTopBar(QFrame):
+    """應用程式頂部工具列：包含播放、急停、連線等核心控制鈕"""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("TopBarFrame")
@@ -270,6 +302,7 @@ class CustomTopBar(QFrame):
         layout.addWidget(self.btn_base)
 
     def _create_btn(self, icon_name):
+        """輔助函式：快速建立標準格式的工具列按鈕"""
         btn = QPushButton()
         btn.setIcon(qta.icon(icon_name, color='#e0e0e0'))
         btn.setIconSize(QSize(22, 22))
@@ -278,12 +311,14 @@ class CustomTopBar(QFrame):
         return btn
 
     def _create_separator(self):
+        """輔助函式：建立工具列分隔線"""
         line = QFrame()
         line.setFixedSize(1, 18)
         line.setStyleSheet("background-color: #555555;") 
         return line
 
     def show_preferences(self):
+        """開啟偏好設定對話框"""
         try:
             from preferences import PreferencesDialog
             dialog = PreferencesDialog(self)
@@ -291,6 +326,7 @@ class CustomTopBar(QFrame):
         except ImportError: pass
 
     def show_homing_warning(self):  
+        """執行硬體歸零前的安全警告對話框"""
         main_win = self.window()
         if getattr(main_win, '_is_estopped_latched', False):
             main_win.log_widget.append_log("[警告] 機器處於「急停鎖存狀態」！請按「解除急停」恢復運作。")
@@ -322,6 +358,7 @@ class CustomTopBar(QFrame):
                 main_win.log_widget.append_log("[ERROR] Homing failed: Controller not connected.")
 
 class MonitorWidget(QFrame):
+    """即時座標監視器：顯示 TCP 與 Joint 數值，並支援雙擊編輯"""
     tcp_edit_requested = Signal(str, float)    
     joint_edit_requested = Signal(int, float)  
 
@@ -357,6 +394,7 @@ class MonitorWidget(QFrame):
         main_layout.addLayout(row2_layout)
 
     def _create_box(self, name, group, index=None):
+        """輔助函式：建立單一數值顯示框 (Label + LineEdit)"""
         frame = QFrame()
         frame.setFixedSize(68, 20) 
         frame.setStyleSheet(styles.MONITOR_BOX_STYLE)
@@ -373,10 +411,7 @@ class MonitorWidget(QFrame):
         value_input = MonitorLineEdit("0.00") 
         value_input.setValidator(self.validator)
         value_input.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        value_input.setStyleSheet("""
-            QLineEdit { background: transparent; border: none; color: #00e6b8; font-family: 'Consolas', monospace; font-size: 11px; padding: 0px; }
-            QLineEdit:focus { color: #ffffff; background-color: rgba(255, 255, 255, 0.12); border-radius: 2px; }
-        """)
+        value_input.setStyleSheet(styles.MONITOR_INPUT_STYLE)
         
         if group == "TCP":
             value_input.editingFinished.connect(lambda n=name, inp=value_input: self._on_tcp_edited(n, inp))
@@ -388,6 +423,7 @@ class MonitorWidget(QFrame):
         return frame
 
     def set_locked(self, locked):
+        """將所有輸入框設為唯讀且滑鼠穿透"""
         for inp in self.inputs.values():
             inp.is_locked = locked
             if locked:
@@ -400,6 +436,7 @@ class MonitorWidget(QFrame):
                 inp.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
     
     def _on_tcp_edited(self, name, line_edit):
+        """TCP 數值編輯完成後發送訊號"""
         text = line_edit.text()
         if text:
             try:
@@ -408,6 +445,7 @@ class MonitorWidget(QFrame):
         line_edit.clearFocus() 
 
     def _on_joint_edited(self, index, line_edit):
+        """Joint 數值編輯完成後發送訊號"""
         text = line_edit.text()
         if text:
             try:
@@ -416,6 +454,7 @@ class MonitorWidget(QFrame):
         line_edit.clearFocus() 
 
     def _create_copy_btn(self, callback):
+        """輔助函式：建立複製到剪貼簿的迷你按鈕"""
         btn = QPushButton()
         btn.setIcon(qta.icon('mdi.content-copy', color='#a0a0a0'))
         btn.setIconSize(QSize(12, 14))
@@ -426,6 +465,7 @@ class MonitorWidget(QFrame):
         return btn
 
     def update_tcp(self, x, y, z, rx, ry, rz):
+        """更新 TCP 顯示數值"""
         for name, val in zip(["X", "Y", "Z", "Rx", "Ry", "Rz"], [x, y, z, rx, ry, rz]):
             if not self.inputs[name].hasFocus():
                 disp_str = f"{val:.2f}"
@@ -436,6 +476,7 @@ class MonitorWidget(QFrame):
         self.current_tcp_str = raw_str.replace("-0.00", "0.00")
 
     def update_joints(self, *joints):
+        """更新 Joint 顯示數值"""
         for name, val in zip(["θ1", "θ2", "θ3", "θ4", "θ5", "θ6"], joints):
             if not self.inputs[name].hasFocus():
                 disp_str = f"{val:.2f}"
@@ -446,11 +487,15 @@ class MonitorWidget(QFrame):
         self.current_joints_str = raw_str.replace("-0.00", "0.00")
 
     def copy_tcp_to_clipboard(self):
+        """將當前 TCP 座標複製到剪貼簿"""
         if hasattr(self, 'current_tcp_str'): QApplication.clipboard().setText(self.current_tcp_str)
+        
     def copy_joints_to_clipboard(self):
+        """將當前 Joint 角度複製到剪貼簿"""
         if hasattr(self, 'current_joints_str'): QApplication.clipboard().setText(self.current_joints_str)
 
 class LogWidget(BaseBlock):
+    """系統日誌面板：顯示並過濾各種級別的訊息顏色"""
     def __init__(self, parent=None):
         nav_config = [{'icon': 'mdi.delete-outline'}, {'icon': 'mdi.export'}, {'icon': 'mdi.dots-vertical'}]
         super().__init__(parent=parent, nav_config=nav_config)
@@ -460,9 +505,7 @@ class LogWidget(BaseBlock):
         
         self.log_console = QTextEdit()
         self.log_console.setReadOnly(True)
-        try: self.log_console.setFont(styles.FONT_LOG)
-        except AttributeError: pass
-            
+        self.log_console.setFont(styles.FONT_LOG)
         self.log_console.setStyleSheet(styles.LOG_CONSOLE_STYLE)
         layout.addWidget(self.log_console)
 
@@ -473,6 +516,7 @@ class LogWidget(BaseBlock):
         self.append_log("[System] Parol Stream OS initialized.")
 
     def append_log(self, msg):
+        """根據訊息關鍵字自動上色並寫入日誌框"""
         color = "#d4d4d4" 
         safe_msg = str(msg).replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
         msg_upper = safe_msg.upper()
@@ -487,14 +531,17 @@ class LogWidget(BaseBlock):
         html_msg = f'<span style="color: {color};">{safe_msg}</span>'
         self.log_console.append(html_msg)
 
+
 # =========================================================
 # [5] 3D 預覽面板 (3D View Widget & Screenshot Task)
 # =========================================================
 class _ScreenshotSaveSignals(QObject):
+    """截圖儲存任務的專屬訊號槽"""
     finished = Signal(str)
     error = Signal(str)
 
 class _ScreenshotSaveTask(QRunnable):
+    """背景執行緒任務：將 QImage 存入硬碟，防止阻擋主畫面渲染"""
     def __init__(self, image: QImage, filepath: str):
         super().__init__()
         self.image = image 
@@ -510,6 +557,7 @@ class _ScreenshotSaveTask(QRunnable):
             self.signals.error.emit(str(e))
 
 class View3DWidget(BaseBlock):    
+    """3D 視覺化面板：包含上方的 MonitorWidget 與下方的 Vispy 3D 畫布"""
     def __init__(self, parent=None):
         nav_config = [
             {'icon': 'mdi.axis-arrow', 'toggle_icon': 'mdi.axis-arrow', 'toggle_color': '#00e6b8'},
@@ -541,13 +589,22 @@ class View3DWidget(BaseBlock):
         self._screenshot_pool = QThreadPool() 
         self._active_menu = None
         self._updating_btns = False 
+        
         self.btn_translate.toggled.connect(self.on_translate_toggled)
         self.btn_rotate.toggled.connect(self.on_rotate_toggled)
+        
+        QApplication.instance().aboutToQuit.connect(self._cleanup_tasks)
+
+    def _cleanup_tasks(self):
+        """應用程式即將關閉時觸發：等待所有背景截圖任務完成 (最多等待 1.5 秒)"""
+        self._screenshot_pool.waitForDone(1500)
 
     def set_base_manager(self, base_manager):
+        """注入 Base 管理器給 3D 畫面"""
         self.robot_view.set_base_manager(base_manager)
 
     def _handle_spacebar(self):
+        """處理全域空白鍵：若滑鼠在 3D 畫面內，呼叫快捷選單"""
         focus_w = QApplication.focusWidget()
         if focus_w:
             if focus_w.inherits("QLineEdit") or focus_w.inherits("QAbstractSpinBox") or focus_w.inherits("QTextEdit"): return
@@ -560,54 +617,62 @@ class View3DWidget(BaseBlock):
             return
         self.show_context_menu(pos=None)
 
-    def on_translate_toggled(self, checked):
+    def _toggle_gizmo(self, checked, mode_name, other_btn):
+        """DRY 共用邏輯：切換 3D 拖曳小工具 (平移/旋轉)，並確保按鈕狀態互斥"""
         if self._updating_btns: return
         self._updating_btns = True
         if checked:
-            self.btn_rotate.setChecked(False) 
-            self.robot_view.set_gizmo_mode('translate')
+            other_btn.setChecked(False) 
+            self.robot_view.set_gizmo_mode(mode_name)
         else:
-            if not self.btn_rotate.isChecked(): self.robot_view.set_gizmo_mode('free') 
+            if not other_btn.isChecked(): self.robot_view.set_gizmo_mode('free') 
         self._updating_btns = False
+
+    def on_translate_toggled(self, checked):
+        """切換 3D 箭頭拖曳模式"""
+        self._toggle_gizmo(checked, 'translate', self.btn_rotate)
 
     def on_rotate_toggled(self, checked):
-        if self._updating_btns: return
-        self._updating_btns = True
-        if checked:
-            self.btn_translate.setChecked(False) 
-            self.robot_view.set_gizmo_mode('rotate')
-        else:
-            if not self.btn_translate.isChecked(): self.robot_view.set_gizmo_mode('free') 
-        self._updating_btns = False
+        """切換 3D 圓環旋轉模式"""
+        self._toggle_gizmo(checked, 'rotate', self.btn_translate)
 
     def reset_gizmo_buttons(self):
+        """外部呼叫：強制關閉所有拖曳模式"""
         if self.btn_translate.isChecked() or self.btn_rotate.isChecked():
             self.btn_translate.setChecked(False)
             self.btn_rotate.setChecked(False)
 
     def on_camera_clicked(self):
+        """觸發截圖並交由 QThreadPool 背景儲存"""
         QApplication.processEvents() 
         pixmap = self.grab() 
         image = pixmap.toImage() 
-        screenshot_dir = os.path.join(os.getcwd(), "screenshots")
+        
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        screenshot_dir = os.path.join(base_dir, "screenshots")
         os.makedirs(screenshot_dir, exist_ok=True)
+        
         filename = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3] + ".png"
         filepath = os.path.join(screenshot_dir, filename)
+        
         task = _ScreenshotSaveTask(image, filepath)
         task.signals.error.connect(lambda msg: print(f"[截圖錯誤] {msg}"))
         self._screenshot_pool.start(task)
         self._flash_camera_icon('#00e6b8', duration=80)
 
     def _flash_camera_icon(self, color: str, duration: int = 80):
+        """截圖時的相機按鈕閃爍動畫特效"""
         if not hasattr(self, '_camera_btn_original_style'):
             self._camera_btn_original_style = self.btn_camera.styleSheet()
         self.btn_camera.setStyleSheet(f"QToolButton {{ background-color: {color} !important; border-radius: 4px; }}")
         QTimer.singleShot(duration, self._restore_camera_icon)
 
     def _restore_camera_icon(self):
+        """恢復相機按鈕原始樣式"""
         self.btn_camera.setStyleSheet(self._camera_btn_original_style)
 
     def show_context_menu(self, pos=None):        
+        """建立並顯示 3D 畫布的右鍵/快捷選單"""
         menu_pos = QCursor.pos()
         menu = QMenu(self.window())
         self._active_menu = menu

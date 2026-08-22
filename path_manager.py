@@ -118,14 +118,12 @@ class StreamingPathExecutor(QThread):
                         elif cmd_type == "SET_BASE_CMD":
                             self.log_signal.emit(sync_item.get("msg", ""))
                             self.set_base_signal.emit(sync_item["base_idx"])
-                        elif cmd_type == "EE_CMD":
+                        elif cmd_type == "IO_CMD":
                             self.log_signal.emit(sync_item.get("msg", ""))
                             if is_connected:
-                                if hasattr(self.serial_ref, 'send_gripper'):
-                                    self.serial_ref.send_gripper(sync_item.get("value", 0))
-                                if hasattr(self.serial_ref, 'wait_for_ee_done'):
-                                    self.serial_ref.wait_for_ee_done(timeout=10.0)
-                                absolute_target_time = time.perf_counter() 
+                                self.serial_ref.send_io(sync_item.get("value", 0))
+                                self.serial_ref.wait_for_io_done(timeout=10.0)
+                                absolute_target_time = time.perf_counter()
                     else:
                         if counter % gui_skip_frames == 0:
                             self.update_signal.emit(list(sync_item))
@@ -146,11 +144,9 @@ class StreamingPathExecutor(QThread):
                             cmd_type = sync_item.get("type")
                             if cmd_type == "SET_TCP_CMD": self.set_tcp_signal.emit(sync_item["tool_idx"])
                             elif cmd_type == "SET_BASE_CMD": self.set_base_signal.emit(sync_item["base_idx"])
-                            elif cmd_type == "EE_CMD" and is_connected:
-                                if hasattr(self.serial_ref, 'send_gripper'):
-                                    self.serial_ref.send_gripper(sync_item.get("value", 0))
-                                if hasattr(self.serial_ref, 'wait_for_ee_done'):
-                                    self.serial_ref.wait_for_ee_done(timeout=10.0)
+                            elif cmd_type == "IO_CMD" and is_connected:
+                                self.serial_ref.send_io(sync_item.get("value", 0))
+                                self.serial_ref.wait_for_io_done(timeout=10.0)
                         else:
                             pass 
                             
@@ -184,24 +180,83 @@ class StreamingPathExecutor(QThread):
     # 全新架構：神經中樞 (Dispatcher) 與三大處理器 (Processors)
     # =========================================================
     def _producer_task(self):
-        """ 生產者中樞：只負責讀取清單並派發任務，極度乾淨 """
-        # 將狀態變數升級為類別屬性，讓三大處理器可以共用
+        """ 生產者中樞：升級為具備程式計數器 (PC) 與堆疊 (Stack) 的動態指標執行器 """
         self._prod_seed = list(self.start_joints)
         self._prod_pending_traj = None       
         self._prod_blend_str = 'FINE'      
         loop_count = 1  
 
+        # 最外層的 while 是處理「全域無限循環 (self.loop)」
         while self._is_running:
             if self.loop:
                 self.point_queue.put({"type": "LOG", "msg": f">> Start executing loop {loop_count}..."})
         
-            for wp_idx, wp in enumerate(self.waypoint_list):
+            # ==========================================
+            # 階段 3：導入 Program Counter (指令指針) 架構
+            # ==========================================
+            wp_idx = 0         # 程式計數器 (目前執行到第幾行)
+            loop_stack = []    # 堆疊記憶體 (紀錄迴圈的起點與剩餘次數)
+            
+            while wp_idx < len(self.waypoint_list):
                 if not self._is_running: return
                 
+                wp = self.waypoint_list[wp_idx]
                 move_type = wp.get("move_type", "LIN")
                 display_label = f"[{move_type}] {wp.get('name', f'Point {wp_idx+1}')}"
                 
-                # --- 任務派發站 ---
+                # --- 迴圈指令攔截 ---
+                if move_type == "LOOP_START":
+                    # 直接讀取數值，0 代表無限
+                    count = int(wp.get("value", 1))
+                    
+                    # 業界標準 1：計算巢狀層級 (Nesting Level)
+                    level = len(loop_stack) + 1
+                    total_str = str(count) if count > 0 else "∞ (Infinite)"
+                    
+                    # 業界標準 2：擴充記憶體，紀錄當前圈數與總數
+                    loop_stack.append({
+                        'start_idx': wp_idx, 
+                        'remaining': count, 
+                        'total': count, 
+                        'current': 1, 
+                        'level': level
+                    })
+                    
+                    # 送出開始 Log
+                    self.point_queue.put({"type": "LOG", "msg": f">> [Loop-L{level}] Started: Iteration 1 / {total_str}"}, block=True)
+                    
+                    wp_idx += 1
+                    continue
+                    
+                elif move_type == "LOOP_END":
+                    if loop_stack:
+                        curr_loop = loop_stack[-1]
+                        level = curr_loop['level']
+                        
+                        # 無限迴圈邏輯
+                        if curr_loop['remaining'] == 0:
+                            curr_loop['current'] += 1
+                            self.point_queue.put({"type": "LOG", "msg": f">> [Loop-L{level}] Restarting: Iteration {curr_loop['current']} / ∞"}, block=True)
+                            wp_idx = curr_loop['start_idx'] + 1
+                            continue
+                            
+                        # 有限迴圈邏輯
+                        curr_loop['remaining'] -= 1
+                        if curr_loop['remaining'] > 0:
+                            # 業界標準 3：進度追蹤，跳轉時發送下一圈的 Log
+                            curr_loop['current'] += 1
+                            self.point_queue.put({"type": "LOG", "msg": f">> [Loop-L{level}] Restarting: Iteration {curr_loop['current']} / {curr_loop['total']}"}, block=True)
+                            wp_idx = curr_loop['start_idx'] + 1
+                            continue
+                        else:
+                            # 次數歸零，迴圈結束
+                            self.point_queue.put({"type": "LOG", "msg": f">> [Loop-L{level}] Completed."}, block=True)
+                            loop_stack.pop()
+                            
+                    wp_idx += 1
+                    continue
+
+                # --- 標準任務派發站 ---
                 ok = True
                 if move_type in ["SET_TCP", "SET_BASE", "I/O"]:
                     ok = self._process_aux_command(wp, move_type)
@@ -211,8 +266,10 @@ class StreamingPathExecutor(QThread):
                     ok = self._process_standard_motion(wp, move_type, display_label)
 
                 # 如果處理器回報失敗或中止，直接阻斷整個生產者
-                if not ok:
-                    return 
+                if not ok: return 
+                
+                # 執行完畢，指針前進
+                wp_idx += 1
                     
             if not self.loop:
                 break
@@ -220,9 +277,7 @@ class StreamingPathExecutor(QThread):
             
         self._flush_pending_trajectory(self._prod_pending_traj)
         
-        # ==========================================
         # 尾停優化：配合 UI 佇列的縮減，沖洗點位改為 20 個即可
-        # ==========================================
         if getattr(self, '_prod_seed', None):
             for _ in range(20): 
                 self.point_queue.put(self._prod_seed, block=True)
@@ -235,17 +290,16 @@ class StreamingPathExecutor(QThread):
         self._prod_pending_traj = None
         if not self._is_running: return False
             
-        if move_type == "I/O" or move_type == "GRIPPER":
-            ee_type = wp.get("action_type", "DIGITAL")
-            ee_val = int(wp.get("value", 0))
+        if move_type == "I/O":
+            io_val = int(wp.get("value", 0))
             self.point_queue.put({
-                "type": "EE_CMD", 
-                "value": ee_val,
-                "msg": f">> 執行工具動作: {ee_type} -> {ee_val}"
+                "type": "IO_CMD", 
+                "value": io_val,
+                "msg": f">> 執行 I/O 動作: 數值 -> {io_val}"
             }, block=True)
             
-            # 替換 DELAY_CMD：塞入 10 個實體點位 (讓馬達實體停留 0.1 秒)
-            for _ in range(10):
+            # 替換 DELAY_CMD：塞入 20 個實體點位 (讓馬達實體停留 0.2 秒)
+            for _ in range(20):
                 self.point_queue.put(list(self._prod_seed), block=True)
             
         elif move_type == "SET_TCP":
@@ -578,7 +632,7 @@ class PathManager(QObject):
     def _shift_single_waypoint(self, wp, target_base_mat, recorded_base_mat):
         """計算單一軌跡點的 Base Shift，回傳 (是否成功轉換, 錯誤訊息)"""
         if np.allclose(target_base_mat, recorded_base_mat, atol=1e-4):
-            return False, "" # 矩陣幾乎一樣，略過計算
+            return False, "" 
 
         T_flange_old = np.array(wp.get('cartesian_flange', kinematics.forward_kinematics(wp['joints'])))
         new_joints, err = kinematics.calculate_base_shift_ik(
@@ -762,14 +816,15 @@ class PathManager(QObject):
                 self.log_signal.emit(f"[ERROR] Load failed: {e}")
 
     # --- 2.6 軌跡預覽與執行 ---
-    def _resolve_waypoint_kinematics(self, waypoint_list, initial_tcp_mat=None):
+    def _resolve_waypoint_kinematics(self, waypoint_list, initial_tcp_mat=None, initial_base_mat=None):
         """
         核心解析引擎：統一處理動態基座切換、TCP 偏移與逆運動學。
-        保證「3D 預覽畫面」與「硬體實體運行」採用絕對一致的數學邏輯。
         """
         resolved_list = []
         current_tcp_mat = initial_tcp_mat if initial_tcp_mat is not None else self._get_tcp_matrix(0)
-        current_base_mat = np.eye(4)
+        
+        # 🎯 接收外部注入的基座矩陣，若無則預設為世界座標
+        current_base_mat = initial_base_mat if initial_base_mat is not None else np.eye(4)
         base_mgr = self.parent_widget.base_manager if self.parent_widget else None
         last_valid_actual_joints = None
 
@@ -932,9 +987,35 @@ class PathManager(QObject):
                 
         return trajectory_points
 
-    def execute_streaming_path(self, active_points, start_joints, tcp_offset_mat, loop, global_speed, global_accel, serial_ref, callbacks):
+    def execute_streaming_path(self, active_points, start_joints, tcp_offset_mat=None, base_matrix=None, loop=False, global_speed=50.0, global_accel=50.0, serial_ref=None, callbacks=None):
         """ 呼叫解析引擎後，將標準化點位封裝並派發給背景執行緒 """
-        resolved_wps = self._resolve_waypoint_kinematics(active_points, initial_tcp_mat=tcp_offset_mat)
+        resolved_wps = self._resolve_waypoint_kinematics(
+            active_points, 
+            initial_tcp_mat=tcp_offset_mat, 
+            initial_base_mat=base_matrix
+        )
+        
+        # ==========================================
+        # 🎯 階段 2：迴圈語法檢查 (Loop Validation)
+        # 利用堆疊 (Stack) 預先掃描，從源頭攔截未配對的迴圈！
+        # ==========================================
+        loop_check_stack = []
+        for i, wp in enumerate(resolved_wps):
+            m_type = wp.get('move_type', 'LIN')
+            if m_type == "LOOP_START":
+                loop_check_stack.append(i)
+            elif m_type == "LOOP_END":
+                if not loop_check_stack:
+                    if callbacks and 'error' in callbacks:
+                        callbacks['error'](f"Syntax Error: 發現未配對的 LOOP_END (位於第 {i+1} 行)")
+                    return
+                loop_check_stack.pop()
+                
+        if loop_check_stack:
+            unmatched_line = loop_check_stack[0] + 1
+            if callbacks and 'error' in callbacks:
+                callbacks['error'](f"Syntax Error: 發現未閉合的 LOOP_START (位於第 {unmatched_line} 行)")
+            return
         wp_list = []
         
         for wp in resolved_wps:

@@ -272,7 +272,7 @@ class JogWidget(BaseBlock):
         self.precheck_cartesian_step_callback = None
         self.cartesian_jog_callback = None
         self.cartesian_jog_stop_callback = None
-        self.send_gripper_callback = None
+        self.send_io_callback = None
         self.warning_log_callback = None 
 
         self.joint_sliders = []
@@ -397,13 +397,7 @@ class JogWidget(BaseBlock):
         row.addWidget(title)
         row.addStretch(1)
         row.addWidget(speed_ctrl)
-
-        if title_text != "Cartesian Jogging":
-            row.addSpacing(10)
-            btn_add = QPushButton("+")
-            btn_add.setFixedSize(22, 22)
-            btn_add.setStyleSheet(styles.BTN_ACTION_STYLE)
-            row.addWidget(btn_add)
+        
         self.main_layout.addLayout(row)
 
     def _create_jog_btn(self, icon_name):
@@ -930,8 +924,8 @@ class JogWidget(BaseBlock):
 
         self.set_cross_interlock(None) 
         if self._is_estop_blocked(): return
-        if self.send_gripper_callback:
-            self.send_gripper_callback(self.g_slider.value())
+        if self.send_io_callback:
+            self.send_io_callback(self.g_slider.value())
 
     def _start_gripper_jog(self, sign):
         if self.is_locked:

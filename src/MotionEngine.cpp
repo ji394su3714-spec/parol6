@@ -1,7 +1,7 @@
 #include "MotionEngine.h"
 #include "Globals.h"
 
-constexpr float STEP_FREQ = 100000.0f;                 // 升級為 100kHz
+constexpr float STEP_FREQ = 100000.0f;                 // 100kHz 步進脈衝頻率
 constexpr float ACCEL_DENOM = STEP_FREQ * STEP_FREQ;  
 constexpr uint32_t TICK_US = 10;                       // 100kHz 對應的週期是 10us
 
@@ -12,7 +12,7 @@ constexpr int32_t JOG_INFINITY = 2000000000;
 
 // TIM6 (Hermite 插補器) 升級為 1000Hz
 constexpr float TIM6_FREQ = 1000.0f;
-constexpr float T_TIM6 = 1.0f / TIM6_FREQ;            // 0.001s
+constexpr float T_TIM6 = 1.0f / TIM6_FREQ;
 
 volatile AxisState axes[6];
 volatile BufPoint motion_buf[MOTION_BUF_SIZE];
@@ -101,7 +101,7 @@ void stopAxisInstant(int axis) {
     if (axis < 0 || axis >= 6) return;
     
     LockMotionEngine(); 
-    current_time_scale = 1.0f; // 強制重置時間流速
+    current_time_scale = 1.0f;
     
     if (is_pvt_mode) {
         buf_head = 0; buf_tail = 0; buf_count = 0;
@@ -110,6 +110,7 @@ void stopAxisInstant(int axis) {
         for (int i = 0; i < 6; i++) {
             axes[i].target_vel = 0.0f;
             axes[i].current_vel = 0.0f; 
+            axes[i].accumulator = 0.0f;
             axes[i].target_pos = axes[i].current_pos; 
             axes[i].v0 = 0.0f; axes[i].v1 = 0.0f;
         }
@@ -119,6 +120,7 @@ void stopAxisInstant(int axis) {
 
     axes[axis].target_vel = 0.0f;
     axes[axis].current_vel = 0.0f; 
+    axes[axis].accumulator = 0.0f;
     axes[axis].target_pos = axes[axis].current_pos; 
     axes[axis].auto_decel = false;
     
@@ -139,7 +141,7 @@ void stopAxisInstant(int axis) {
 // ==========================================
 void emergencyStopEngine() {
     LockMotionEngine(); 
-    current_time_scale = 1.0f; // 強制重置時間流速
+    current_time_scale = 1.0f;
     
     buf_head = 0; buf_tail = 0; buf_count = 0;
     is_engine_running = false;
@@ -220,7 +222,7 @@ void moveAxisIndependent(int axis, long relativeSteps, float speedStepsPerSec, f
 void updateAbsoluteTargets(long targets[6], float speedFactor) {
     LockMotionEngine(); 
     is_pvt_mode = false; 
-    current_time_scale = 1.0f; // 強制重置時間流速
+    current_time_scale = 1.0f;
 
     buf_head = 0; buf_tail = 0; buf_count = 0;
     bool needs_engine_start = false;
@@ -235,6 +237,11 @@ void updateAbsoluteTargets(long targets[6], float speedFactor) {
         long delta = targetPos - currentPos;
 
         if (delta != 0) {
+
+            // 【建議補上】：讓 UI 絕對座標移動也具備平滑起步能力！
+            axes[i].current_vel = 0.0f;
+            axes[i].accumulator = 0.0f;
+
             axes[i].dir_state = (delta > 0) ? 1 : -1;
             if (axes[i].dir_state > 0) axes[i].dir_port->BSRR = axes[i].dir_pin_mask;
             else axes[i].dir_port->BSRR = (axes[i].dir_pin_mask << 16);
@@ -265,7 +272,7 @@ void jogAxis(int axis, int dir, float speedStepsPerSec, float accelStepsPerSec2,
 
     LockMotionEngine(); 
     is_pvt_mode = false; 
-    current_time_scale = 1.0f; // 強制重置時間流速
+    current_time_scale = 1.0f;
 
     buf_head = 0; buf_tail = 0; buf_count = 0;
 
@@ -398,7 +405,6 @@ void ISR_StepGenerator() {
 void ISR_MotionPlanner() {
     if (!is_engine_running || !is_pvt_mode) return;
 
-    // 核心：時間流速控制器 (Time Dilation) 讀取全域變數
     if (is_paused) {
         if (current_time_scale > 0.0f) current_time_scale -= 0.005f; 
         if (current_time_scale < 0.0f) current_time_scale = 0.0f;
@@ -443,10 +449,8 @@ void ISR_MotionPlanner() {
         }
     }
 
-    // 依據流速推進時間
     pvt_time_current += current_time_scale; 
 
-    // 如果時間完全靜止，不浪費算力算微積分
     if (current_time_scale == 0.0f) {
         for (int i = 0; i < 6; i++) axes[i].current_vel = 0.0f;
         return;
@@ -476,7 +480,6 @@ void ISR_MotionPlanner() {
         float step_diff = target_pos_exact - (float)axes[i].current_pos;
         float v_feedback = step_diff * 15.0f; 
 
-        // 依照連鎖律，最終輸出的速度要求乘上時間流速比例
         next_v_req[i] = (v_feedforward + v_feedback) * current_time_scale; 
     }
 

@@ -130,6 +130,21 @@ MONITOR_BOX_STYLE = """
 MONITOR_TITLE_STYLE = "color: #a0a0a0; font-family: Consolas, monospace; font-size: 11px; border: none; padding: 0px;"
 MONITOR_VALUE_STYLE = "color: #00e6b8; font-family: Consolas, monospace; font-size: 11px; border: none; padding: 0px;"
 
+MONITOR_INPUT_STYLE = """
+    QLineEdit { 
+        background: transparent; 
+        border: none; 
+        color: #00e6b8; 
+        font-family: 'Consolas', monospace; 
+        font-size: 11px; 
+        padding: 0px; 
+    }
+    QLineEdit:focus { 
+        color: #ffffff; 
+        background-color: rgba(255, 255, 255, 0.12); 
+        border-radius: 2px; 
+    }
+"""
 BTN_GHOST_COPY_STYLE = """
     QPushButton { background: transparent; border: none; }
     QPushButton:hover { background-color: rgba(255, 255, 255, 0.08); border-radius: 4px; }

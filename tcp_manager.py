@@ -8,7 +8,6 @@ from PySide6.QtCore import QObject, Signal
 # ==========================================
 # 動態絕對路徑設定 (防止終端機啟動位置錯誤)
 # ==========================================
-# 取得目前這支 Python 檔案所在的「絕對資料夾路徑」
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # 設定子資料夾名稱為 "config"
 CONFIG_DIR = os.path.join(BASE_DIR, "config")
@@ -91,7 +90,6 @@ class TCPManager(QObject):
             self.save_config()
             self.data_changed.emit()
 
-    # 核心修復：供 Apply 按鈕呼叫的唯一更新入口
     def update_tool(self, index, name, values, in_box=True):
         """按下 Apply 後才呼叫：寫入資料、存檔，並觸發全系統 3D 重繪"""
         if 0 <= index < len(self.tools):
@@ -104,7 +102,6 @@ class TCPManager(QObject):
             self.save_config()
             self.data_changed.emit()
 
-    # --- 核心運算 ---
     def get_active_tool_data(self):
         """回傳當前工具的 name 與 values"""
         return self.tools[self.current_index]

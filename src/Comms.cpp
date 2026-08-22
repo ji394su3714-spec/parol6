@@ -83,11 +83,9 @@ void executeBinaryCommand() {
     if (moveMode == 4) {
         if (is_paused || (pendingCount == 0 && !normalMoveActive)) {
             // 軟取消 (Abort)：不觸發硬體鎖死，保留歸零狀態
-            pendingHead = 0;
-            pendingTail = 0;
-            pendingCount = 0;
+            pendingHead = 0; pendingTail = 0; pendingCount = 0;
             
-            // 🎯 核心修復：軟取消也必須「洗平底鍋」！
+            // 修復：軟取消也必須「洗平底鍋」！
             // 呼叫這行會清空 motion_buf，但不會觸發 LATCHED 鎖死 (因為鎖死旗標是底下控制的)
             emergencyStopEngine(); 
             
@@ -131,7 +129,6 @@ void executeBinaryCommand() {
             is_estop_latched = false;
             
             // 強制將歸零狀態機「重置為閒置 (0)」
-            // 這樣 isAnyHoming() 才會回傳 false，正式解開全系統的運動封印！
             for(int i = 0; i < 6; i++) {
                 homingState[i] = 0; 
             }
@@ -217,8 +214,7 @@ void executeBinaryCommand() {
         // Mode 0：獨立絕對座標追蹤 (UI 滑桿專用)
         // ------------------------------------------
         else if (moveMode == 0) {
-            // 核心修復：切換至獨立運動前，強制清空 (沖洗) Mode 1 的殘留串流軌跡！
-            // 徹底消滅後續切回 Mode 1 時的暴衝丟步地雷！
+            // 核心修復：切換至 Mode 0 前，強制清空串流緩衝區！
             pendingHead = 0; pendingTail = 0; pendingCount = 0;
             
             float speedFactor = (param7 <= 0.0) ? 1.0 : param7;

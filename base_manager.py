@@ -8,7 +8,6 @@ from PySide6.QtCore import QObject, Signal
 # ==========================================
 # 動態絕對路徑設定 (防止終端機啟動位置錯誤)
 # ==========================================
-# 取得目前這支 Python 檔案所在的「絕對資料夾路徑」
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # 設定子資料夾名稱為 "config"
 CONFIG_DIR = os.path.join(BASE_DIR, "config")
