@@ -391,7 +391,7 @@ class Robot3DView(QWidget):
                     part_color = MATERIAL_COLORS[color_key]
                     
                 except Exception as e:
-                    print(f"[3D Render] 無法載入 {filename}: {e}")
+                    print(f"[3D Render] Failed to load {filename}: {e}")
                     box      = trimesh.creation.box(extents=(0.05, 0.05, 0.05))
                     vertices = np.array(box.vertices, dtype=np.float32)
                     faces    = np.array(box.faces,    dtype=np.uint32)

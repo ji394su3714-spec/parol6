@@ -165,8 +165,10 @@ class RobotControllerGUI(QMainWindow):
         self.path_manager.log_signal.connect(self.log_widget.append_log)
         self.path_manager.list_update_signal.connect(self.update_path_list_ui)
         self.path_manager.file_loaded_signal.connect(self.waypoint_panel.set_file_name)
-        
+
+        self.tcp_manager.data_changed.connect(self.path_manager.invalidate_preview_cache)
         self.tcp_manager.data_changed.connect(self.update_3d_trajectory_preview)
+        self.base_manager.data_changed.connect(self.path_manager.invalidate_preview_cache)
         self.base_manager.data_changed.connect(self.update_3d_trajectory_preview)
         
         self.view3d_widget.monitor_widget.tcp_edit_requested.connect(self.handle_monitor_tcp_edit)
@@ -197,6 +199,8 @@ class RobotControllerGUI(QMainWindow):
         self.waypoint_panel.record_pt_requested.connect(self.record_waypoint_action)
         self.waypoint_panel.update_tcp_point_requested.connect(self.update_tcp_point_action)
         self.waypoint_panel.insert_special_requested.connect(self.insert_special_point_action)
+        self.waypoint_panel.record_aux_requested.connect(lambda: self.path_manager.set_aux_point(self.current_float_joints))
+        self.waypoint_panel.update_aux_requested.connect(lambda idx: self.path_manager.update_aux_joints(idx, self.current_float_joints))
         self.waypoint_panel.btn_save.clicked.connect(self.execute_save_process)
         self.waypoint_panel.btn_load.clicked.connect(self.path_manager.load_from_file)
         self.waypoint_panel.clear_all_requested.connect(self.path_manager.delete_all_points)
@@ -286,11 +290,11 @@ class RobotControllerGUI(QMainWindow):
         if checked:
             self._physical_joints_memory = list(self.current_float_joints)
             self.top_bar.btn_simulation.setIcon(qta.icon('mdi.safety-goggles', color='#00e6b8'))
-            self.top_bar.btn_simulation.setToolTip("關閉模擬模式")
-            self.log_widget.append_log("[System] 模擬模式已開啟：切斷硬體輸出，僅維持 3D 運算。")
+            self.top_bar.btn_simulation.setToolTip("Disable Simulation Mode")
+            self.log_widget.append_log("[System] Simulation mode enabled: Hardware output disabled, 3D simulation only.")
         else:
             self.top_bar.btn_simulation.setIcon(qta.icon('mdi.safety-goggles', color='#e0e0e0'))
-            self.top_bar.btn_simulation.setToolTip("開啟純模擬模式 (Simulation Mode)")
+            self.top_bar.btn_simulation.setToolTip("Enable Simulation Mode")
             
             if self._physical_joints_memory is not None: 
                 self.handle_system_pose_update(self._physical_joints_memory)
@@ -298,12 +302,12 @@ class RobotControllerGUI(QMainWindow):
                 self.serial_manager.request_real_pose()
                 
             self.jog_widget.cart_worker.stop_move()
-            self.log_widget.append_log("[System] 模擬模式已關閉：畫面已同步回實體機台姿態，恢復硬體輸出！")
+            self.log_widget.append_log("[System] Simulation mode disabled: Pose synchronized with physical hardware, output restored.")
 
     def reset_estop(self):
         """發送解除急停訊號給硬體"""
         if self._can_send_hardware():
-            self.log_widget.append_log(">>> 嘗試解除急停鎖死...")
+            self.log_widget.append_log("[Action] Attempting to clear E-STOP latch...")
             self.serial_manager.send_estop_reset()
 
     def on_estop_state_changed(self, is_latched):
@@ -313,12 +317,12 @@ class RobotControllerGUI(QMainWindow):
             self.top_bar.btn_stop.setEnabled(False)
             self.top_bar.btn_estop_reset.setEnabled(True)
             self.top_bar.btn_play.setEnabled(False) 
-            QMessageBox.critical(self, "系統急停 (LATCHED)", "硬體控制器目前處於「急停鎖死狀態」！\n\n請確認實體機台安全後，點擊工具列的「解鎖」按鈕來恢復運作。")
+            QMessageBox.critical(self, "E-STOP (LATCHED)", "The hardware controller is locked in an E-STOP state!\n\nPlease verify the physical machine is safe, then click the 'Unlock' button to resume operation.")
         else:
             self.top_bar.btn_stop.setEnabled(True)
             self.top_bar.btn_estop_reset.setEnabled(False)
             self.top_bar.btn_play.setEnabled(True) 
-            QMessageBox.information(self, "系統通知", "警報解除，系統恢復正常就緒。")
+            QMessageBox.information(self, "System Notification", "Alarm cleared. The system is ready.")
             
             if self._can_send_hardware():
                 QTimer.singleShot(200, self._safe_request_pose)
@@ -399,8 +403,12 @@ class RobotControllerGUI(QMainWindow):
     def update_3d_trajectory_preview(self):
         """向 PathManager 取得軌跡點位，並更新 3D 預覽線條"""
         if self.path_manager.is_running(): return
-        pts = self.path_manager.get_trajectory_preview(self.tcp_manager.get_active_matrix())
-        if pts and self.view3d_widget.robot_view:
+        pts = self.path_manager.get_trajectory_preview(
+            initial_tcp_offset=self.tcp_manager.get_active_matrix(),
+            initial_base_mat=self.base_manager.get_active_matrix()
+        )
+        
+        if hasattr(self.view3d_widget.robot_view, 'draw_trajectory_preview'):
             self.view3d_widget.robot_view.draw_trajectory_preview(pts)
 
     def update_path_list_ui(self):
@@ -739,7 +747,11 @@ class RobotControllerGUI(QMainWindow):
             self.waypoint_panel.active_tab.waypoints_data = [dict(wp) for wp in self.path_manager.waypoints]
         self.path_manager.waypoints = [dict(wp) for wp in new_tab.waypoints_data]
         self.waypoint_panel.set_active_tab_visuals(new_tab)
+        self.path_manager.temp_aux_joints = None
+        self.path_manager.invalidate_preview_cache()
+        
         self.update_path_list_ui()
+        self.update_3d_trajectory_preview()
 
 
     # =========================================================
@@ -797,7 +809,7 @@ class RobotControllerGUI(QMainWindow):
             self.top_bar.btn_play.setToolTip("暫停執行 (Pause)")
 
             if self.path_manager.is_running():
-                self.log_widget.append_log(">>> 恢復執行...")
+                self.log_widget.append_log("[Stream] Execution resumed...")
                 self._is_paused = False
                 if self.serial_manager and self.serial_manager.is_connected:
                     self.serial_manager.send_resume()
@@ -819,7 +831,7 @@ class RobotControllerGUI(QMainWindow):
                     self._reset_play_ui() 
                     return
 
-                self.log_widget.append_log(">>> 開始執行路徑串流...")
+                self.log_widget.append_log("[Stream] Path streaming started...")
                 self._set_system_ui_locked(True)
                 
                 self._is_paused = False
@@ -828,7 +840,7 @@ class RobotControllerGUI(QMainWindow):
                 tcp_mat = self.tcp_manager.get_active_matrix()
                 callbacks = {
                     'update': self.handle_system_pose_update, 
-                    'error': lambda msg: (self.log_widget.append_log(f"[ERROR] {msg}"), self._reset_play_ui()),
+                    'error': lambda msg: (self.log_widget.append_log(f"[ERROR] {msg}"), self.stop_execution()),
                     'log': self.log_widget.append_log,
                     'finished': self._on_execution_finished,
                     'set_tcp': self.handle_set_tcp_playback,
@@ -846,7 +858,7 @@ class RobotControllerGUI(QMainWindow):
             self.top_bar.btn_play.setToolTip("繼續執行 (Resume)")
             
             if self.path_manager.is_running():
-                self.log_widget.append_log(">>> 執行暫停 (Feed Hold)")
+                self.log_widget.append_log("[Stream] Feed Hold (Paused)...")
                 self._is_paused = True
                 if self.serial_manager and self.serial_manager.is_connected:
                     self.serial_manager.send_pause()
@@ -868,7 +880,7 @@ class RobotControllerGUI(QMainWindow):
 
     def _on_execution_finished(self, total_time):
         """處理 Worker 執行緒完成任務的後續工作"""
-        self.log_widget.append_log(f">>> 執行完成！總耗時 {total_time:.2f} 秒")
+        self.log_widget.append_log(f"[Stream] Execution completed! Total time: {total_time:.2f} s")
         self._reset_play_ui() 
 
     def handle_set_tcp_playback(self, tool_idx):
@@ -889,9 +901,9 @@ class RobotControllerGUI(QMainWindow):
             
         self._last_preview_time = current_time
         self._last_preview_index = index
-
-        if self.is_system_busy: 
-            self.log_widget.append_log("[WARNING] Cannot preview waypoint while system is busy.")
+            
+        if self.is_system_busy or self.is_math_engine_running: 
+            self._log_jog_barrier_warning("[WARNING] Cannot preview waypoint while Cart-Worker is moving.")
             return
 
         if index < 0 or index >= len(self.path_manager.waypoints): return
@@ -939,11 +951,15 @@ class RobotControllerGUI(QMainWindow):
             self.base_manager.set_current_index(target_base_idx)
             self.base_manager.blockSignals(False)
 
+        self.waypoint_panel.set_locked(True)          # 預覽期間鎖定面板，防打滑
+
         # 1. 區分模擬與非模擬模式
         if self.is_simulation_mode:
             target_joints = reference_wp.get("joints")
             if target_joints:
                 self._play_pose_animation(target_joints, wp_type=reference_wp.get("type", "PTP"))
+            else:
+                self.waypoint_panel.set_locked(False) # 確保解鎖
             return
 
         # 2. 準備送往微積分引擎的預覽膠囊
@@ -964,9 +980,13 @@ class RobotControllerGUI(QMainWindow):
 
         callbacks = {
             'update': self.handle_system_pose_update, 
-            'error': lambda msg: self.log_widget.append_log(f"[Preview Error] {msg}"),
+            'error': lambda msg: (
+                self.log_widget.append_log(f"[Preview Error] {msg}"), 
+                self.stop_execution(),
+                self.waypoint_panel.set_locked(False)
+            ),
             'log': lambda msg: None, 
-            'finished': lambda t: None, 
+            'finished': lambda t: self.waypoint_panel.set_locked(False), 
         }
         
         serial_ref = self.serial_manager if self._can_send_hardware() else None
@@ -1062,13 +1082,13 @@ class RobotControllerGUI(QMainWindow):
     def _prompt_unsaved_changes(self, text_message):
         """共用彈出視窗：攔截未儲存狀態"""
         msg_box = QMessageBox(self)
-        msg_box.setWindowTitle("未儲存提示")
+        msg_box.setWindowTitle("Unsaved Changes")
         msg_box.setText(text_message)
         msg_box.setIcon(QMessageBox.Icon.Warning)
 
-        btn_save = msg_box.addButton("儲存", QMessageBox.ButtonRole.AcceptRole)
-        btn_discard = msg_box.addButton("不儲存", QMessageBox.ButtonRole.DestructiveRole)
-        btn_cancel = msg_box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        btn_save = msg_box.addButton("Save", QMessageBox.ButtonRole.AcceptRole)
+        btn_discard = msg_box.addButton("Don't Save", QMessageBox.ButtonRole.DestructiveRole)
+        btn_cancel = msg_box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
 
         msg_box.setDefaultButton(btn_save) 
         msg_box.exec()
@@ -1089,7 +1109,11 @@ class RobotControllerGUI(QMainWindow):
 
             self.path_manager.waypoints = []
             self.path_manager.is_modified = False  
+            self.path_manager.temp_aux_joints = None
+            self.path_manager.invalidate_preview_cache()
+            
             self.update_path_list_ui()
+            self.update_3d_trajectory_preview()
             
         self.waypoint_panel.force_close_tab(closed_tab)
 
@@ -1097,8 +1121,8 @@ class RobotControllerGUI(QMainWindow):
         """主程式關閉事件：阻擋危險退出與未存檔驗證"""
         if self.path_manager.is_running() or self.jog_widget.is_jogging:
             msg_box = QMessageBox(self)
-            msg_box.setWindowTitle("警告：系統執行中")
-            msg_box.setText("目前仍有自動或手動路徑正在執行！\n請先中止機台動作，再關閉軟體。")
+            msg_box.setWindowTitle("Warning: System Running")
+            msg_box.setText("Automatic or manual paths are currently executing!\nPlease stop the machine operations before closing the software.")
             msg_box.setIcon(QMessageBox.Icon.Critical)
             msg_box.setStyleSheet(styles.DARK_MESSAGE_BOX_STYLE)
             

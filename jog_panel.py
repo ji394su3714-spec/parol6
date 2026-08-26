@@ -890,7 +890,7 @@ class JogWidget(BaseBlock):
                 if not self.is_cartesian_continuous:
                     self.cartesian_jog_callback(axis_arg, step_val, frame, True)
 
-                for _ in range(30): 
+                for _ in range(20): 
                     self.cartesian_jog_callback(axis_arg, 0.0, frame, True)
 
             if self.cartesian_jog_stop_callback: 

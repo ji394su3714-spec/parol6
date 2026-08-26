@@ -71,11 +71,14 @@ class DoubleClickLabel(QLabel):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def mouseDoubleClickEvent(self, event):
-        """攔截雙擊事件並彈出選單，同時動態檢查系統執行狀態以防呆"""
+        """攔截雙擊事件。只在真實 Play 或暫停時鎖死，放行預覽期間的編輯"""
         main_win = self.window()
-        is_executing = main_win.path_manager.is_running() 
+        
+        is_playing = main_win.top_bar.btn_play.isChecked()
+        is_paused = main_win._is_paused
+        is_real_play = is_playing or is_paused
             
-        if self.is_locked or is_executing or not self.options: 
+        if is_real_play or not self.options: 
             return
         
         if event.button() == Qt.MouseButton.LeftButton:
@@ -163,8 +166,7 @@ class WaypointRowWidget(QWidget):
         
         text_color = "#cccccc" if active else "#666666"
         if active:
-            if m_type in ["LOOP_START", "LOOP_END"]: text_color = "#d7ba7d"
-            elif m_type in ["COMMENT"]: text_color = "#6a9955"
+            if m_type in ["LOOP_START", "LOOP_END"]: text_color = "#da46c6"
             elif m_type == "SET_TCP": text_color = "#e6a800"
             elif m_type == "SET_BASE": text_color = "#00a8e6" 
             elif m_type == "CAM_PATH": text_color = "#8A2BE2"
@@ -196,8 +198,6 @@ class WaypointRowWidget(QWidget):
             self.lbl_info.setText(f"{wp_data.get('action_type', '')}={wp_data.get('value', 0)}")
         elif m_type in ["SET_TCP", "SET_BASE"]:
             self.lbl_info.setText(f"[{wp_data.get('value')}] {wp_data.get('name')}")
-        elif m_type == "COMMENT":
-            self.lbl_info.setText(f"// {wp_data.get('value', '')}")
         elif m_type == "CAM_PATH":
             pt_count = wp_data.get("point_count", 0)
             self.lbl_info.setText(f"{wp_data.get('name', 'CAM Path')} ({pt_count} pts)")
@@ -208,12 +208,17 @@ class WaypointRowWidget(QWidget):
         elif m_type == "LOOP_END":
             self.lbl_info.setText("End of Loop")
         else:
-            self.lbl_info.setText(wp_data.get('name', f'Point {index+1}'))
+            # 簡潔的 CIRC 視覺提示：只有缺失 AUX 時才加上紅色短標記 [!AUX]
+            name_text = wp_data.get('name', f'Point {index+1}')
+            if m_type == "CIRC" and not wp_data.get("aux_joints"):
+                name_text += ' <span style="color: #ff4d4d;">[!AUX]</span>'
+
+            self.lbl_info.setText(name_text)
             self.lbl_blend.setText(f"b:{wp_data.get('blend', 'FINE')}")
             self.lbl_spd.setText(f"v:{int(wp_data.get('speed', 50))}%")
             self.lbl_acc.setText(f"a:{int(wp_data.get('accel', 50))}%")
 
-        NO_PARAM_TYPES = ["DELAY", "I/O", "SET_TCP", "SET_BASE", "COMMENT", "LOOP_START", "LOOP_END", "CAM_PATH"] 
+        NO_PARAM_TYPES = ["DELAY", "I/O", "SET_TCP", "SET_BASE", "LOOP_START", "LOOP_END", "CAM_PATH"] 
         show_params = m_type not in NO_PARAM_TYPES
         self.lbl_blend.setVisible(show_params)
         self.lbl_spd.setVisible(show_params)
@@ -266,6 +271,8 @@ class WaypointPanel(BaseBlock):
     toggle_requested = Signal(int)
     delete_requested = Signal(int)
     update_pt_requested = Signal(int) 
+    record_aux_requested = Signal()        # 錄製暫存的 AUX 點
+    update_aux_requested = Signal(int)     # 更新指定行的 AUX 點
     record_pt_requested = Signal(int, str) 
     update_tcp_point_requested = Signal(int, int)
     insert_special_requested = Signal(int, str) 
@@ -292,8 +299,8 @@ class WaypointPanel(BaseBlock):
         self.tabs = []
         self.active_tab = None
         self.copied_waypoints = [] 
-        self.is_locked = False       # 🎯 明確宣告鎖定狀態
-        self._active_menu = None     # 🎯 明確宣告選單狀態
+        self.is_locked = False       # 明確宣告鎖定狀態
+        self._active_menu = None     # 明確宣告選單狀態
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 45) 
@@ -395,7 +402,14 @@ class WaypointPanel(BaseBlock):
     def set_locked(self, locked):
         """切斷所有元件的神經信號，保留完美的視覺互動性但禁止編輯"""
         self.is_locked = locked
-        
+        self.path_list.blockSignals(locked)
+        if locked:
+            # 關閉選取模式，滑鼠點擊不會有任何反白閃爍
+            self.path_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        else:
+            # 恢復原本的多選模式
+            self.path_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+            
         for i in range(self.path_list.count()):
             item = self.path_list.item(i)
             widget = self.path_list.itemWidget(item)
@@ -665,14 +679,22 @@ class WaypointPanel(BaseBlock):
         
         action_shift_block = None
         if m_type == "SET_BASE":
-            action_shift_block = menu.addAction(qta.icon('mdi.axis-arrow', color='#e6a800'), "Sync Base Shift to Following Points")
+            action_shift_block = menu.addAction(qta.icon('mdi.axis-arrow', color='#00e6b8'), "Sync Base Shift to Following Points")
             menu.addSeparator()
 
         action_update = None
+        action_update_aux = None 
         action_edit = None
-        if m_type in ["PTP", "LIN", "CIRC"]:
+        
+        # 區分 CIRC 的雙點更新機制
+        if m_type in ["PTP", "LIN"]:
             action_update = menu.addAction("Update Position")
             menu.addSeparator()
+        elif m_type == "CIRC":
+            action_update = menu.addAction("Update End Position")
+            action_update_aux = menu.addAction("Update AUX Position")
+            menu.addSeparator()
+            
         elif m_type == "DELAY":
             action_edit = menu.addAction("Edit Delay Time")
             menu.addSeparator()
@@ -682,9 +704,15 @@ class WaypointPanel(BaseBlock):
                         
         menu_insert_pt = menu.addMenu(qta.icon('mdi.map-marker-plus', color='#e0e0e0'), "Insert Current Position")
         insert_pt_actions = {}
-        for pt_type in ["PTP", "LIN", "CIRC"]:
+        for pt_type in ["PTP", "LIN"]:
             action = menu_insert_pt.addAction(pt_type)
             insert_pt_actions[action] = pt_type
+            
+        # 插入點位選單補上 CIRC 的中繼點錄製
+        menu_insert_pt.addSeparator()
+        action_insert_circ = menu_insert_pt.addAction("CIRC")
+        action_insert_aux = menu_insert_pt.addAction("Record AUX")
+        insert_pt_actions[action_insert_circ] = "CIRC"
             
         menu_tcp_title = "Update from Tool Box" if m_type == "SET_TCP" else "Insert SET_TCP"
         menu_tcp_icon = '#e6a800' if m_type == "SET_TCP" else '#d4d4d4'
@@ -700,7 +728,7 @@ class WaypointPanel(BaseBlock):
             
         action_io = menu.addAction(qta.icon('mdi.power-plug-outline', color='#d4d4d4'), "Insert I/O")
         
-        menu_loop = menu.addMenu(qta.icon('mdi.sync-circle', color='#d7ba7d'), "Insert Loop")
+        menu_loop = menu.addMenu("Insert Loop")
         action_loop_pair = menu_loop.addAction("Pair Block")
         action_loop_start = menu_loop.addAction("Start Point")
         action_loop_end = menu_loop.addAction("End Point")
@@ -715,6 +743,10 @@ class WaypointPanel(BaseBlock):
         
         if action_update and selected == action_update:
             self.update_pt_requested.emit(index)
+        elif action_update_aux and selected == action_update_aux:
+            self.update_aux_requested.emit(index)
+        elif action_insert_aux and selected == action_insert_aux:
+            self.record_aux_requested.emit()
         elif action_edit and selected == action_edit:
             if m_type == "DELAY": self._trigger_delay_edit(index)
             elif m_type == "LOOP_START": self._trigger_loop_edit(index)
@@ -779,16 +811,22 @@ class WaypointPanel(BaseBlock):
 
         menu_pt = menu.addMenu(qta.icon('mdi.map-marker-plus', color='#d4d4d4'), "Record Current Position")
         pt_actions = {} 
-        for m_type in ["PTP", "LIN", "CIRC"]:
+        for m_type in ["PTP", "LIN"]:
             action = menu_pt.addAction(m_type)
             pt_actions[action] = m_type
+
+        # 加入獨立的 AUX 點位錄製
+        menu_pt.addSeparator()
+        action_circ = menu_pt.addAction("CIRC")
+        action_record_aux = menu_pt.addAction("Record AUX")
+        pt_actions[action_circ] = "CIRC"
             
         menu.addSeparator()
         
         action_delay = menu.addAction(qta.icon('mdi.timer-outline', color='#e0e0e0'), "Append Delay")
         action_io = menu.addAction(qta.icon('mdi.power-plug-outline', color='#e0e0e0'), "Append I/O")
         
-        menu_loop = menu.addMenu(qta.icon('mdi.sync-circle', color='#d7ba7d'), "Append Loop")
+        menu_loop = menu.addMenu("Append Loop")
         action_loop_pair = menu_loop.addAction("Pair Block")
         action_loop_start = menu_loop.addAction("Start Point")
         action_loop_end = menu_loop.addAction("End Point")
@@ -801,9 +839,10 @@ class WaypointPanel(BaseBlock):
         finally:
             self._active_menu = None  
         
-        if not selected_action: return
+        if selected_action == action_record_aux: 
+            self.record_aux_requested.emit()
             
-        if selected_action == action_paste: self.paste_requested.emit(-1)
+        elif selected_action == action_paste: self.paste_requested.emit(-1)
         elif selected_action in pt_actions: self.record_pt_requested.emit(target_idx, pt_actions[selected_action])
         elif selected_action == action_delay: self.insert_special_requested.emit(target_idx, "DELAY")
         elif selected_action == action_io: self.insert_special_requested.emit(target_idx, "IO")

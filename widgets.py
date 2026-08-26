@@ -1,10 +1,11 @@
 # widgets.py
+import collections
 import ctypes
 from ctypes import wintypes
-import datetime
+from datetime import datetime
 import os
 
-from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QFrame, QLabel, 
+from PySide6.QtWidgets import (QFileDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, 
                                QPushButton, QTextEdit, QLineEdit, QApplication, 
                                QMenu, QMessageBox)
 from PySide6.QtCore import QTimer, Qt, QObject, QEvent, QSize, Signal, QRunnable, QThreadPool
@@ -494,14 +495,24 @@ class MonitorWidget(QFrame):
         """將當前 Joint 角度複製到剪貼簿"""
         if hasattr(self, 'current_joints_str'): QApplication.clipboard().setText(self.current_joints_str)
 
+
+
+
+
 class LogWidget(BaseBlock):
-    """系統日誌面板：顯示並過濾各種級別的訊息顏色"""
+    """系統日誌面板：支援層級過濾、容量限制、匯出與時間戳記開關"""
     def __init__(self, parent=None):
-        nav_config = [{'icon': 'mdi.delete-outline'}, {'icon': 'mdi.export'}, {'icon': 'mdi.dots-vertical'}]
+        nav_config = [
+            {'icon': 'mdi.delete-outline'}, 
+            {'icon': 'mdi.export'}, 
+            {'icon': 'mdi.filter-variant'},
+            {'icon': 'mdi.dots-vertical'}
+        ]
         super().__init__(parent=parent, nav_config=nav_config)
         self.setMinimumHeight(0) 
+        
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 15, 15, 60)
+        layout.setContentsMargins(10, 15, 10, 60)
         
         self.log_console = QTextEdit()
         self.log_console.setReadOnly(True)
@@ -509,28 +520,165 @@ class LogWidget(BaseBlock):
         self.log_console.setStyleSheet(styles.LOG_CONSOLE_STYLE)
         layout.addWidget(self.log_console)
 
+        # ==========================================
+        # 1. 內部資料結構與狀態
+        # ==========================================
+        self.max_lines = 1000
+        self._log_history = collections.deque(maxlen=self.max_lines)
+        self.current_filter = "ALL"  
+        self.show_timestamp = True 
+        
+        # ==========================================
+        # 2. 綁定導覽列按鈕動作
+        # ==========================================
         self.btn_clear = self.nav_bar.nav_buttons[0]
         self.btn_clear.setToolTip("Clear Log")
-        self.btn_clear.clicked.connect(self.log_console.clear)
+        self.btn_clear.clicked.connect(self.clear_logs)
+
+        self.btn_export = self.nav_bar.nav_buttons[1]
+        self.btn_export.setToolTip("Export Log")
+        self.btn_export.clicked.connect(self.export_logs)
+
+        self.btn_filter = self.nav_bar.nav_buttons[2]
+        self.btn_filter.setToolTip("Filter Logs")
+        self.btn_filter.clicked.connect(self.show_filter_menu)
+
+        self.btn_options = self.nav_bar.nav_buttons[3]
+        self.btn_options.setToolTip("Options")
+        self.btn_options.clicked.connect(self.show_options_menu)
 
         self.append_log("[System] Parol Stream OS initialized.")
 
+    def clear_logs(self):
+        """清空日誌快取與畫面"""
+        self._log_history.clear()
+        self.log_console.clear()
+
+    def export_logs(self):
+        """將日誌匯出為純文字檔"""
+        if not self._log_history:
+            return
+            
+        default_name = f"parol_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        filepath, _ = QFileDialog.getSaveFileName(self, "Export Log", default_name, "Text Files (*.txt)")
+        if filepath:
+            try:
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    for entry in self._log_history:
+                        f.write(f"{entry['timestamp']} {entry['raw_msg']}\n")
+                self.append_log(f"[System] Log exported to {os.path.basename(filepath)}")
+            except Exception as e:
+                self.append_log(f"[ERROR] Export failed: {str(e)}")
+
+    def show_filter_menu(self):
+        """彈出過濾器選單"""
+        menu = QMenu(self)
+        menu.setStyleSheet(styles.MENU_STYLE)
+        
+        filters = {
+            "ALL": "Show All",
+            "ERROR": "Errors Only",
+            "WARNING": "Warnings Only",
+            "SYSTEM": "System Messages",
+            "HW": "Hardware Status"
+        }
+        
+        for key, text in filters.items():
+            action = menu.addAction(text)
+            action.setCheckable(True)
+            action.setChecked(self.current_filter == key)
+            action.triggered.connect(lambda checked, k=key: self.set_filter(k))
+            
+        menu.exec(QCursor.pos())
+
+    # ==========================================
+    # 新增：Options 選單 (預留診斷功能)
+    # ==========================================
+    def show_options_menu(self):
+        """彈出進階選項選單"""
+        menu = QMenu(self)
+        menu.setStyleSheet(styles.MENU_STYLE)
+
+        # 1. 時間戳記開關
+        action_ts = menu.addAction("Show Timestamps")
+        action_ts.setCheckable(True)
+        action_ts.setChecked(self.show_timestamp)
+        action_ts.triggered.connect(self.toggle_timestamp)
+        
+        menu.addSeparator()
+
+        # 2. 進階診斷模式 (預留槽位，暫時 Disable)
+        action_diag = menu.addAction(qta.icon('mdi.bug-outline', color='#d4d4d4'), "Enable Diagnostics")
+        action_diag.setCheckable(True)
+        action_diag.setEnabled(False) 
+        
+        menu.exec(QCursor.pos())
+
+    def toggle_timestamp(self, checked):
+        """切換時間戳記顯示狀態並重繪"""
+        if self.show_timestamp != checked:
+            self.show_timestamp = checked
+            self._render_logs()
+
+    def set_filter(self, filter_key):
+        """切換過濾器並重新渲染畫面"""
+        if self.current_filter != filter_key:
+            self.current_filter = filter_key
+            self._render_logs()
+
+    def _determine_level_and_color(self, msg_upper):
+        """解析訊息層級與對應顏色"""
+        if "[ERROR]" in msg_upper or "[STOP]" in msg_upper or "FAILED" in msg_upper: 
+            return "ERROR", "#ff4444"
+        elif "[WARNING]" in msg_upper or "TIMEOUT" in msg_upper: 
+            return "WARNING", "#e6a800"
+        elif "[SYSTEM]" in msg_upper: 
+            return "SYSTEM", "#00a8e6"
+        elif "[HW]" in msg_upper or "CONNECTED" in msg_upper or "DISCONNECTED" in msg_upper: 
+            return "HW", "#c63bbb"
+        elif "[ACTION]" in msg_upper or "RECORDED" in msg_upper or "UPDATED" in msg_upper or "DELETED" in msg_upper: 
+            return "INFO", "#00e6b8"
+        elif "[STREAM]" in msg_upper or "[LOOP" in msg_upper: 
+            return "INFO", "#d7ba7d"
+            
+        return "INFO", "#d4d4d4"
+
     def append_log(self, msg):
-        """根據訊息關鍵字自動上色並寫入日誌框"""
-        color = "#d4d4d4" 
+        """寫入新日誌並更新快取"""
+        timestamp = datetime.now().strftime("[%H:%M:%S]")
         safe_msg = str(msg).replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
         msg_upper = safe_msg.upper()
+        
+        level, color = self._determine_level_and_color(msg_upper)
+        
+        log_entry = {
+            "timestamp": timestamp,
+            "raw_msg": str(msg),
+            "safe_msg": safe_msg,
+            "level": level,
+            "color": color
+        }
+        
+        self._log_history.append(log_entry)
+        
+        if self.current_filter == "ALL" or self.current_filter == level:
+            self._append_to_ui(log_entry)
 
-        if "[ERROR]" in msg_upper or "[STOP]" in msg_upper or "錯誤" in msg_upper or "FAILED" in msg_upper: color = "#ff4444" 
-        elif "[WARNING]" in msg_upper or "警告" in msg_upper or "TIMEOUT" in msg_upper: color = "#e6a800" 
-        elif "[SYSTEM]" in msg_upper or "系統" in msg_upper: color = "#00a8e6" 
-        elif "[HW]" in msg_upper or "CONNECTED" in msg_upper or "DISCONNECTED" in msg_upper: color = "#c63bbb" 
-        elif "RECORDED" in msg_upper or "UPDATED" in msg_upper or "DELETED" in msg_upper: color = "#00e6b8" 
-        elif "&GT;&GT;" in safe_msg: color = "#d7ba7d" 
-
-        html_msg = f'<span style="color: {color};">{safe_msg}</span>'
+    def _append_to_ui(self, entry):
+        """單純負責將單筆 Log 渲染到 QTextEdit"""
+        if self.show_timestamp:
+            html_msg = f'<span style="color: #666666;">{entry["timestamp"]}</span> <span style="color: {entry["color"]};">{entry["safe_msg"]}</span>'
+        else:
+            html_msg = f'<span style="color: {entry["color"]};">{entry["safe_msg"]}</span>'
+            
         self.log_console.append(html_msg)
 
+    def _render_logs(self):
+        """依據當前過濾器與時間戳記設定，徹底重繪整個日誌畫面"""
+        self.log_console.clear()
+        for entry in self._log_history:
+            if self.current_filter == "ALL" or self.current_filter == entry["level"]:
+                self._append_to_ui(entry)
 
 # =========================================================
 # [5] 3D 預覽面板 (3D View Widget & Screenshot Task)

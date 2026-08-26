@@ -37,7 +37,6 @@ def fast_rotation_matrix(axis, angle_deg):
 def fast_matrix_to_rotvec(R_mat):
     """
     極速版矩陣轉旋轉向量 (取代 scipy R.from_matrix)
-    零物件生成開銷，專為 IK 緊密迴圈設計，速度提升 100 倍！
     """
     trace = R_mat[0, 0] + R_mat[1, 1] + R_mat[2, 2]
     # 防護浮點數誤差導致的定義域溢出
@@ -276,65 +275,63 @@ def inverse_kinematics(target_matrix, seed_joints, max_retries=1):
                 
     return curr_seed, last_err
 
-def calculate_base_shift_ik(T_flange_old, recorded_base_mat, target_base_mat, seed_joints):
-    """純淨版 Base Shift：徹底根除 Euler，直接在 SO(3) 處理 Slerp 奇異點"""
-    pos_start = recorded_base_mat[:3, 3]
-    pos_end = target_base_mat[:3, 3]
-    
-    R_start = recorded_base_mat[:3, :3]
-    R_end = target_base_mat[:3, :3]
+def calculate_base_shift_ik(T_flange_old, recorded_base_mat, target_base_mat, seed_joints, fallback_seed=None):
+    """
+    純淨版靜態 Base Shift IK 計算，自動補償「Base Frame」的靜態偏移
+    """
     T_user = np.linalg.inv(recorded_base_mat) @ T_flange_old
+    T_flange_new = target_base_mat @ T_user
     
-    # 處理 180 度對稱旋轉的奇異點，避免 Slerp 迷失方向
-    # 計算旋轉差異矩陣的跡數 (Trace)，如果 Trace 趨近於 -1，代表這是一個接近 180 度的翻轉
-    R_diff = R_start.T @ R_end
-    trace = np.trace(R_diff)
+    rot_diff_mat = target_base_mat[:3, :3] @ np.linalg.inv(recorded_base_mat[:3, :3])
+    rot_diff_deg = np.rad2deg(np.linalg.norm(fast_matrix_to_rotvec(rot_diff_mat)))
     
-    if trace < -0.999: 
-        # 注入極微小的擾動 (1e-4 rad 約等於 0.005 度) 破壞對稱性
-        # 強迫 Slerp 毫不猶豫地選擇其中一條最短路徑！
-        perturbation = R.from_rotvec([1e-4, 1e-4, 1e-4]).as_matrix()
-        R_end = R_end @ perturbation
-
-    return _run_interpolated_ik(pos_start, pos_end, R_start, R_end, T_user, seed_joints)
-
-def _run_interpolated_ik(pos_start, pos_end, R_start, R_end, T_user, seed_joints):
-    """拔除 method 切換，回歸最純粹的球面線性插值"""
-    pos_dist = np.linalg.norm(pos_end - pos_start) * 1000.0
-    R_diff = R_start.T @ R_end
-    rot_dist_deg = np.rad2deg(np.linalg.norm(fast_matrix_to_rotvec(R_diff)))
+    smart_seed = list(seed_joints)
     
-    steps = max(1, int(np.ceil(pos_dist / 10.0)), int(np.ceil(rot_dist_deg / 5.0)))
-    
-    curr_seed = np.array(seed_joints, dtype=float)
-    last_err = 0.0
+    # 只有當存在實質旋轉時，才把 Z 軸差額補償給 J1
+    if rot_diff_deg > 1e-3:
+        rz_diff = R.from_matrix(rot_diff_mat).as_euler('xyz', degrees=True)[2]
 
-    # 放心大膽地使用 SLERP，因為源頭的 180 度地雷已經被我們掃除了
-    key_rots = R.from_matrix([R_start, R_end])
-    slerp = Slerp([0, 1], key_rots)
-
-    for i in range(1, steps + 1):
-        fraction = i / steps
-        T_interp_base = np.eye(4)
-        T_interp_base[:3, 3] = pos_start + fraction * (pos_end - pos_start)
-        T_interp_base[:3, :3] = slerp(fraction).as_matrix()
-            
-        T_target_flange = T_interp_base @ T_user
+        # 1. 取得 Base 網格與 J1 關節的初始旋轉矩陣
+        T_base_r = R.from_euler('xyz', config.BASE_MESH_OFFSET['rpy']).as_matrix()
+        T_j0_r = R.from_euler('xyz', config.URDF_PARAMS[0]['rpy']).as_matrix()
         
-        next_joints, err = _core_inverse_kinematics(T_target_flange, curr_seed, max_retries=1)
-        if next_joints is not None:
-            curr_seed = next_joints
-            last_err = err
-        else:
-            return None, f"Base Shift Failed at {fraction*100:.1f}% (Singularity blocked)"
+        # 2. 取得 J1 的本地旋轉軸向量
+        ax_str = config.URDF_PARAMS[0]['axis']
+        if ax_str == 'x': local_ax = np.array([1.0, 0.0, 0.0])
+        elif ax_str == 'y': local_ax = np.array([0.0, 1.0, 0.0])
+        else: local_ax = np.array([0.0, 0.0, 1.0])
+        
+        # 3. 推算 J1 軸在世界座標中的實際指向
+        axis_w = T_base_r @ T_j0_r @ local_ax
+        if config.URDF_PARAMS[0].get('invert', False):
+            axis_w = -axis_w
             
-    return curr_seed, last_err
+        # 4. 判斷 J1 是朝上 (+Z) 還是朝下 (-Z)
+        j1_sign = np.sign(axis_w[2]) if abs(axis_w[2]) > 0.5 else 1.0
+        
+        # 將 Rz 的差異乘以 J1 的真實方向符號 (你的設定會精準套用 j1_sign = -1)
+        smart_seed[0] = (smart_seed[0] + rz_diff * j1_sign + 180.0) % 360.0 - 180.0
+        
+    new_joints, _ = _core_inverse_kinematics(T_flange_new, smart_seed, max_retries=1)
+    if new_joints is not None:
+        return new_joints, ""
+        
+    if fallback_seed is not None:
+        new_joints, _ = _core_inverse_kinematics(T_flange_new, fallback_seed, max_retries=1)
+        if new_joints is not None:
+            return new_joints, ""
+            
+    new_joints, _ = _core_inverse_kinematics(T_flange_new, seed_joints, max_retries=1)
+    if new_joints is not None:
+        return new_joints, ""
+        
+    return None, "IK Failed (Target out of reach or Singularity blocked)"
 
 def calculate_jog_joints(current_joints, axis, step_val, frame, T_total_offset, T_base_matrix=None, T_last_ideal_tcp=None):
     if T_base_matrix is None: T_base_matrix = np.eye(4)
 
     # ==========================================
-    # 2. 誤差阻斷機制：如果有上一部的理想矩陣，直接沿用，無視關節誤差！
+    # 誤差阻斷機制：如果有上一部的理想矩陣，直接沿用，無視關節誤差！
     # ==========================================
     if T_last_ideal_tcp is not None:
         T_tcp_curr = np.copy(T_last_ideal_tcp)
@@ -642,7 +639,7 @@ class TrajectoryMathEngine:
         if used_method == 'euler':
             msg = "[System] SLERP singularity bypassed using Euler interpolation."
         elif scale_down > 1.0:
-            msg = f"[LIN] Safe Auto-Scale: Speed reduced to {(1.0/scale_down):.2f}X."
+            msg = f"Safe Auto-Scale: Speed reduced to {(1.0/scale_down):.2f}X."
             
         return lin_generator(), final_profile.T_total, msg, N
 
@@ -675,7 +672,7 @@ class TrajectoryMathEngine:
         if peak_pulse_freq > config.MAX_PULSE_FREQ:
             v_overspeed_ratio = peak_pulse_freq / config.MAX_PULSE_FREQ
             target_speed /= v_overspeed_ratio
-            msg = f"[PTP] Compute Bottleneck ({peak_pulse_freq:.0f}Hz)！Speed Scale: {(1.0/v_overspeed_ratio):.2f}X"
+            msg = f"Compute Bottleneck ({peak_pulse_freq:.0f}Hz)！Speed Scale: {(1.0/v_overspeed_ratio):.2f}X"
 
         final_profile = SCurveProfile(dist_main, target_speed, target_accel, target_jerk)
 
@@ -842,7 +839,7 @@ class TrajectoryMathEngine:
             
         msg = "SUCCESS"
         if scale_down > 1.0:
-            msg = f"[CIRC] Safe Auto-Scale: Speed reduced to {(1.0/scale_down):.2f}X."
+            msg = f"Safe Auto-Scale: Speed reduced to {(1.0/scale_down):.2f}X."
             
         return circ_generator(), final_profile.T_total, msg, N
     
